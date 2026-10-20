@@ -1,0 +1,48 @@
+name: Daily Global Sector & Stock AI Agent
+
+on:
+  schedule:
+    # 매일 아침 08:00 KST (UTC 기준 전날 23:00) 자동 실행
+    - cron: '0 23 * * *'
+  workflow_dispatch: # GitHub 웹에서 언제든 수동 실행 버튼 클릭 가능
+
+permissions:
+  contents: write
+
+jobs:
+  run-daily-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 저장소 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 2. Python 3.11 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 3. 필수 라이브러리 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 4. 한국 시간(KST) 타임존 설정 및 글로벌 파이프라인 & 노션 발행 실행
+        env:
+          TZ: Asia/Seoul
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}
+          ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        run: |
+          python global_pipeline.py
+          python notion_publisher.py
+
+      - name: 5. 최신 리포트 JSON을 저장소에 자동 Commit & Push (Streamlit 대시보드 자동 갱신용)
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add latest_global_report.json
+          git diff --staged --quiet || git commit -m "chore: auto-update daily global report [skip ci]"
+          git push
