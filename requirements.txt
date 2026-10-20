@@ -1,0 +1,10 @@
+finance-datareader
+yfinance
+opendartreader
+httpx
+tabulate
+google-genai
+pandas
+numpy
+streamlit
+plotly
