@@ -1,4 +1,3 @@
-cat << 'EOF' > "pages/1_🔎_종목_딥다이브.py"
 import datetime
 import numpy as np
 import pandas as pd
@@ -499,4 +498,3 @@ with tab_macro:
         )
     else:
         st.info("이 종목은 오늘 선별된 Top 12 리스트 외부의 개별 조회 종목입니다. 거래량 급증 캔들 발생 시 공시 및 실적 발표 일정을 함께 점검하세요.")
-EOF
