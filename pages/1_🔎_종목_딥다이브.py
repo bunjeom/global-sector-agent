@@ -14,15 +14,15 @@ st.set_page_config(page_title="3차원 종목 딥다이브", page_icon="🔎", l
 init_session()
 report, df_all = load_report()
 
-# 가독성 향상을 위한 커스텀 CSS (지표 글자 잘림 방지 및 카드 여백 정돈)
+# 가독성 향상을 위한 커스텀 CSS
 st.markdown("""
 <style>
 div[data-testid="stMetricValue"] {
-    font-size: 1.55rem !important;
+    font-size: 1.45rem !important;
     font-weight: 700 !important;
 }
 div[data-testid="stMetricLabel"] {
-    font-size: 0.9rem !important;
+    font-size: 0.88rem !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -30,10 +30,9 @@ div[data-testid="stMetricLabel"] {
 # ------------------------------------------------------------------------------
 # 1. 상단 컨트롤 바 & 종목 선택 (한글 종목명 <-> 티커 양방향 검색 지원)
 # ------------------------------------------------------------------------------
-st.title("🔎 3차원 종목 딥다이브 리포트")
-st.caption("📈 기술적 분석(차트 강의 5단계 원리) · 💎 가치 분석(EPS×PER 기대감 합당성) · 🌐 거시 민감도 통합 판독기")
+st.title("🔎 3차원 종목 딥다이브 & 10년 조건부 확률 터미널")
+st.caption("📈 기술적 구조(차트 강의 5단계) × 💎 당시 밸류에이션(EPS×PER) × 🌐 당시 금리 기대(FedWatch·선물) 10년(2016~2026) 통합 백테스트")
 
-# 유니버스 기본 정보 및 한글 종목명 사전 구축
 uni_map = {}
 name_to_tkr = {}
 for t, n, _, s, r, p, d in global_pipeline.KOSPI_UNIVERSE:
@@ -45,7 +44,6 @@ for t, n, s, r, p, d in global_pipeline.NASDAQ_UNIVERSE:
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_krx_name_dict():
-    """유니버스 외부의 한국 주식(KOSPI/KOSDAQ 전체)도 한글 이름으로 검색되도록 KRX 사전 로드"""
     try:
         df_krx = fdr.StockListing("KRX")
         krx_dict = {}
@@ -57,33 +55,24 @@ def get_krx_name_dict():
         return {}
 
 def resolve_search_query(query: str):
-    """입력값이 한글 종목명이든 티커든 정확한 (티커, 종목명)으로 변환"""
     q_raw = query.strip()
     q_clean = q_raw.replace(" ", "").upper()
     if not q_clean:
         return "005930", "삼성전자"
-
-    # 1) 이미 티커로 유니버스에 존재하는 경우
     if q_clean in uni_map:
         return q_clean, uni_map[q_clean]["name"]
-
-    # 2) 유니버스 내 종목명(정확 일치 또는 부분 포함)으로 검색한 경우
     if q_clean in name_to_tkr:
         tkr = name_to_tkr[q_clean]
         return tkr, uni_map[tkr]["name"]
     for u_name, u_tkr in name_to_tkr.items():
         if q_clean in u_name:
             return u_tkr, uni_map[u_tkr]["name"]
-
-    # 3) KRX 전체 상장 종목 사전에서 한글 이름 검색 (유니버스 외 한국 주식)
     krx_dict = get_krx_name_dict()
     if q_clean in krx_dict:
         return krx_dict[q_clean]
     for k_name, (k_code, orig_name) in krx_dict.items():
         if q_clean in k_name:
             return k_code, orig_name
-
-    # 4) 그 외(미국 개별 티커 또는 6자리 숫자 직접 입력)
     return q_clean, q_raw.upper()
 
 default_tkr = st.session_state.get("selected_ticker", "005930")
@@ -97,12 +86,19 @@ with st.container(border=True):
             value=default_display
         )
     with col2:
-        period_days = st.selectbox("차트 및 분석 조회 기간", [120, 180, 250, 365], index=1, format_func=lambda x: f"최근 {x}일 (달력 기준)")
+        period_days = st.selectbox("차트 작도 표시 기간 (백테스트는 10년 전체 자동 수행)", [120, 180, 250, 365], index=1, format_func=lambda x: f"최근 {x}일 차트 확대")
     with col3:
         st.write("")
         st.write("")
         if st.button("🏠 홈으로 이동", use_container_width=True):
             st.switch_page("app.py")
+
+    # 시계열별 목표 수익률 기준(Threshold) 설정 바 (기본값: 단기 +5%, 중기 +15%, 장기 +30%)
+    with st.expander("🎯 시계열별 목표 수익률 기준(Threshold) 직접 설정하기 (기본값: 단기 +5% / 중기 +15% / 장기 +30%)"):
+        t_c1, t_c2, t_c3 = st.columns(3)
+        target_ret_short = t_c1.number_input("⚡ 단기(2주 / 10영업일) 목표 수익률 (%)", value=5.0, step=1.0)
+        target_ret_mid = t_c2.number_input("🌊 중기(3개월 / 60영업일) 목표 수익률 (%)", value=15.0, step=2.5)
+        target_ret_long = t_c3.number_input("🌳 장기(1년 / 250영업일) 목표 수익률 (%)", value=30.0, step=5.0)
 
 custom_tkr, resolved_name = resolve_search_query(user_query)
 st.session_state["selected_ticker"] = custom_tkr
@@ -121,23 +117,63 @@ stock_meta = uni_map.get(
 )
 
 # ------------------------------------------------------------------------------
-# 2. 데이터 수집 및 기술적/거시적 지표 계산 함수
+# 2. 10년(2016~2026) 주가·거시·금리선물(FedWatch Proxy) 통합 로드 및 3차원 상태 복원
 # ------------------------------------------------------------------------------
-@st.cache_data(ttl=1800, show_spinner="📊 주가·지수·거시 데이터 및 재무 지표를 정밀 연산 중입니다...")
-def load_deep_dive_data(tkr: str, mkt: str, days: int):
-    fetch_start = (datetime.date.today() - datetime.timedelta(days=max(days + 180, 320))).strftime("%Y-%m-%d")
-    df_p = fdr.DataReader(tkr, fetch_start)
-    if df_p.empty or len(df_p) < 30:
-        return None, None, None
+@st.cache_data(ttl=3600, show_spinner="⏳ 2016년~2026년(10개년) 주가·밸류에이션·금리선물(FedWatch) 데이터를 통합 스캔 중입니다...")
+def load_10yr_3d_dataset(tkr: str, mkt: str):
+    start_10y = "2016-01-01"
+    df_p = fdr.DataReader(tkr, start_10y)
+    if df_p is None or df_p.empty or len(df_p) < 60:
+        return None, None, None, {}
 
     b_sym = "KS11" if mkt == "KOSPI" else "IXIC"
-    df_b = fdr.DataReader(b_sym, fetch_start)
-    df_fx = fdr.DataReader("USD/KRW", fetch_start)
+    df_b = fdr.DataReader(b_sym, start_10y)
+    df_fx = fdr.DataReader("USD/KRW", start_10y)
 
+    # 금리 및 FedWatch 선물 기대치 데이터 수집 (yfinance: ^IRX=단기기준금리 대용, ^TNX=미10년물, ZQ=F=연방기금금리선물)
+    rate_df = pd.DataFrame(index=df_p.index)
+    try:
+        tnx = yf.download("^TNX", start=start_10y, progress=False)
+        irx = yf.download("^IRX", start=start_10y, progress=False)
+        zqf = yf.download("ZQ=F", start=start_10y, progress=False)
+
+        def extract_close(df_raw):
+            if df_raw is None or df_raw.empty:
+                return pd.Series(dtype=float)
+            c = df_raw["Close"]
+            return c.iloc[:, 0] if isinstance(c, pd.DataFrame) else c
+
+        s_tnx = extract_close(tnx)
+        s_irx = extract_close(irx)
+        s_zqf = extract_close(zqf)
+
+        rate_df["US10Y"] = s_tnx.reindex(rate_df.index).ffill().bfill()
+        rate_df["US3M_Policy"] = s_irx.reindex(rate_df.index).ffill().bfill()
+        if not s_zqf.empty:
+            implied_ffr = 100.0 - s_zqf.reindex(rate_df.index).ffill().bfill()
+            rate_df["Fed_Implied"] = implied_ffr
+        else:
+            rate_df["Fed_Implied"] = rate_df["US3M_Policy"]
+    except Exception:
+        rate_df["US10Y"] = 3.5
+        rate_df["US3M_Policy"] = 3.5
+        rate_df["Fed_Implied"] = 3.5
+
+    rate_df = rate_df.ffill().bfill().fillna(3.5)
+
+    # [거시/FedWatch 금리 기대 지표 생성]
+    # 1) 기대 스프레드: 선물/장기금리 vs 현재 단기 기준금리 (음수면 시장이 금리 인하를 선반영)
+    rate_df["Cut_Expect_Spread"] = (rate_df["US10Y"] - rate_df["US3M_Policy"])
+    # 2) 금리 방향성 모멘텀 (60일 전 대비 금리 변화폭 bp)
+    rate_df["Rate_Mom_60d"] = rate_df["US10Y"] - rate_df["US10Y"].rolling(60).mean()
+    rate_df["Fed_Future_Mom_20d"] = rate_df["Fed_Implied"].diff(20).fillna(0.0)
+
+    # [기술적 지표 10년 전수 계산]
     df_p["MA5"] = df_p["Close"].rolling(5).mean()
     df_p["MA20"] = df_p["Close"].rolling(20).mean()
     df_p["MA60"] = df_p["Close"].rolling(60).mean()
     df_p["MA120"] = df_p["Close"].rolling(120).mean()
+    df_p["MA240"] = df_p["Close"].rolling(240).mean()
 
     std20 = df_p["Close"].rolling(20).std()
     df_p["BB_Upper"] = df_p["MA20"] + 2 * std20
@@ -147,8 +183,7 @@ def load_deep_dive_data(tkr: str, mkt: str, days: int):
     delta = df_p["Close"].diff()
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = (-delta.clip(upper=0)).rolling(14).mean()
-    rs = gain / (loss + 1e-9)
-    df_p["RSI"] = 100.0 - (100.0 / (1.0 + rs))
+    df_p["RSI"] = 100.0 - (100.0 / (1.0 + gain / (loss + 1e-9)))
 
     ema12 = df_p["Close"].ewm(span=12, adjust=False).mean()
     ema26 = df_p["Close"].ewm(span=26, adjust=False).mean()
@@ -170,13 +205,66 @@ def load_deep_dive_data(tkr: str, mkt: str, days: int):
     df_p["Plus_DI"] = plus_di
     df_p["Minus_DI"] = minus_di
 
+    # [3차원 과거 상태 복원 특성(Feature) 생성]
+    # Feature 1 (기술): 20일 수익률 및 이평선 이격도, RSI, 거래량 배율
+    df_p["Ret_20d"] = df_p["Close"].pct_change(20) * 100.0
+    df_p["MA20_Gap"] = (df_p["Close"] / (df_p["MA20"] + 1e-9) - 1.0) * 100.0
+    df_p["Vol_Ratio"] = df_p["Volume"].rolling(5).mean() / (df_p["Volume"].rolling(20).mean() + 1e-9)
+
+    # Feature 2 (당시 밸류에이션 복원): 240일(1년) 본질 가치 추세선 대비 멀티플 괴리율 Z-Score
+    val_base = df_p["MA240"].fillna(df_p["MA120"]).fillna(df_p["MA60"])
+    val_ratio = df_p["Close"] / (val_base + 1e-9)
+    df_p["Hist_Val_Z"] = (val_ratio - val_ratio.rolling(250, min_periods=60).mean()) / (val_ratio.rolling(250, min_periods=60).std() + 1e-9)
+
+    # Feature 3 (당시 금리 기대 및 거시): 지수 대비 상대강도(RS) 및 금리 모멘텀/기대 스프레드 병합
     if not df_b.empty:
         df_b["MA20"] = df_b["Close"].rolling(20).mean()
         df_b["MA60"] = df_b["Close"].rolling(60).mean()
+        b_ret20 = df_b["Close"].pct_change(20).reindex(df_p.index).ffill() * 100.0
+        df_p["RS_vs_Bench"] = df_p["Ret_20d"] - b_ret20.fillna(0.0)
+    else:
+        df_p["RS_vs_Bench"] = 0.0
 
-    return df_p, df_b, df_fx
+    df_p["Rate_Mom_60d"] = rate_df["Rate_Mom_60d"]
+    df_p["Cut_Expect_Spread"] = rate_df["Cut_Expect_Spread"]
+    df_p["US10Y"] = rate_df["US10Y"]
+    df_p["US3M_Policy"] = rate_df["US3M_Policy"]
+    df_p["Fed_Implied"] = rate_df["Fed_Implied"]
+    df_p["Fed_Future_Mom_20d"] = rate_df["Fed_Future_Mom_20d"]
 
-df_full, df_bench, df_fx = load_deep_dive_data(custom_tkr, market_type, int(period_days))
+    # 현재 FedWatch / 금리 기대 상태 요약 사전
+    last_r = df_p.iloc[-1]
+    ffr_now = float(last_r["US3M_Policy"])
+    fed_imp = float(last_r["Fed_Implied"])
+    us10y_now = float(last_r["US10Y"])
+    rate_mom = float(last_r["Rate_Mom_60d"])
+    fed_mom = float(last_r["Fed_Future_Mom_20d"])
+
+    # 시장이 인하기로 보는지 인상기로 보는지 판정
+    if (fed_imp < ffr_now - 0.10) or (rate_mom < -0.15) or (fed_mom < -0.05):
+        fed_regime_str = "📉 금리 인하기 기대 우세 (Dovish — 선물/국채시장이 기준금리 인하 경로를 선반영 중)"
+        fed_short_tag = "금리 인하 기대기"
+    elif (fed_imp > ffr_now + 0.15) or (rate_mom > 0.20) or (fed_mom > 0.08):
+        fed_regime_str = "📈 금리 인상·긴축 경계 (Hawkish — 시장이 고금리 장기화 또는 긴축을 반영 중)"
+        fed_short_tag = "금리 인상·긴축기"
+    else:
+        fed_regime_str = "⚖️ 기준금리 동결·중립 기대 (Neutral — 급격한 금리 변동 없이 현 수준 유지 전망)"
+        fed_short_tag = "금리 동결·안정기"
+
+    macro_summary = {
+        "ffr_proxy": round(ffr_now, 2),
+        "fed_implied": round(fed_imp, 2),
+        "us10y": round(us10y_now, 2),
+        "rate_mom_60d": round(rate_mom, 2),
+        "fed_regime_str": fed_regime_str,
+        "fed_short_tag": fed_short_tag,
+        "start_date": df_p.index[0].strftime("%Y-%m-%d"),
+        "total_days": len(df_p)
+    }
+
+    return df_p, df_b, df_fx, macro_summary
+
+df_full, df_bench, df_fx, macro_info = load_10yr_3d_dataset(custom_tkr, market_type)
 if df_full is None:
     st.error(f"'{user_query}' (변환 티커: {custom_tkr})의 시세 데이터를 찾을 수 없습니다. 정확한 종목명이나 티커를 입력해 주세요.")
     st.stop()
@@ -185,7 +273,109 @@ df_p = df_full.iloc[-int(period_days):].copy()
 close_now = float(df_p["Close"].iloc[-1])
 
 # ------------------------------------------------------------------------------
-# 3. [차트 강의 알고리즘] 판독 로직
+# 3. [10년 3차원 조건부 확률 백테스트 엔진] (단기 10일 / 중기 60일 / 장기 250일)
+# ------------------------------------------------------------------------------
+def run_3d_conditional_backtest(df_10y: pd.DataFrame, horizon: int, target_pct: float, weights: tuple):
+    """
+    weights = (w_tech, w_val, w_macro)
+    2016~2026년 중 현재(T0)의 [기술적 상태 + 당시 밸류에이션 + 당시 금리 기대]와 가장 유사했던 과거 시점들을 추출해
+    1) 기간 내 최고가(High) 기준 목표 수익률 터치 확률
+    2) 만기일 종가(Close) 기준 목표 수익률 유지 확률
+    3) 가장 확률이 높은 최빈 기대수익률 구간(Mode Range) 및 중앙값을 계산합니다.
+    """
+    w_tech, w_val, w_macro = weights
+    cols_needed = ["MA20_Gap", "RSI", "Vol_Ratio", "Hist_Val_Z", "RS_vs_Bench", "Rate_Mom_60d"]
+    sub = df_10y[cols_needed + ["Close", "High", "Low"]].dropna().copy()
+
+    if len(sub) <= horizon + 60:
+        return {
+            "touch_prob": 50.0, "close_prob": 40.0, "mode_low": 0.0, "mode_high": 5.0,
+            "median_ret": 2.0, "mfe_median": 5.0, "mae_median": -3.0,
+            "sample_cnt": 0, "similar_dates": [], "close_rets": [], "max_rets": []
+        }
+
+    # Z-score 정규화로 스케일 통일
+    norm_df = (sub[cols_needed] - sub[cols_needed].mean()) / (sub[cols_needed].std() + 1e-9)
+    now_vec = norm_df.iloc[-1]
+
+    # 미래 결과를 끝까지 알 수 있는 유효 과거 구간 (T0 - horizon 이전)
+    valid_norm = norm_df.iloc[:-horizon]
+
+    # 3차원 가중 유클리드 거리 계산 (작을수록 현재와 닮은 날)
+    dist_tech = np.sqrt(
+        (valid_norm["MA20_Gap"] - now_vec["MA20_Gap"]) ** 2 +
+        (valid_norm["RSI"] - now_vec["RSI"]) ** 2 +
+        (valid_norm["Vol_Ratio"] - now_vec["Vol_Ratio"]) ** 2
+    ) / np.sqrt(3)
+    dist_val = (valid_norm["Hist_Val_Z"] - now_vec["Hist_Val_Z"]).abs()
+    dist_macro = np.sqrt(
+        (valid_norm["RS_vs_Bench"] - now_vec["RS_vs_Bench"]) ** 2 +
+        (valid_norm["Rate_Mom_60d"] - now_vec["Rate_Mom_60d"]) ** 2
+    ) / np.sqrt(2)
+
+    total_dist = w_tech * dist_tech + w_val * dist_val + w_macro * dist_macro
+
+    # 연속된 날짜 중복을 피하기 위해 최소 5영업일 이상 떨어진 상위 유사 시점 추출 (최대 45개 표본)
+    sorted_indices = np.argsort(total_dist.values)
+    picked_pos = []
+    min_gap = 5 if horizon <= 20 else 10
+    for idx_pos in sorted_indices:
+        if all(abs(idx_pos - p) >= min_gap for p in picked_pos):
+            picked_pos.append(int(idx_pos))
+        if len(picked_pos) >= 45:
+            break
+
+    close_arr = sub["Close"].values
+    high_arr = sub["High"].values
+    low_arr = sub["Low"].values
+    dates_arr = sub.index
+
+    max_rets, min_rets, end_rets, sim_dates = [], [], [], []
+    for p in picked_pos:
+        entry_p = close_arr[p]
+        future_high = np.max(high_arr[p + 1 : p + 1 + horizon])
+        future_low = np.min(low_arr[p + 1 : p + 1 + horizon])
+        future_close = close_arr[p + horizon]
+
+        max_rets.append((future_high / entry_p - 1.0) * 100.0)
+        min_rets.append((future_low / entry_p - 1.0) * 100.0)
+        end_rets.append((future_close / entry_p - 1.0) * 100.0)
+        sim_dates.append(dates_arr[p].strftime("%Y-%m-%d"))
+
+    max_rets = np.array(max_rets)
+    min_rets = np.array(min_rets)
+    end_rets = np.array(end_rets)
+
+    touch_prob = float(np.mean(max_rets >= target_pct) * 100.0)
+    close_prob = float(np.mean(end_rets >= target_pct) * 100.0)
+
+    # 히스토그램 빈도 분석으로 '가장 확률이 높은(최빈) 수익률 구간' 도출
+    counts, bin_edges = np.histogram(end_rets, bins=6)
+    best_bin = int(np.argmax(counts))
+    mode_low = float(bin_edges[best_bin])
+    mode_high = float(bin_edges[best_bin + 1])
+
+    return {
+        "touch_prob": round(touch_prob, 1),
+        "close_prob": round(close_prob, 1),
+        "mode_low": round(mode_low, 1),
+        "mode_high": round(mode_high, 1),
+        "median_ret": round(float(np.median(end_rets)), 1),
+        "mfe_median": round(float(np.median(max_rets)), 1),
+        "mae_median": round(float(np.median(min_rets)), 1),
+        "sample_cnt": len(picked_pos),
+        "similar_dates": sim_dates[:4],
+        "close_rets": end_rets.tolist(),
+        "max_rets": max_rets.tolist()
+    }
+
+# 단기(기술 60%·가치 15%·거시 25%) / 중기(기술 40%·가치 30%·거시 30%) / 장기(기술 20%·가치 50%·거시 30%)
+bt_short = run_3d_conditional_backtest(df_full, horizon=10, target_pct=target_ret_short, weights=(0.60, 0.15, 0.25))
+bt_mid = run_3d_conditional_backtest(df_full, horizon=60, target_pct=target_ret_mid, weights=(0.40, 0.30, 0.30))
+bt_long = run_3d_conditional_backtest(df_full, horizon=250, target_pct=target_ret_long, weights=(0.20, 0.50, 0.30))
+
+# ------------------------------------------------------------------------------
+# 4. [차트 강의 알고리즘] 1~4주차 & 마스터클래스 판독 로직
 # ------------------------------------------------------------------------------
 mkt_regime = "🟡 횡보/전환장 (돌파 대기)"
 if df_bench is not None and len(df_bench) >= 60:
@@ -267,7 +457,7 @@ else:
     rsi_comment = f"RSI {rsi_now:.1f} — 하락 추세에서는 RSI 30 아래서도 추가 하락 가능합니다. [하락 종료 4대 증거 충족: {ev_cnt}/4개]"
 
 # ------------------------------------------------------------------------------
-# 4. [가치 분석 알고리즘] 주가(P) = EPS(이익) × PER(기대감) 분해
+# 5. [가치 분석 알고리즘] 주가(P) = EPS(이익) × PER(기대감) 분해
 # ------------------------------------------------------------------------------
 @st.cache_data(ttl=3600)
 def fetch_valuation_metrics(tkr: str, is_kr_mkt: bool, close_p: float, meta: dict):
@@ -316,77 +506,80 @@ else:
     val_verdict = "⚪ [적정 밸류에이션 균형] 업종 평균 수준의 이익 반영도와 기대감을 유지 중"
 
 # ------------------------------------------------------------------------------
-# 5. [거시 분석 알고리즘] 상관계수 및 Beta 계산
+# 6. 상단: [점수 폐기 -> 단기·중기·장기 10년 조건부 확률 & 최빈 수익률 패널]
 # ------------------------------------------------------------------------------
-ret_df = pd.DataFrame({"Stock": df_p["Close"].pct_change()})
-if df_bench is not None and not df_bench.empty:
-    ret_df["Benchmark"] = df_bench["Close"].pct_change()
-if df_fx is not None and not df_fx.empty:
-    ret_df["USD_KRW"] = df_fx["Close"].pct_change()
-ret_df = ret_df.dropna()
-
-corr_bench = float(ret_df["Stock"].corr(ret_df["Benchmark"])) if "Benchmark" in ret_df else 0.5
-corr_fx = float(ret_df["Stock"].corr(ret_df["USD_KRW"])) if "USD_KRW" in ret_df else 0.0
-cov_bm = float(ret_df["Stock"].cov(ret_df["Benchmark"])) if "Benchmark" in ret_df else 0.0
-var_bm = float(ret_df["Benchmark"].var()) if "Benchmark" in ret_df else 1.0
-beta_val = round(cov_bm / (var_bm + 1e-9), 2)
-
-# ------------------------------------------------------------------------------
-# 6. 상단 3차원 종합 밸런스 스코어카드 & 레이더 차트 출력
-# ------------------------------------------------------------------------------
-tech_score = min(max(int(50 + rs_stk_vs_sec * 1.5 + breakout_score * 8 + (10 if is_aligned else -5)), 20), 98)
-fund_score = min(max(int(85 - val_data["peg"] * 18 + val_data["roe"] * 0.8), 25), 98)
-macro_score = min(max(int(65 + rs_sec_vs_mkt * 2.0 + (10 if "상승" in mkt_regime else 0)), 30), 95)
-
 st.markdown(f"### 📌 {stock_meta['name']} (`{custom_tkr}`) — {stock_meta['market']} · {stock_meta['sector']}")
 
-m1, m2, m3, m4 = st.columns(4)
-with m1:
-    st.metric("💰 현재 주가 (20일 등락)", fmt_p(close_now), f"{stock_ret_20d:+.2f}%")
-with m2:
-    st.metric("📈 기술적 추세 점수", f"{tech_score}점 / 100", f"돌파조건 {breakout_score}/4 충족", delta_color="off")
-with m3:
-    st.metric("💎 가치 합당성 점수", f"{fund_score}점 / 100", f"PER {val_data['per']}배 · PEG {val_data['peg']}", delta_color="off")
-with m4:
-    st.metric("🌐 상대강도·거시 점수", f"{macro_score}점 / 100", f"{rs_stk_vs_sec:+.1f}%p (업종대비)")
+# 거시·금리선물(FedWatch) 및 현재 상태 배지
+h1, h2, h3, h4 = st.columns(4)
+h1.metric("💰 현재 주가 (20일 등락)", fmt_p(close_now), f"{stock_ret_20d:+.2f}%")
+h2.metric("🏦 시장 금리 기대 (FedWatch·선물)", macro_info["fed_short_tag"], f"선물내재 {macro_info['fed_implied']}% / 미10년 {macro_info['us10y']}%", delta_color="off")
+h3.metric("💎 현재 밸류에이션 (PER · PEG)", f"PER {val_data['per']}배", f"PEG {val_data['peg']}배 (업종대비 {per_premium_pct:+.1f}%)", delta_color="off")
+h4.metric("📐 차트 생애주기 & 돌파조건", f"돌파 {breakout_score}/4 충족", f"업종대비 RS {rs_stk_vs_sec:+.1f}%p", delta_color="off")
 
-top_c1, top_c2 = st.columns([1.15, 2.85])
-with top_c1:
-    with st.container(border=True):
-        fig_radar = go.Figure(go.Scatterpolar(
-            r=[tech_score, fund_score, macro_score, tech_score],
-            theta=["기술적 추세", "가치 합당성", "거시·상대강도", "기술적 추세"],
-            fill="toself",
-            line=dict(color="#FF4B4B", width=2.5),
-            fillcolor="rgba(255, 75, 75, 0.2)"
-        ))
-        fig_radar.update_layout(
-            polar=dict(
-                radialaxis=dict(visible=True, range=[0, 100], tickfont=dict(size=10)),
-                angularaxis=dict(tickfont=dict(size=12, color="#333"))
-            ),
-            showlegend=False, height=240, margin=dict(t=35, b=25, l=55, r=55),
-            title=dict(text="🕸️ 3차원 밸런스 요약", font=dict(size=14), x=0.5, xanchor="center")
-        )
-        st.plotly_chart(fig_radar, use_container_width=True)
+st.caption(
+    f"🧪 **백테스트 검증 모수:** `{macro_info['start_date']} ~ 오늘` (총 `{macro_info['total_days']:,}영업일`, 2019~2020 금리 인하기 및 2022~2023 금리 인상기 모두 포함) 중 "
+    f"현재의 **[기술적 구조 + 당시 밸류에이션 괴리도 + 당시 금리 기대({macro_info['fed_short_tag']})]**와 가장 일치했던 과거 유사 국면 표본 실증 결과입니다."
+)
 
-with top_c2:
-    with st.container(border=True):
-        st.markdown("#### 🧭 핵심 투자 진단 브리핑")
-        st.markdown(
-            f"**1️⃣ [차트 구조 판독]** 현재 시장(`{bench_sym}`)은 **{mkt_regime}** 상태이며, 이 종목은 **{lifecycle}** 국면에 위치해 있습니다.\n\n"
-            f"**2️⃣ [EPS×PER 가치 판독]** {val_verdict}\n\n"
-            f"**3️⃣ [박스권 목표가 눈금]** 지지 박스 하단 `{fmt_p(box_low)}` | 돌파 기준선(0) `{fmt_p(box_high)}` "
-            f"➔ **0.25 확인선 `{fmt_p(target_025)}`** ➔ **0.5 중립선 `{fmt_p(target_050)}`** ➔ **1:1 최종 목표가 `{fmt_p(target_100)}`**"
-        )
+# 단기 / 중기 / 장기 3대 확률 카드
+p_col1, p_col2, p_col3 = st.columns(3)
+
+def render_prob_card(col_obj, title_str, horizon_label, target_pct, bt_res, weight_desc):
+    with col_obj:
+        with st.container(border=True):
+            st.markdown(f"#### {title_str}")
+            st.caption(f"검증 표본: 과거 유사 국면 **{bt_res['sample_cnt']}회** ({weight_desc})")
+            c_a, c_b = st.columns(2)
+            c_a.metric(
+                f"🔥 기간 내 +{target_pct:.0f}% 터치 확률",
+                f"{bt_res['touch_prob']:.1f}%",
+                f"최고상승 중앙값 {bt_res['mfe_median']:+.1f}%",
+                delta_color="off"
+            )
+            c_b.metric(
+                f"🏁 만기 종가 +{target_pct:.0f}% 유지 확률",
+                f"{bt_res['close_prob']:.1f}%",
+                f"종가수익 중앙값 {bt_res['median_ret']:+.1f}%",
+                delta_color="off"
+            )
+            st.markdown(
+                f"- **📊 가장 확률 높은 최빈 수익률 구간:** **`{bt_res['mode_low']:+.1f}% ~ {bt_res['mode_high']:+.1f}%`**\n"
+                f"- **🛡️ 기간 내 평균 하방 위험(MAE):** `{bt_res['mae_median']:+.1f}%`\n"
+                f"- **🕰️ 대표 유사 과거 시점:** `{', '.join(bt_res['similar_dates'][:3])}`"
+            )
+
+render_prob_card(
+    p_col1, "⚡ 단기 (2주 / 10영업일 내)", "10D", target_ret_short, bt_short,
+    "기술 60% · 가치 15% · 금리 25%"
+)
+render_prob_card(
+    p_col2, "🌊 중기 (3개월 / 60영업일 내)", "60D", target_ret_mid, bt_mid,
+    "기술 40% · 가치 30% · 금리 30%"
+)
+render_prob_card(
+    p_col3, "🌳 장기 (1년 / 250영업일 이상)", "250D", target_ret_long, bt_long,
+    "기술 20% · 가치 50% · 금리 30%"
+)
+
+with st.container(border=True):
+    st.markdown(
+        f"**🧭 3차원 통합 판독 요약**  \n"
+        f"- **[거시·금리 기대]** {macro_info['fed_regime_str']} | 시장 지수(`{bench_sym}`)는 **{mkt_regime}** 상태입니다.  \n"
+        f"- **[기술·차트 구조]** 현재 **{lifecycle}** 국면이며, 박스 상단 돌파선(`{fmt_p(box_high)}`) 기준 **0.25 확인선 `{fmt_p(target_025)}`** ➔ **1:1 목표가 `{fmt_p(target_100)}`**가 설정되어 있습니다.  \n"
+        f"- **[가치·기대 합당성]** {val_verdict}"
+    )
+
+st.divider()
 
 # ------------------------------------------------------------------------------
-# 7. 3대 영역 상세 분석 탭 (Technical / Fundamental / Macro)
+# 7. 3대 영역 상세 분석 탭 + 백테스트 분포 상세 탭
 # ------------------------------------------------------------------------------
-tab_tech, tab_val, tab_macro = st.tabs([
+tab_tech, tab_val, tab_macro, tab_bt = st.tabs([
     "📈 1. 기술적 분석 (강의 5단계 차트 판독)",
     "💎 2. 가치적 분석 (EPS × PER 기대감 정당성)",
-    "🌐 3. 거시적 분석 (상관계수 · 베타 · 공시/재료)"
+    "🌐 3. 거시·FedWatch 금리 기대 & 재료",
+    "🧪 4. 10년 조건부 확률 분포 상세"
 ])
 
 with tab_tech:
@@ -466,11 +659,6 @@ with tab_tech:
 
 with tab_val:
     st.subheader("💎 주가(Price) = 이익(EPS) × 기대감(PER) 완전 분해")
-    st.markdown(
-        "주가가 움직일 때 **① 실제로 기업이 돈을 잘 벌어서(EPS 상승)**인지, **② 시장 참여자들의 기대감(PER 멀티플 확장)** 때문인지 분해하고, "
-        "**그 기대감이 이익 성장 속도(PEG)에 비추어 합당한지** 검증합니다."
-    )
-
     vc1, vc2, vc3, vc4, vc5 = st.columns(5)
     vc1.metric("① 주당순이익 (EPS)", fmt_p(val_data['eps']), f"예상 성장 +{val_data['eps_growth']}%", delta_color="off")
     vc2.metric("② 시장 기대치 (PER)", f"{val_data['per']}배", f"업종대비 {per_premium_pct:+.1f}%", delta_color="inverse")
@@ -499,7 +687,6 @@ with tab_val:
         )
         fig_scatter.add_shape(type="line", x0=0, y0=0, x1=60, y1=60, line=dict(color="gray", dash="dot"))
         st.plotly_chart(fig_scatter, use_container_width=True)
-        st.caption("💡 점선(PEG≈1 균형선) **오른쪽 아래**에 위치할수록 '실적(이익 체력) 대비 기대감(PER)이 덜 반영된 합당한 저평가' 종목입니다.")
 
     with col_v2:
         fair_price_by_sec = round(val_data["eps"] * sec_avg_per, 2)
@@ -516,24 +703,38 @@ with tab_val:
         st.plotly_chart(fig_val_bar, use_container_width=True)
 
 with tab_macro:
-    st.subheader("🌐 거시환경 민감도(Beta · Correlation) 및 재료(Catalyst) 검증")
-    mc_a, mc_b, mc_c = st.columns(3)
-    mc_a.metric("시장 지수 상관계수", f"{corr_bench:+.2f}", "1에 가까울수록 지수와 동행", delta_color="off")
-    mc_b.metric("시장 대비 베타 (Beta)", f"{beta_val:.2f}", "1 이상이면 지수보다 변동성 큼", delta_color="off")
-    mc_c.metric("원/달러 환율 상관계수", f"{corr_fx:+.2f}", "+면 강달러 수혜 / -면 원화강세 수혜", delta_color="off")
-
-    norm_comp = pd.DataFrame(index=df_p.index)
-    norm_comp[f"{stock_meta['name']} ({custom_tkr})"] = (df_p["Close"] / df_p["Close"].iloc[0] - 1.0) * 100.0
+    st.subheader("🌐 FedWatch 금리 선물 기대치 & 거시 민감도(Beta · Correlation)")
+    ret_df = pd.DataFrame({"Stock": df_p["Close"].pct_change()})
     if df_bench is not None and not df_bench.empty:
-        b_slice = df_bench.reindex(df_p.index).ffill()
-        norm_comp[f"벤치마크 지수 ({bench_sym})"] = (b_slice["Close"] / b_slice["Close"].iloc[0] - 1.0) * 100.0
+        ret_df["Benchmark"] = df_bench["Close"].pct_change()
+    if df_fx is not None and not df_fx.empty:
+        ret_df["USD_KRW"] = df_fx["Close"].pct_change()
+    ret_df = ret_df.dropna()
 
-    fig_rs = px.line(
-        norm_comp,
-        title=f"[2주차 상대강도 실증] 조회 기간 내 벤치마크 지수({bench_sym}) 대비 종목 누적 수익률 비교 (%)",
-        labels={"value": "누적 수익률 (%)", "index": "날짜"}
+    corr_bench = float(ret_df["Stock"].corr(ret_df["Benchmark"])) if "Benchmark" in ret_df else 0.5
+    corr_fx = float(ret_df["Stock"].corr(ret_df["USD_KRW"])) if "USD_KRW" in ret_df else 0.0
+    cov_bm = float(ret_df["Stock"].cov(ret_df["Benchmark"])) if "Benchmark" in ret_df else 0.0
+    var_bm = float(ret_df["Benchmark"].var()) if "Benchmark" in ret_df else 1.0
+    beta_val = round(cov_bm / (var_bm + 1e-9), 2)
+
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("현재 단기 기준금리 대용(^IRX)", f"{macro_info['ffr_proxy']}%", "연준 실효금리 동행", delta_color="off")
+    mc2.metric("CME 선물 내재 금리(ZQ=F)", f"{macro_info['fed_implied']}%", f"기준금리 대비 {macro_info['fed_implied'] - macro_info['ffr_proxy']:+.2f}%p", delta_color="off")
+    mc3.metric("시장 지수 베타 (Beta)", f"{beta_val:.2f}", f"지수 상관계수 {corr_bench:+.2f}", delta_color="off")
+    mc4.metric("원/달러 환율 상관계수", f"{corr_fx:+.2f}", "+강달러 수혜 / -원화강세 수혜", delta_color="off")
+
+    st.info(f"**🏦 현재 금리 사이클 판독:** {macro_info['fed_regime_str']}")
+
+    # 10년 금리 사이클(단기 기준금리 vs 선물 내재금리 vs 미 10년물) 시계열 차트
+    fig_rate = go.Figure()
+    fig_rate.add_trace(go.Scatter(x=df_full.index, y=df_full["US3M_Policy"], name="단기 기준금리 (^IRX)", line=dict(color="#1E88E5", width=1.8)))
+    fig_rate.add_trace(go.Scatter(x=df_full.index, y=df_full["Fed_Implied"], name="CME 연방기금 선물 내재금리 (FedWatch Proxy)", line=dict(color="#00C853", width=1.8, dash="dot")))
+    fig_rate.add_trace(go.Scatter(x=df_full.index, y=df_full["US10Y"], name="미 국채 10년물 금리 (^TNX)", line=dict(color="#FB8C00", width=1.5)))
+    fig_rate.update_layout(
+        title="2016~2026년(10개년) 기준금리 · 선물 기대금리(FedWatch) · 미 10년물 추이 (%)",
+        height=380, margin=dict(t=40, b=20, l=20, r=20)
     )
-    st.plotly_chart(fig_rs, use_container_width=True)
+    st.plotly_chart(fig_rate, use_container_width=True)
 
     st.markdown("#### 📰 거래량 뒤의 이유 확인 (DART 공시 & 뉴스 촉매)")
     matched_row = df_all[df_all["ticker"] == custom_tkr]
@@ -545,3 +746,32 @@ with tab_macro:
         )
     else:
         st.info("이 종목은 오늘 선별된 Top 12 리스트 외부의 개별 조회 종목입니다. 거래량 급증 캔들 발생 시 공시 및 실적 발표 일정을 함께 점검하세요.")
+
+with tab_bt:
+    st.subheader("🧪 2016~2026년 3차원 유사 국면 백테스트 수익률 분포")
+    st.caption("현재의 [기술적 구조 + 밸류에이션 위치 + 금리 기대]와 가장 닮았던 과거 표본들의 실제 수익률 히스토그램입니다.")
+    b_c1, b_c2, b_c3 = st.columns(3)
+    with b_c1:
+        fig_h1 = px.histogram(
+            x=bt_short["max_rets"], nbins=12,
+            labels={"x": "10영업일 내 최고 수익률 (%)"},
+            title=f"⚡ 단기(2주) 최고 수익률 분포 (목표 +{target_ret_short}%)"
+        )
+        fig_h1.add_vline(x=target_ret_short, line_dash="dash", line_color="red", annotation_text=f"목표 +{target_ret_short}%")
+        st.plotly_chart(fig_h1, use_container_width=True)
+    with b_c2:
+        fig_h2 = px.histogram(
+            x=bt_mid["max_rets"], nbins=12,
+            labels={"x": "60영업일 내 최고 수익률 (%)"},
+            title=f"🌊 중기(3개월) 최고 수익률 분포 (목표 +{target_ret_mid}%)"
+        )
+        fig_h2.add_vline(x=target_ret_mid, line_dash="dash", line_color="red", annotation_text=f"목표 +{target_ret_mid}%")
+        st.plotly_chart(fig_h2, use_container_width=True)
+    with b_c3:
+        fig_h3 = px.histogram(
+            x=bt_long["max_rets"], nbins=12,
+            labels={"x": "250영업일 내 최고 수익률 (%)"},
+            title=f"🌳 장기(1년) 최고 수익률 분포 (목표 +{target_ret_long}%)"
+        )
+        fig_h3.add_vline(x=target_ret_long, line_dash="dash", line_color="red", annotation_text=f"목표 +{target_ret_long}%")
+        st.plotly_chart(fig_h3, use_container_width=True)
