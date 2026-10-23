@@ -28,15 +28,74 @@ div[data-testid="stMetricLabel"] {
 """, unsafe_allow_html=True)
 
 # ------------------------------------------------------------------------------
-# 1. 상단 컨트롤 바 & 종목 선택
+# 1. 상단 컨트롤 바 & 종목 선택 (한글 종목명 <-> 티커 양방향 검색 지원)
 # ------------------------------------------------------------------------------
 st.title("🔎 3차원 종목 딥다이브 리포트")
 st.caption("📈 기술적 분석(차트 강의 5단계 원리) · 💎 가치 분석(EPS×PER 기대감 합당성) · 🌐 거시 민감도 통합 판독기")
 
+# 유니버스 기본 정보 및 한글 종목명 사전 구축
+uni_map = {}
+name_to_tkr = {}
+for t, n, _, s, r, p, d in global_pipeline.KOSPI_UNIVERSE:
+    uni_map[t] = {"name": n, "sector": s, "roe": r, "pbr": p, "debt": d, "market": "KOSPI"}
+    name_to_tkr[n.replace(" ", "").upper()] = t
+for t, n, s, r, p, d in global_pipeline.NASDAQ_UNIVERSE:
+    uni_map[t] = {"name": n, "sector": s, "roe": r, "pbr": p, "debt": d, "market": "NASDAQ"}
+    name_to_tkr[n.replace(" ", "").upper()] = t
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_krx_name_dict():
+    """유니버스 외부의 한국 주식(KOSPI/KOSDAQ 전체)도 한글 이름으로 검색되도록 KRX 사전 로드"""
+    try:
+        df_krx = fdr.StockListing("KRX")
+        krx_dict = {}
+        for _, row in df_krx.iterrows():
+            clean_name = str(row["Name"]).replace(" ", "").upper()
+            krx_dict[clean_name] = (str(row["Code"]).strip(), str(row["Name"]).strip())
+        return krx_dict
+    except Exception:
+        return {}
+
+def resolve_search_query(query: str):
+    """입력값이 한글 종목명이든 티커든 정확한 (티커, 종목명)으로 변환"""
+    q_raw = query.strip()
+    q_clean = q_raw.replace(" ", "").upper()
+    if not q_clean:
+        return "005930", "삼성전자"
+
+    # 1) 이미 티커로 유니버스에 존재하는 경우
+    if q_clean in uni_map:
+        return q_clean, uni_map[q_clean]["name"]
+
+    # 2) 유니버스 내 종목명(정확 일치 또는 부분 포함)으로 검색한 경우
+    if q_clean in name_to_tkr:
+        tkr = name_to_tkr[q_clean]
+        return tkr, uni_map[tkr]["name"]
+    for u_name, u_tkr in name_to_tkr.items():
+        if q_clean in u_name:
+            return u_tkr, uni_map[u_tkr]["name"]
+
+    # 3) KRX 전체 상장 종목 사전에서 한글 이름 검색 (유니버스 외 한국 주식)
+    krx_dict = get_krx_name_dict()
+    if q_clean in krx_dict:
+        return krx_dict[q_clean]
+    for k_name, (k_code, orig_name) in krx_dict.items():
+        if q_clean in k_name:
+            return k_code, orig_name
+
+    # 4) 그 외(미국 개별 티커 또는 6자리 숫자 직접 입력)
+    return q_clean, q_raw.upper()
+
+default_tkr = st.session_state.get("selected_ticker", "005930")
+default_display = uni_map[default_tkr]["name"] if default_tkr in uni_map else default_tkr
+
 with st.container(border=True):
     col1, col2, col3 = st.columns([2.2, 1.8, 1])
     with col1:
-        custom_tkr = st.text_input("종목 티커 입력 (예: 005930, 000660, NVDA, LITE, SNPS)", value=st.session_state["selected_ticker"]).strip().upper()
+        user_query = st.text_input(
+            "종목명 또는 티커 검색 (예: 삼성전자, SK하이닉스, 현대차, NVDA, LITE)",
+            value=default_display
+        )
     with col2:
         period_days = st.selectbox("차트 및 분석 조회 기간", [120, 180, 250, 365], index=1, format_func=lambda x: f"최근 {x}일 (달력 기준)")
     with col3:
@@ -45,22 +104,21 @@ with st.container(border=True):
         if st.button("🏠 홈으로 이동", use_container_width=True):
             st.switch_page("app.py")
 
+custom_tkr, resolved_name = resolve_search_query(user_query)
+st.session_state["selected_ticker"] = custom_tkr
+st.session_state["selected_name"] = resolved_name
+
 is_kr = custom_tkr.isdigit() and len(custom_tkr) == 6
 market_type = "KOSPI" if is_kr else "NASDAQ"
 bench_sym = "KS11" if is_kr else "IXIC"
 
-# 한국 주식은 소수점 없이 정수 포맷, 미국 주식은 소수점 2자리 포맷 헬퍼 함수
 def fmt_p(val: float) -> str:
     return f"{val:,.0f}원" if is_kr else f"${val:,.2f}"
 
-# 유니버스 기본 정보 매칭
-uni_map = {}
-for t, n, _, s, r, p, d in global_pipeline.KOSPI_UNIVERSE:
-    uni_map[t] = {"name": n, "sector": s, "roe": r, "pbr": p, "debt": d, "market": "KOSPI"}
-for t, n, s, r, p, d in global_pipeline.NASDAQ_UNIVERSE:
-    uni_map[t] = {"name": n, "sector": s, "roe": r, "pbr": p, "debt": d, "market": "NASDAQ"}
-
-stock_meta = uni_map.get(custom_tkr, {"name": custom_tkr, "sector": "개별종목", "roe": 12.0, "pbr": 1.8, "debt": 80.0, "market": market_type})
+stock_meta = uni_map.get(
+    custom_tkr,
+    {"name": resolved_name, "sector": "개별종목", "roe": 12.0, "pbr": 1.8, "debt": 80.0, "market": market_type}
+)
 
 # ------------------------------------------------------------------------------
 # 2. 데이터 수집 및 기술적/거시적 지표 계산 함수
@@ -120,7 +178,7 @@ def load_deep_dive_data(tkr: str, mkt: str, days: int):
 
 df_full, df_bench, df_fx = load_deep_dive_data(custom_tkr, market_type, int(period_days))
 if df_full is None:
-    st.error("해당 티커의 시세 데이터를 불러올 수 없습니다. 티커명을 다시 확인해 주세요.")
+    st.error(f"'{user_query}' (변환 티커: {custom_tkr})의 시세 데이터를 찾을 수 없습니다. 정확한 종목명이나 티커를 입력해 주세요.")
     st.stop()
 
 df_p = df_full.iloc[-int(period_days):].copy()
@@ -274,7 +332,7 @@ var_bm = float(ret_df["Benchmark"].var()) if "Benchmark" in ret_df else 1.0
 beta_val = round(cov_bm / (var_bm + 1e-9), 2)
 
 # ------------------------------------------------------------------------------
-# 6. 상단 3차원 종합 밸런스 스코어카드 & 레이더 차트 출력 (가독성 개선 레이아웃)
+# 6. 상단 3차원 종합 밸런스 스코어카드 & 레이더 차트 출력
 # ------------------------------------------------------------------------------
 tech_score = min(max(int(50 + rs_stk_vs_sec * 1.5 + breakout_score * 8 + (10 if is_aligned else -5)), 20), 98)
 fund_score = min(max(int(85 - val_data["peg"] * 18 + val_data["roe"] * 0.8), 25), 98)
@@ -282,7 +340,6 @@ macro_score = min(max(int(65 + rs_sec_vs_mkt * 2.0 + (10 if "상승" in mkt_regi
 
 st.markdown(f"### 📌 {stock_meta['name']} (`{custom_tkr}`) — {stock_meta['market']} · {stock_meta['sector']}")
 
-# 4대 핵심 지표 카드 (잘림 방지 및 정확한 등락 색상 적용)
 m1, m2, m3, m4 = st.columns(4)
 with m1:
     st.metric("💰 현재 주가 (20일 등락)", fmt_p(close_now), f"{stock_ret_20d:+.2f}%")
@@ -293,7 +350,6 @@ with m3:
 with m4:
     st.metric("🌐 상대강도·거시 점수", f"{macro_score}점 / 100", f"{rs_stk_vs_sec:+.1f}%p (업종대비)")
 
-# 레이더 차트 + 깔끔한 3줄 브리핑 카드 나란히 배치
 top_c1, top_c2 = st.columns([1.15, 2.85])
 with top_c1:
     with st.container(border=True):
