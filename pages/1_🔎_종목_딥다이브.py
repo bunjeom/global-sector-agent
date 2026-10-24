@@ -14,15 +14,97 @@ st.set_page_config(page_title="3차원 종목 딥다이브", page_icon="🔎", l
 init_session()
 report, df_all = load_report()
 
-# 가독성 향상을 위한 커스텀 CSS
+# 공통 디자인 토큰(CSS 변수) 및 [data-testid] 기반 가독성·반응형 스타일
 st.markdown("""
 <style>
-div[data-testid="stMetricValue"] {
-    font-size: 1.45rem !important;
-    font-weight: 700 !important;
+:root {
+    --text-primary: #0F172A;
+    --text-secondary: #334155;
+    --text-muted: #475569;      /* 배경 대비 4.5:1 이상 충족 */
+    --color-up: #15803D;
+    --bg-up: #DCFCE7;
+    --color-down: #B91C1C;
+    --bg-down: #FEE2E2;
+    --color-neutral: #334155;
+    --bg-neutral: #F1F5F9;
+    --space-xs: 0.25rem;
+    --space-sm: 0.5rem;
+    --space-md: 1rem;
 }
-div[data-testid="stMetricLabel"] {
+
+/* 본문 16px 이상, 줄간격 1.65, 왼쪽 정렬 */
+div[data-testid="stMarkdownContainer"] p,
+div[data-testid="stMarkdownContainer"] li {
+    font-size: 1rem !important;
+    line-height: 1.65 !important;
+    color: var(--text-primary);
+    text-align: left;
+    word-break: keep-all;
+}
+
+div[data-testid="stCaptionContainer"] p {
+    font-size: 0.92rem !important;
+    line-height: 1.6 !important;
+    color: var(--text-muted) !important;
+}
+
+/* [버그 c 해결] 메트릭 라벨 및 배지 말줄임(…) 해제, 전체 문구 줄바꿈 허용 */
+div[data-testid="stMetricLabel"],
+div[data-testid="stMetricLabel"] > div,
+div[data-testid="stMetricLabel"] p {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    line-height: 1.35 !important;
     font-size: 0.88rem !important;
+    font-weight: 400 !important;
+    color: var(--text-muted) !important;
+}
+
+div[data-testid="stMetricValue"],
+div[data-testid="stMetricValue"] > div {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    font-size: 1.55rem !important;
+    font-weight: 700 !important;
+    line-height: 1.25 !important;
+    color: var(--text-primary) !important;
+}
+
+div[data-testid="stMetricDelta"],
+div[data-testid="stMetricDelta"] > div {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: unset !important;
+    line-height: 1.35 !important;
+    font-size: 0.84rem !important;
+}
+
+/* [버그 d 해결] 카드 제목과 괄호 부제 분리용 스타일 */
+.horizon-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0;
+    line-height: 1.3;
+}
+.horizon-sub {
+    font-size: 0.88rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    margin: var(--space-xs) 0 var(--space-sm) 0;
+}
+
+/* 모바일 폭(약 400px) 대응 */
+@media (max-width: 480px) {
+    div[data-testid="stMetricValue"],
+    div[data-testid="stMetricValue"] > div {
+        font-size: 1.3rem !important;
+    }
+    div[data-testid="stHorizontalBlock"] {
+        gap: var(--space-sm) !important;
+    }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -518,47 +600,53 @@ h3.metric("💎 현재 밸류에이션 (PER · PEG)", f"PER {val_data['per']}배
 h4.metric("📐 차트 생애주기 & 돌파조건", f"돌파 {breakout_score}/4 충족", f"업종대비 RS {rs_stk_vs_sec:+.1f}%p", delta_color="off")
 
 st.caption(
-    f"🧪 **백테스트 검증 모수:** `{macro_info['start_date']} ~ 오늘` (총 `{macro_info['total_days']:,}영업일`, 2019~2020 금리 인하기 및 2022~2023 금리 인상기 모두 포함) 중 "
-    f"현재의 **[기술적 구조 + 당시 밸류에이션 괴리도 + 당시 금리 기대({macro_info['fed_short_tag']})]**와 가장 일치했던 과거 유사 국면 표본 실증 결과입니다."
+    f"백테스트 검증 모수: {macro_info['start_date']} – 오늘 "
+    f"(총 {macro_info['total_days']:,}영업일, 2019–2020 금리 인하기 및 2022–2023 금리 인상기 모두 포함) 중 "
+    f"현재의 <strong>[기술적 구조 + 당시 밸류에이션 괴리도 + 당시 금리 기대({macro_info['fed_short_tag']})]</strong>와 "
+    f"가장 일치했던 과거 유사 국면 표본 실증 결과입니다.",
+    unsafe_allow_html=True
 )
 
 # 단기 / 중기 / 장기 3대 확률 카드
 p_col1, p_col2, p_col3 = st.columns(3)
 
-def render_prob_card(col_obj, title_str, horizon_label, target_pct, bt_res, weight_desc):
+def render_prob_card(col_obj, main_title, sub_period, target_pct, bt_res, weight_desc):
     with col_obj:
         with st.container(border=True):
-            st.markdown(f"#### {title_str}")
-            st.caption(f"검증 표본: 과거 유사 국면 **{bt_res['sample_cnt']}회** ({weight_desc})")
+            st.markdown(
+                f"<div class='horizon-title'>{main_title}</div>"
+                f"<div class='horizon-sub'>{sub_period} · 과거 유사 국면 {bt_res['sample_cnt']}회 ({weight_desc})</div>",
+                unsafe_allow_html=True
+            )
             c_a, c_b = st.columns(2)
             c_a.metric(
-                f"🔥 기간 내 +{target_pct:.0f}% 터치 확률",
+                f"기간 내 +{target_pct:.0f}% 터치 확률",
                 f"{bt_res['touch_prob']:.1f}%",
                 f"최고상승 중앙값 {bt_res['mfe_median']:+.1f}%",
                 delta_color="off"
             )
             c_b.metric(
-                f"🏁 만기 종가 +{target_pct:.0f}% 유지 확률",
+                f"만기 종가 +{target_pct:.0f}% 유지 확률",
                 f"{bt_res['close_prob']:.1f}%",
                 f"종가수익 중앙값 {bt_res['median_ret']:+.1f}%",
                 delta_color="off"
             )
             st.markdown(
-                f"- **📊 가장 확률 높은 최빈 수익률 구간:** **`{bt_res['mode_low']:+.1f}% ~ {bt_res['mode_high']:+.1f}%`**\n"
-                f"- **🛡️ 기간 내 평균 하방 위험(MAE):** `{bt_res['mae_median']:+.1f}%`\n"
-                f"- **🕰️ 대표 유사 과거 시점:** `{', '.join(bt_res['similar_dates'][:3])}`"
+                f"- **가장 확률 높은 최빈 수익률 구간:** `{bt_res['mode_low']:+.1f}% – {bt_res['mode_high']:+.1f}%`\n"
+                f"- **기간 내 평균 하방 위험(MAE):** `{bt_res['mae_median']:+.1f}%`\n"
+                f"- **대표 유사 과거 시점:** `{', '.join(bt_res['similar_dates'][:3])}`"
             )
 
 render_prob_card(
-    p_col1, "⚡ 단기 (2주 / 10영업일 내)", "10D", target_ret_short, bt_short,
+    p_col1, "⚡ 단기", "2주 · 10영업일 내", target_ret_short, bt_short,
     "기술 60% · 가치 15% · 금리 25%"
 )
 render_prob_card(
-    p_col2, "🌊 중기 (3개월 / 60영업일 내)", "60D", target_ret_mid, bt_mid,
+    p_col2, "🌊 중기", "3개월 · 60영업일 내", target_ret_mid, bt_mid,
     "기술 40% · 가치 30% · 금리 30%"
 )
 render_prob_card(
-    p_col3, "🌳 장기 (1년 / 250영업일 이상)", "250D", target_ret_long, bt_long,
+    p_col3, "🌳 장기", "1년 · 250영업일 이상", target_ret_long, bt_long,
     "기술 20% · 가치 50% · 금리 30%"
 )
 
@@ -566,8 +654,10 @@ with st.container(border=True):
     st.markdown(
         f"**🧭 3차원 통합 판독 요약**  \n"
         f"- **[거시·금리 기대]** {macro_info['fed_regime_str']} | 시장 지수(`{bench_sym}`)는 **{mkt_regime}** 상태입니다.  \n"
-        f"- **[기술·차트 구조]** 현재 **{lifecycle}** 국면이며, 박스 상단 돌파선(`{fmt_p(box_high)}`) 기준 **0.25 확인선 `{fmt_p(target_025)}`** ➔ **1:1 목표가 `{fmt_p(target_100)}`**가 설정되어 있습니다.  \n"
-        f"- **[가치·기대 합당성]** {val_verdict}"
+        f"- **[기술·차트 구조]** 현재 **{lifecycle}** 국면이며, 박스 상단 돌파선(`{fmt_p(box_high)}`) 기준 "
+        f"<strong>0.25 확인선 {fmt_p(target_025)}</strong> → <strong>1:1 목표가 {fmt_p(target_100)}</strong>가 설정되어 있습니다.  \n"
+        f"- **[가치·기대 합당성]** {val_verdict}",
+        unsafe_allow_html=True
     )
 
 st.divider()
