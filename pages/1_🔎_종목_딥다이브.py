@@ -93,7 +93,60 @@ div[data-testid="stMetricDelta"] > div {
     font-size: 0.88rem;
     font-weight: 500;
     color: var(--text-muted);
-    margin: var(--space-xs) 0 var(--space-sm) 0;
+    margin: var(--space-xs) 0 var(--space-md) 0;
+    line-height: 1.45;
+}
+
+/* [잘림 완벽 해결 & 화살표 제거] 확률 카드 내부 2단 지표 블록 */
+.prob-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
+    margin-bottom: 0.9rem;
+}
+.prob-item {
+    background: #F8FAFC;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    padding: 0.65rem 0.75rem;
+}
+.prob-label {
+    font-size: 0.86rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    line-height: 1.35;
+    margin-bottom: 0.25rem;
+    word-break: keep-all;
+}
+.prob-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    line-height: 1.2;
+    margin-bottom: 0.35rem;
+}
+
+/* 의미론적 색상 배지 (상승=초록, 하락=빨강, 중립=회색) */
+.semantic-badge {
+    display: inline-block;
+    font-size: 0.82rem;
+    font-weight: 600;
+    padding: 0.15rem 0.45rem;
+    border-radius: 6px;
+    line-height: 1.35;
+    word-break: keep-all;
+}
+.badge-up {
+    color: var(--color-up);
+    background-color: var(--bg-up);
+}
+.badge-down {
+    color: var(--color-down);
+    background-color: var(--bg-down);
+}
+.badge-neutral {
+    color: var(--color-neutral);
+    background-color: var(--bg-neutral);
 }
 
 /* 모바일 폭(약 400px) 대응 */
@@ -610,31 +663,45 @@ st.caption(
 # 단기 / 중기 / 장기 3대 확률 카드
 p_col1, p_col2, p_col3 = st.columns(3)
 
+def fmt_semantic_badge(val: float, prefix: str = "") -> str:
+    """값의 부호에 따라 상승(초록)/하락(빨강)/중립(회색) 배지 HTML 반환"""
+    cls = "badge-up" if val > 0 else ("badge-down" if val < 0 else "badge-neutral")
+    txt = f"{prefix} {val:+.1f}%".strip()
+    return f"<span class='semantic-badge {cls}'>{txt}</span>"
+
 def render_prob_card(col_obj, main_title, sub_period, target_pct, bt_res, weight_desc):
+    mfe_badge = fmt_semantic_badge(bt_res["mfe_median"], "최고상승 중앙값")
+    med_badge = fmt_semantic_badge(bt_res["median_ret"], "종가수익 중앙값")
+    mae_badge = fmt_semantic_badge(bt_res["mae_median"], "하방")
+
+    mode_mid = (bt_res["mode_low"] + bt_res["mode_high"]) / 2.0
+    mode_cls = "badge-up" if mode_mid > 0 else ("badge-down" if mode_mid < 0 else "badge-neutral")
+    mode_badge = f"<span class='semantic-badge {mode_cls}'>{bt_res['mode_low']:+.1f}% – {bt_res['mode_high']:+.1f}%</span>"
+    dates_badge = f"<span class='semantic-badge badge-neutral'>{', '.join(bt_res['similar_dates'][:3])}</span>"
+
     with col_obj:
         with st.container(border=True):
             st.markdown(
                 f"<div class='horizon-title'>{main_title}</div>"
-                f"<div class='horizon-sub'>{sub_period} · 과거 유사 국면 {bt_res['sample_cnt']}회 ({weight_desc})</div>",
+                f"<div class='horizon-sub'>{sub_period} · 과거 유사 국면 {bt_res['sample_cnt']}회 ({weight_desc})</div>"
+                f"<div class='prob-grid'>"
+                f"  <div class='prob-item'>"
+                f"    <div class='prob-label'>기간 내 +{target_pct:.0f}% 터치 확률</div>"
+                f"    <div class='prob-value'>{bt_res['touch_prob']:.1f}%</div>"
+                f"    {mfe_badge}"
+                f"  </div>"
+                f"  <div class='prob-item'>"
+                f"    <div class='prob-label'>만기 종가 +{target_pct:.0f}% 유지 확률</div>"
+                f"    <div class='prob-value'>{bt_res['close_prob']:.1f}%</div>"
+                f"    {med_badge}"
+                f"  </div>"
+                f"</div>"
+                f"<ul style='margin:0; padding-left:1.2rem; line-height:1.8;'>"
+                f"  <li><strong>최빈 수익률 구간:</strong> {mode_badge}</li>"
+                f"  <li><strong>기간 내 평균 하방 위험(MAE):</strong> {mae_badge}</li>"
+                f"  <li><strong>대표 유사 과거 시점:</strong> {dates_badge}</li>"
+                f"</ul>",
                 unsafe_allow_html=True
-            )
-            c_a, c_b = st.columns(2)
-            c_a.metric(
-                f"기간 내 +{target_pct:.0f}% 터치 확률",
-                f"{bt_res['touch_prob']:.1f}%",
-                f"최고상승 중앙값 {bt_res['mfe_median']:+.1f}%",
-                delta_color="off"
-            )
-            c_b.metric(
-                f"만기 종가 +{target_pct:.0f}% 유지 확률",
-                f"{bt_res['close_prob']:.1f}%",
-                f"종가수익 중앙값 {bt_res['median_ret']:+.1f}%",
-                delta_color="off"
-            )
-            st.markdown(
-                f"- **가장 확률 높은 최빈 수익률 구간:** `{bt_res['mode_low']:+.1f}% – {bt_res['mode_high']:+.1f}%`\n"
-                f"- **기간 내 평균 하방 위험(MAE):** `{bt_res['mae_median']:+.1f}%`\n"
-                f"- **대표 유사 과거 시점:** `{', '.join(bt_res['similar_dates'][:3])}`"
             )
 
 render_prob_card(
