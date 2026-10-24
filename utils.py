@@ -14,20 +14,19 @@ def load_report():
     return report, df_all
 
 def init_session():
-    # 왼쪽 사이드바 첫 번째 메뉴('app')를 '🏠 홈'으로 변경하는 공통 CSS
+    # 모든 페이지의 왼쪽 사이드바 첫 번째 메뉴('app')를 '🏠 홈 · 오늘의 소식'으로 고정
     st.markdown("""
     <style>
     [data-testid="stSidebarNavItems"] li:first-child a span {
-        visibility: hidden;
-        position: relative;
+        display: inline-block;
+        font-size: 0 !important;
     }
     [data-testid="stSidebarNavItems"] li:first-child a span::after {
-        content: "🏠 홈";
-        visibility: visible;
-        position: absolute;
-        left: 0;
-        top: 0;
+        content: "🏠 홈 · 오늘의 소식";
+        font-size: 0.92rem !important;
         font-weight: 700;
+        visibility: visible;
+        white-space: nowrap;
     }
     </style>
     """, unsafe_allow_html=True)
