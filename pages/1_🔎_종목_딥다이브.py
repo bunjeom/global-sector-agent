@@ -149,6 +149,19 @@ div[data-testid="stMetricDelta"] > div {
     background-color: var(--bg-neutral);
 }
 
+/* 초보자용 한 줄 요약 박스 스타일 */
+.easy-summary {
+    margin-top: 0.75rem;
+    padding: 0.6rem 0.75rem;
+    background-color: var(--bg-neutral);
+    border-left: 3px solid var(--text-secondary);
+    border-radius: 4px;
+    font-size: 0.9rem;
+    line-height: 1.45;
+    color: var(--text-primary);
+    word-break: keep-all;
+}
+
 /* 모바일 폭(약 400px) 대응 */
 @media (max-width: 480px) {
     div[data-testid="stMetricValue"],
@@ -669,7 +682,22 @@ def fmt_semantic_badge(val: float, prefix: str = "") -> str:
     txt = f"{prefix} {val:+.1f}%".strip()
     return f"<span class='semantic-badge {cls}'>{txt}</span>"
 
-def render_prob_card(col_obj, main_title, sub_period, target_pct, bt_res, weight_desc):
+def make_beginner_summary(period_name: str, target_pct: float, bt_res: dict) -> str:
+    """확률과 기대수익률을 조합해 초보자도 바로 이해할 수 있는 실전 한 줄 코멘트 생성"""
+    t_prob = bt_res["touch_prob"]
+    c_prob = bt_res["close_prob"]
+    med = bt_res["median_ret"]
+
+    if t_prob >= 60.0 and c_prob >= 45.0:
+        return f"🟢 <strong>긍정적:</strong> {period_name} 내 목표(+{target_pct:.0f}%) 달성 및 추세 유지 확률이 모두 높습니다."
+    elif t_prob >= 50.0 and c_prob < 40.0:
+        return f"🟡 <strong>단타·분할익절 유리:</strong> 장중 +{target_pct:.0f}% 터치 기회는 잦으나 끝까지 버티면 수익이 반납될 수 있습니다."
+    elif med > 0:
+        return f"⚪ <strong>완만한 흐름:</strong> +{target_pct:.0f}% 급등보다는 {med:+.1f}% 수준의 완만한 등락이 예상됩니다."
+    else:
+        return f"🔴 <strong>보수적 접근:</strong> 과거 유사 국면에서 상승 탄력이 약했습니다. 섣부른 진입보다 관망이 유리합니다."
+
+def render_prob_card(col_obj, main_title, sub_period, target_pct, bt_res):
     mfe_badge = fmt_semantic_badge(bt_res["mfe_median"], "최고상승 중앙값")
     med_badge = fmt_semantic_badge(bt_res["median_ret"], "종가수익 중앙값")
     mae_badge = fmt_semantic_badge(bt_res["mae_median"], "하방")
@@ -677,14 +705,13 @@ def render_prob_card(col_obj, main_title, sub_period, target_pct, bt_res, weight
     mode_mid = (bt_res["mode_low"] + bt_res["mode_high"]) / 2.0
     mode_cls = "badge-up" if mode_mid > 0 else ("badge-down" if mode_mid < 0 else "badge-neutral")
     mode_badge = f"<span class='semantic-badge {mode_cls}'>{bt_res['mode_low']:+.1f}% – {bt_res['mode_high']:+.1f}%</span>"
-    dates_badge = f"<span class='semantic-badge badge-neutral'>{', '.join(bt_res['similar_dates'][:3])}</span>"
+    easy_comment = make_beginner_summary(sub_period, target_pct, bt_res)
 
     with col_obj:
         with st.container(border=True):
             st.markdown(
-                f"<div class='horizon-title'>{main_title}</div>"
-                f"<div class='horizon-sub'>{sub_period} · 과거 유사 국면 {bt_res['sample_cnt']}회 ({weight_desc})</div>"
-                f"<div class='prob-grid'>"
+                f"<div class='horizon-title'>{main_title} <span style='font-size:0.9rem; font-weight:500; color:var(--text-muted);'>({sub_period})</span></div>"
+                f"<div class='prob-grid' style='margin-top:0.65rem;'>"
                 f"  <div class='prob-item'>"
                 f"    <div class='prob-label'>기간 내 +{target_pct:.0f}% 터치 확률</div>"
                 f"    <div class='prob-value'>{bt_res['touch_prob']:.1f}%</div>"
@@ -696,26 +723,17 @@ def render_prob_card(col_obj, main_title, sub_period, target_pct, bt_res, weight
                 f"    {med_badge}"
                 f"  </div>"
                 f"</div>"
-                f"<ul style='margin:0; padding-left:1.2rem; line-height:1.8;'>"
+                f"<ul style='margin:0; padding-left:1.2rem; line-height:1.75;'>"
                 f"  <li><strong>최빈 수익률 구간:</strong> {mode_badge}</li>"
-                f"  <li><strong>기간 내 평균 하방 위험(MAE):</strong> {mae_badge}</li>"
-                f"  <li><strong>대표 유사 과거 시점:</strong> {dates_badge}</li>"
-                f"</ul>",
+                f"  <li><strong>평균 하방 위험(MAE):</strong> {mae_badge}</li>"
+                f"</ul>"
+                f"<div class='easy-summary'>{easy_comment}</div>",
                 unsafe_allow_html=True
             )
 
-render_prob_card(
-    p_col1, "⚡ 단기", "2주 · 10영업일 내", target_ret_short, bt_short,
-    "기술 60% · 가치 15% · 금리 25%"
-)
-render_prob_card(
-    p_col2, "🌊 중기", "3개월 · 60영업일 내", target_ret_mid, bt_mid,
-    "기술 40% · 가치 30% · 금리 30%"
-)
-render_prob_card(
-    p_col3, "🌳 장기", "1년 · 250영업일 이상", target_ret_long, bt_long,
-    "기술 20% · 가치 50% · 금리 30%"
-)
+render_prob_card(p_col1, "단기", "2주 이내", target_ret_short, bt_short)
+render_prob_card(p_col2, "중기", "3개월 이내", target_ret_mid, bt_mid)
+render_prob_card(p_col3, "장기", "1년 이상", target_ret_long, bt_long)
 
 with st.container(border=True):
     st.markdown(
