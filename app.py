@@ -1,56 +1,159 @@
+import xml.etree.ElementTree as ET
+import urllib.request
+import pandas as pd
 import streamlit as st
 from utils import load_report, init_session
 
-st.set_page_config(page_title="글로벌 퀀트 리서치 터미널", page_icon="🏠", layout="wide")
+st.set_page_config(page_title="홈 | 글로벌 퀀트 터미널", page_icon="🏠", layout="wide")
 init_session()
 report, df_all = load_report()
 
-th = report.get("time_horizon", {})
-regime = report.get("macro_regime", {})
-exec_conc = report.get("executive_conclusion", {})
+# 가독성 및 메트릭 화살표 정리 CSS
+st.markdown("""
+<style>
+div[data-testid="stMetricValue"] {
+    font-size: 1.5rem !important;
+    font-weight: 700 !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
-st.title("🏠 글로벌 마켓 & Top-Down 포트폴리오 홈")
+# ------------------------------------------------------------------------------
+# 1. 상단 거시 국면 브리핑 & 5대 핵심 매크로 지표 (기존 큰 타이틀 문구 제거)
+# ------------------------------------------------------------------------------
+macro = report.get("macro", {})
+regime_desc = report.get("regime_desc", "데이터 로드 중")
+exec_summary = report.get("executive_summary", "")
+date_str = report.get("date", "-")
+next_reb = report.get("next_rebalance_date", "-")
+
 st.info(
-    f"**💡 오늘의 핵심 결론:** {exec_conc.get('headline', '')}\n\n"
-    f"- **거시 국면 진단:** `{regime.get('regime_name', '')}` — {regime.get('rationale', '')}\n"
-    f"- **분석 시계열:** 기준일 `{th.get('anchor_date_t0', '-')}` | 목표 보유 `{th.get('target_holding_period', '-')}`"
+    f"⚡ **오늘의 핵심 결론:** {exec_summary}\n\n"
+    f"- **거시 국면 진단:** {regime_desc}\n"
+    f"- **분석 시계열:** 기준일 `{date_str}` | 목표 보유 `향후 20영업일 (1개월 스윙/포지션, 차기 리밸런싱 예정일: {next_reb})`"
 )
 
-# 거시 지표 & 지수 QA 배지
-items_count = len(report.get("macros", [])) + len(report.get("qa_gates", []))
-m_cols = st.columns(items_count if items_count > 0 else 1)
-idx_c = 0
-for m in report.get("macros", []):
-    m_cols[idx_c].metric(m["지표"], m["표기"].split("|")[0].replace("[", "").strip(), m["표기"])
-    idx_c += 1
-for qa in report.get("qa_gates", []):
-    m_cols[idx_c].metric(f"{qa['market']} 지수", f"{qa['close']:,}", f"QA {qa['status']} ({qa['date']})")
-    idx_c += 1
+m1, m2, m3, m4, m5 = st.columns(5)
+m1.metric("한국 기준금리", f"{macro.get('kr_base_rate', 2.75)}%", f"{macro.get('kr_rate_source', 'ECOS')}", delta_color="off")
+m2.metric("미국채 10년물", f"{macro.get('us_10y_yield', 4.20)}%", f"{macro.get('us_rate_source', 'FRED')}", delta_color="off")
+m3.metric("원/달러 환율", f"{macro.get('usd_krw', 1380.0):,.2f}원", f"{macro.get('fx_source', 'FDR')}", delta_color="off")
+m4.metric("KOSPI 지수", f"{macro.get('kospi_close', 2600.0):,.1f}", f"{macro.get('kospi_ret20', 0.0):+.2f}% (20D)")
+m5.metric("NASDAQ 지수", f"{macro.get('nasdaq_close', 18000.0):,.2f}", f"{macro.get('nasdaq_ret20', 0.0):+.2f}% (20D)")
 
 st.divider()
+
+# ------------------------------------------------------------------------------
+# 2. 오늘 가장 영향력 있는 핵심 뉴스 & 공시 촉매 Top 5
+# ------------------------------------------------------------------------------
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_top5_impact_news(df_stocks: pd.DataFrame):
+    """
+    1) 실시간 글로벌/국내 증시 핵심 경제 헤드라인(Google News RSS)과
+    2) 오늘 에이전트가 검증한 선별 종목 중 가장 영향력 점수가 높은 핵심 공시/뉴스 촉매를 결합하여
+    가장 파급력이 큰 Top 5 뉴스를 선정합니다.
+    """
+    news_items = []
+
+    # (A) 실시간 주요 경제/시장 헤드라인 수집 시도 (최대 2건)
+    rss_url = "https://news.google.com/rss/search?q=%EC%A6%9D%EC%8B%9C+OR+%EA%B8%88%EB%A6%AC+OR+%EB%B0%98%EB%8F%84%EC%B2%B4+OR+%EC%8B%A4%EC%A0%81&hl=ko&gl=KR&ceid=KR:ko"
+    try:
+        req = urllib.request.Request(rss_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            xml_data = resp.read()
+        root = ET.fromstring(xml_data)
+        for item in root.findall("./channel/item")[:2]:
+            title = item.findtext("title", "").split(" - ")[0].strip()
+            link = item.findtext("link", "")
+            pub_date = item.findtext("pubDate", "")[:16]
+            if title:
+                news_items.append({
+                    "badge": "🌐 거시·시장 헤드라인",
+                    "target": "글로벌/국내 마켓",
+                    "headline": title,
+                    "detail": f"실시간 주요 경제·증시 핵심 이슈 ({pub_date})",
+                    "url": link
+                })
+    except Exception:
+        pass
+
+    # (B) 에이전트가 포착한 종목별 핵심 공시/재료 중 파급력(점수·모멘텀) 최상위 추출
+    if not df_stocks.empty:
+        df_sorted = df_stocks.sort_values(by="score", ascending=False)
+        for _, row in df_sorted.iterrows():
+            if len(news_items) >= 5:
+                break
+            cat_text = str(row.get("catalyst", "")).strip()
+            quote_text = str(row.get("quote", "")).strip()
+            if not cat_text or cat_text == "-":
+                continue
+            news_items.append({
+                "badge": f"🔥 핵심 촉매 ({row.get('market', '')} · {row.get('sector', '')})",
+                "target": f"{row.get('name', '')} ({row.get('ticker', '')})",
+                "headline": quote_text if (quote_text and quote_text != "-") else cat_text,
+                "detail": f"선정 사유: {cat_text} | 20일 수익률 {float(row.get('ret20', 0.0)):+.1f}% · 종합점수 {float(row.get('score', 0.0)):.1f}점",
+                "url": str(row.get("url", ""))
+            })
+
+    return news_items[:5]
+
+st.subheader("📰 오늘 가장 영향력 있는 핵심 뉴스 & 공시 Top 5")
+st.caption("글로벌 거시 헤드라인 및 에이전트가 검증한 당일 최고 파급력 공시·실적·수주 재료 상위 5선입니다.")
+
+top5_news = get_top5_impact_news(df_all)
+if top5_news:
+    with st.container(border=True):
+        for idx, n_item in enumerate(top5_news, start=1):
+            link_md = f" — [원문 보기 ↗]({n_item['url']})" if n_item.get("url") and n_item["url"].startswith("http") else ""
+            st.markdown(
+                f"**{idx}. [{n_item['badge']}] {n_item['target']}** : **{n_item['headline']}**{link_md}  \n"
+                f"<span style='color:gray; font-size:0.88rem;'>└ {n_item['detail']}</span>",
+                unsafe_allow_html=True
+            )
+else:
+    st.info("현재 표시할 주요 뉴스 데이터가 없습니다.")
+
+st.divider()
+
+# ------------------------------------------------------------------------------
+# 3. 오늘의 선별 12종목 (클릭 시 딥다이브 페이지로 즉시 이동)
+# ------------------------------------------------------------------------------
 st.subheader("🎯 오늘의 선별 12종목 (💡 표의 행을 마우스로 클릭하면 상세 차트 페이지로 이동합니다!)")
 
-market_filter = st.radio("시장 필터 선택", ["전체 (All)", "KOSPI", "NASDAQ"], horizontal=True)
+mkt_filter = st.radio("시장 필터 선택", ["전체 (All)", "KOSPI", "NASDAQ"], horizontal=True)
 df_view = df_all.copy()
-if market_filter in ["KOSPI", "NASDAQ"]:
-    df_view = df_view[df_view["market"] == market_filter].reset_index(drop=True)
+if mkt_filter != "전체 (All)" and not df_view.empty:
+    df_view = df_view[df_view["market"] == mkt_filter].reset_index(drop=True)
 
-cols_show = ["market", "role", "ticker", "name", "weight_pct", "ret_1m", "ret_3m", "roe", "pbr", "final_score", "catalyst"]
-cols_show = [c for c in cols_show if c in df_view.columns]
+if not df_view.empty:
+    display_cols = ["market", "type", "sector", "ticker", "name", "close", "ret20", "roe", "pbr", "score", "catalyst"]
+    available_cols = [c for c in display_cols if c in df_view.columns]
 
-event = st.dataframe(
-    df_view[cols_show],
-    use_container_width=True,
-    hide_index=True,
-    on_select="rerun",
-    selection_mode="single-row"
-)
+    event = st.dataframe(
+        df_view[available_cols],
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        column_config={
+            "market": "시장",
+            "type": "전략구분",
+            "sector": "섹터",
+            "ticker": "티커",
+            "name": "종목명",
+            "close": st.column_config.NumberColumn("현재가", format="%.2f"),
+            "ret20": st.column_config.NumberColumn("20일 수익률(%)", format="%+.2f%%"),
+            "roe": st.column_config.NumberColumn("ROE(%)", format="%.1f%%"),
+            "pbr": st.column_config.NumberColumn("PBR(배)", format="%.2f"),
+            "score": st.column_config.NumberColumn("종합점수", format="%.1f"),
+            "catalyst": "핵심 촉매 요약"
+        }
+    )
 
-if event.selection.rows:
-    sel_idx = event.selection.rows[0]
-    sel_row = df_view.iloc[sel_idx]
-    st.success(f"📌 선택된 종목: **{sel_row['name']} ({sel_row['ticker']})** | 투자 논리: {sel_row.get('catalyst', '')}")
-    if st.button(f"🔎 [{sel_row['name']}] 딥다이브 차트 페이지로 바로 이동하기 🚀", type="primary"):
-        st.session_state["selected_ticker"] = sel_row["ticker"]
-        st.session_state["selected_name"] = sel_row["name"]
+    if len(event.selection.rows) > 0:
+        sel_idx = event.selection.rows[0]
+        sel_row = df_view.iloc[sel_idx]
+        st.session_state["selected_ticker"] = str(sel_row["ticker"])
+        st.session_state["selected_name"] = str(sel_row["name"])
         st.switch_page("pages/1_🔎_종목_딥다이브.py")
+else:
+    st.warning("선별된 종목 데이터가 없습니다.")

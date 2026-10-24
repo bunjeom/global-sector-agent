@@ -14,6 +14,24 @@ def load_report():
     return report, df_all
 
 def init_session():
+    # 왼쪽 사이드바 첫 번째 메뉴('app')를 '🏠 홈'으로 변경하는 공통 CSS
+    st.markdown("""
+    <style>
+    [data-testid="stSidebarNavItems"] li:first-child a span {
+        visibility: hidden;
+        position: relative;
+    }
+    [data-testid="stSidebarNavItems"] li:first-child a span::after {
+        content: "🏠 홈";
+        visibility: visible;
+        position: absolute;
+        left: 0;
+        top: 0;
+        font-weight: 700;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     if "selected_ticker" not in st.session_state:
         st.session_state["selected_ticker"] = "005930"
     if "selected_name" not in st.session_state:
