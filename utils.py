@@ -14,18 +14,25 @@ def load_report():
     return report, df_all
 
 def init_session():
-    # 모든 페이지의 왼쪽 사이드바 첫 번째 메뉴('app')를 '🏠 홈 · 오늘의 소식'으로 고정
+    # 첫 번째 메뉴('app') 글자만 살짝 가리고 그 자리에 정확히 '🏠 홈 · 오늘의 소식' 덮어쓰기
     st.markdown("""
     <style>
-    [data-testid="stSidebarNavItems"] li:first-child a span {
-        display: inline-block;
-        font-size: 0 !important;
+    [data-testid="stSidebarNavItems"] > li:first-child a {
+        position: relative;
     }
-    [data-testid="stSidebarNavItems"] li:first-child a span::after {
+    [data-testid="stSidebarNavItems"] > li:first-child a span {
+        color: transparent !important;
+    }
+    [data-testid="stSidebarNavItems"] > li:first-child a::after {
         content: "🏠 홈 · 오늘의 소식";
-        font-size: 0.92rem !important;
-        font-weight: 700;
-        visibility: visible;
+        color: inherit !important;
+        font-size: 0.9rem !important;
+        font-weight: 700 !important;
+        position: absolute;
+        left: 0.75rem;
+        top: 50%;
+        transform: translateY(-50%);
+        pointer-events: none;
         white-space: nowrap;
     }
     </style>
