@@ -4,23 +4,38 @@ import pandas as pd
 import streamlit as st
 from utils import load_report, init_session
 
-st.set_page_config(page_title="홈 | 글로벌 퀀트 터미널", page_icon="🏠", layout="wide")
+st.set_page_config(page_title="오늘의 소식 | 글로벌 퀀트 터미널", page_icon="🏠", layout="wide")
 init_session()
 report, df_all = load_report()
 
-# 가독성 및 메트릭 화살표 정리 CSS
+# 가독성 및 사이드바 첫 번째 메뉴('🏠 홈 · 오늘의 소식') 표시 CSS
 st.markdown("""
 <style>
 div[data-testid="stMetricValue"] {
     font-size: 1.5rem !important;
     font-weight: 700 !important;
 }
+[data-testid="stSidebarNavItems"] li:first-child a span {
+    visibility: hidden;
+    position: relative;
+}
+[data-testid="stSidebarNavItems"] li:first-child a span::after {
+    content: "🏠 홈 (오늘의 소식)";
+    visibility: visible;
+    position: absolute;
+    left: 0;
+    top: 0;
+    font-weight: 700;
+    white-space: nowrap;
+}
 </style>
 """, unsafe_allow_html=True)
 
 # ------------------------------------------------------------------------------
-# 1. 상단 거시 국면 브리핑 & 5대 핵심 매크로 지표 (기존 큰 타이틀 문구 제거)
+# 1. 상단 타이틀('🏠 오늘의 소식') & 거시 국면 브리핑
 # ------------------------------------------------------------------------------
+st.title("🏠 오늘의 소식")
+
 macro = report.get("macro", {})
 regime_desc = report.get("regime_desc", "데이터 로드 중")
 exec_summary = report.get("executive_summary", "")
@@ -43,25 +58,20 @@ m5.metric("NASDAQ 지수", f"{macro.get('nasdaq_close', 18000.0):,.2f}", f"{macr
 st.divider()
 
 # ------------------------------------------------------------------------------
-# 2. 오늘 가장 영향력 있는 핵심 뉴스 & 공시 촉매 Top 5
+# 2. 오늘 가장 영향력 있는 핵심 뉴스 & 공시 촉매 Top 5 (KeyError 방지 안전 로직)
 # ------------------------------------------------------------------------------
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_top5_impact_news(df_stocks: pd.DataFrame):
-    """
-    1) 실시간 글로벌/국내 증시 핵심 경제 헤드라인(Google News RSS)과
-    2) 오늘 에이전트가 검증한 선별 종목 중 가장 영향력 점수가 높은 핵심 공시/뉴스 촉매를 결합하여
-    가장 파급력이 큰 Top 5 뉴스를 선정합니다.
-    """
     news_items = []
 
-    # (A) 실시간 주요 경제/시장 헤드라인 수집 시도 (최대 2건)
+    # (A) 실시간 주요 경제/시장 헤드라인 수집 (Google News RSS, 최대 3건)
     rss_url = "https://news.google.com/rss/search?q=%EC%A6%9D%EC%8B%9C+OR+%EA%B8%88%EB%A6%AC+OR+%EB%B0%98%EB%8F%84%EC%B2%B4+OR+%EC%8B%A4%EC%A0%81&hl=ko&gl=KR&ceid=KR:ko"
     try:
         req = urllib.request.Request(rss_url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=3) as resp:
             xml_data = resp.read()
         root = ET.fromstring(xml_data)
-        for item in root.findall("./channel/item")[:2]:
+        for item in root.findall("./channel/item")[:3]:
             title = item.findtext("title", "").split(" - ")[0].strip()
             link = item.findtext("link", "")
             pub_date = item.findtext("pubDate", "")[:16]
@@ -76,21 +86,30 @@ def get_top5_impact_news(df_stocks: pd.DataFrame):
     except Exception:
         pass
 
-    # (B) 에이전트가 포착한 종목별 핵심 공시/재료 중 파급력(점수·모멘텀) 최상위 추출
-    if not df_stocks.empty:
-        df_sorted = df_stocks.sort_values(by="score", ascending=False)
+    # (B) 에이전트가 포착한 종목별 핵심 공시/재료 추출 (컬럼명 자동 탐색으로 KeyError 완벽 방지)
+    if df_stocks is not None and not df_stocks.empty:
+        df_sorted = df_stocks.copy()
+        for sort_col in ["score", "total_score", "final_score", "ret20", "roe"]:
+            if sort_col in df_sorted.columns:
+                df_sorted = df_sorted.sort_values(by=sort_col, ascending=False)
+                break
+
         for _, row in df_sorted.iterrows():
             if len(news_items) >= 5:
                 break
-            cat_text = str(row.get("catalyst", "")).strip()
+            cat_text = str(row.get("catalyst", row.get("reason", ""))).strip()
             quote_text = str(row.get("quote", "")).strip()
-            if not cat_text or cat_text == "-":
+            if (not cat_text or cat_text in ["-", "nan", "None"]) and (not quote_text or quote_text in ["-", "nan", "None"]):
                 continue
+
+            headline_str = quote_text if (quote_text and quote_text not in ["-", "nan", "None"]) else cat_text
+            ret20_val = float(row.get("ret20", 0.0)) if pd.notna(row.get("ret20")) else 0.0
+
             news_items.append({
                 "badge": f"🔥 핵심 촉매 ({row.get('market', '')} · {row.get('sector', '')})",
                 "target": f"{row.get('name', '')} ({row.get('ticker', '')})",
-                "headline": quote_text if (quote_text and quote_text != "-") else cat_text,
-                "detail": f"선정 사유: {cat_text} | 20일 수익률 {float(row.get('ret20', 0.0)):+.1f}% · 종합점수 {float(row.get('score', 0.0)):.1f}점",
+                "headline": headline_str,
+                "detail": f"선정 사유: {cat_text} | 최근 20일 수익률 {ret20_val:+.1f}%",
                 "url": str(row.get("url", ""))
             })
 
@@ -125,7 +144,7 @@ if mkt_filter != "전체 (All)" and not df_view.empty:
     df_view = df_view[df_view["market"] == mkt_filter].reset_index(drop=True)
 
 if not df_view.empty:
-    display_cols = ["market", "type", "sector", "ticker", "name", "close", "ret20", "roe", "pbr", "score", "catalyst"]
+    display_cols = ["market", "type", "sector", "ticker", "name", "close", "ret20", "roe", "pbr", "score", "total_score", "catalyst"]
     available_cols = [c for c in display_cols if c in df_view.columns]
 
     event = st.dataframe(
@@ -145,6 +164,7 @@ if not df_view.empty:
             "roe": st.column_config.NumberColumn("ROE(%)", format="%.1f%%"),
             "pbr": st.column_config.NumberColumn("PBR(배)", format="%.2f"),
             "score": st.column_config.NumberColumn("종합점수", format="%.1f"),
+            "total_score": st.column_config.NumberColumn("종합점수", format="%.1f"),
             "catalyst": "핵심 촉매 요약"
         }
     )
