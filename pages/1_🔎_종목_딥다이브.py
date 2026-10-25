@@ -190,23 +190,59 @@ for t, n, s, r, p, d in global_pipeline.NASDAQ_UNIVERSE:
     uni_map[t] = {"name": n, "sector": s, "roe": r, "pbr": p, "debt": d, "market": "NASDAQ"}
     name_to_tkr[n.replace(" ", "").upper()] = t
 
+
+# 주요 미국 주식 한글 검색어 매핑 사전 (한글로 쳐도 즉시 나스닥 티커로 변환)
+US_KR_ALIAS = {
+    "엔비디아": ("NVDA", "NVIDIA"), "테슬라": ("TSLA", "Tesla"), "애플": ("AAPL", "Apple"),
+    "마이크로소프트": ("MSFT", "Microsoft"), "아마존": ("AMZN", "Amazon"), "구글": ("GOOGL", "Alphabet"),
+    "알파벳": ("GOOGL", "Alphabet"), "메타": ("META", "Meta"), "브로드컴": ("AVGO", "Broadcom"),
+    "팔란티어": ("PLTR", "Palantir"), "아이온큐": ("IONQ", "IonQ"), "코인베이스": ("COIN", "Coinbase"),
+    "마이크로스트래티지": ("MSTR", "MicroStrategy"), "스트래티지": ("MSTR", "MicroStrategy"),
+    "일라이릴리": ("LLY", "Eli Lilly"), "노보노디스크": ("NVO", "Novo Nordisk"),
+    "쿠팡": ("CPNG", "Coupang"), "오라클": ("ORCL", "Oracle"), "넷플릭스": ("NFLX", "Netflix"),
+    "에이엠디": ("AMD", "AMD"), "인텔": ("INTC", "Intel"), "마이크론": ("MU", "Micron"),
+    "퀄컴": ("QCOM", "Qualcomm"), "암홀딩스": ("ARM", "Arm Holdings"), "슈퍼마이크로": ("SMCI", "Super Micro"),
+    "버티브": ("VRT", "Vertiv"), "뉴스케일파워": ("SMR", "NuScale Power"), "오클로": ("OKLO", "Oklo"),
+    "로켓랩": ("RKLB", "Rocket Lab"), "인튜이티브서지컬": ("ISRG", "Intuitive Surgical"),
+    "시놉시스": ("SNPS", "Synopsys"), "루멘텀": ("LITE", "Lumentum"), "크라우드스트라이크": ("CRWD", "CrowdStrike"),
+    "세일즈포스": ("CRM", "Salesforce"), "서비스나우": ("NOW", "ServiceNow"), "어도비": ("ADBE", "Adobe"),
+    "아이에스엠엘": ("ASML", "ASML"), "티에스엠씨": ("TSM", "TSMC"), "암젠": ("AMGN", "Amgen"),
+    "코스트코": ("COST", "Costco"), "스타벅스": ("SBUX", "Starbucks"), "보잉": ("BA", "Boeing")
+}
+
 @st.cache_data(ttl=86400, show_spinner=False)
-def get_krx_name_dict():
+def get_global_market_dicts():
+    """KRX 전 종목 및 NASDAQ 전 종목의 (티커, 회사명) 사전 로드"""
+    krx_dict, us_dict, us_ticker_map = {}, {}, {}
     try:
         df_krx = fdr.StockListing("KRX")
-        krx_dict = {}
         for _, row in df_krx.iterrows():
-            clean_name = str(row["Name"]).replace(" ", "").upper()
-            krx_dict[clean_name] = (str(row["Code"]).strip(), str(row["Name"]).strip())
-        return krx_dict
+            c_name = str(row["Name"]).replace(" ", "").upper()
+            code = str(row["Code"]).strip()
+            krx_dict[c_name] = (code, str(row["Name"]).strip())
     except Exception:
-        return {}
+        pass
+
+    try:
+        df_ndq = fdr.StockListing("NASDAQ")
+        for _, row in df_ndq.iterrows():
+            sym = str(row["Symbol"]).strip().upper()
+            orig_name = str(row["Name"]).strip()
+            c_name = orig_name.replace(" ", "").upper()
+            us_dict[c_name] = (sym, orig_name)
+            us_ticker_map[sym] = orig_name
+    except Exception:
+        pass
+
+    return krx_dict, us_dict, us_ticker_map
 
 def resolve_search_query(query: str):
     q_raw = query.strip()
     q_clean = q_raw.replace(" ", "").upper()
     if not q_clean:
         return "005930", "삼성전자"
+
+    # 1) 유니버스 티커 또는 종목명 일치
     if q_clean in uni_map:
         return q_clean, uni_map[q_clean]["name"]
     if q_clean in name_to_tkr:
@@ -215,12 +251,30 @@ def resolve_search_query(query: str):
     for u_name, u_tkr in name_to_tkr.items():
         if q_clean in u_name:
             return u_tkr, uni_map[u_tkr]["name"]
-    krx_dict = get_krx_name_dict()
+
+    # 2) 미국 주식 한글 별칭 사전 검색 (예: '테슬라', '팔란티어')
+    for kr_alias, (us_tkr, us_name) in US_KR_ALIAS.items():
+        if q_clean == kr_alias.replace(" ", "") or q_clean in kr_alias.replace(" ", ""):
+            return us_tkr, f"{kr_alias} ({us_name})"
+
+    # 3) KRX 전체 및 NASDAQ 전체 상장 사전 검색
+    krx_dict, us_dict, us_ticker_map = get_global_market_dicts()
+
+    if q_clean in us_ticker_map:
+        return q_clean, us_ticker_map[q_clean]
+
     if q_clean in krx_dict:
         return krx_dict[q_clean]
     for k_name, (k_code, orig_name) in krx_dict.items():
         if q_clean in k_name:
             return k_code, orig_name
+
+    if q_clean in us_dict:
+        return us_dict[q_clean]
+    for u_name, (u_sym, orig_name) in us_dict.items():
+        if len(q_clean) >= 3 and q_clean in u_name:
+            return u_sym, orig_name
+
     return q_clean, q_raw.upper()
 
 default_tkr = st.session_state.get("selected_ticker", "005930")
@@ -607,10 +661,29 @@ else:
 # ------------------------------------------------------------------------------
 # 5. [가치 분석 알고리즘] 주가(P) = EPS(이익) × PER(기대감) 분해
 # ------------------------------------------------------------------------------
+# yfinance 영문 섹터를 우리 유니버스 표준 섹터와 매칭하는 사전
+YF_SECTOR_MAP = {
+    "Technology": "AI·반도체·SW",
+    "Communication Services": "플랫폼·미디어",
+    "Consumer Cyclical": "소비재·모빌리티",
+    "Consumer Defensive": "필수소비재",
+    "Healthcare": "바이오·헬스케어",
+    "Financial Services": "금융·핀테크",
+    "Industrials": "산업재·우주방산",
+    "Energy": "에너지·전력",
+    "Utilities": "전력·유틸리티",
+    "Real Estate": "리츠·부동산",
+    "Basic Materials": "소재·화학"
+}
+
 @st.cache_data(ttl=3600)
 def fetch_valuation_metrics(tkr: str, is_kr_mkt: bool, close_p: float, meta: dict):
     roe = float(meta["roe"])
     pbr = float(meta["pbr"])
+    debt = float(meta["debt"])
+    sector_str = str(meta["sector"])
+    comp_name = str(meta["name"])
+
     est_per = round(pbr / max(roe / 100.0, 0.01), 2)
     est_eps = round(close_p / max(est_per, 1.0), 2)
     fwd_eps_growth = round(max(roe * 0.85, 5.0), 1)
@@ -618,30 +691,78 @@ def fetch_valuation_metrics(tkr: str, is_kr_mkt: bool, close_p: float, meta: dic
     yf_sym = f"{tkr}.KS" if is_kr_mkt else tkr
     try:
         info = yf.Ticker(yf_sym).info
-        if info.get("trailingEps") and info.get("trailingPE"):
-            est_eps = float(info["trailingEps"])
-            est_per = float(info["trailingPE"])
-        if info.get("forwardEps") and est_eps > 0:
-            fwd_g = ((float(info["forwardEps"]) / est_eps) - 1.0) * 100.0
-            if -50 < fwd_g < 300:
-                fwd_eps_growth = round(fwd_g, 1)
+        # 한국 코스닥 종목일 경우 .KQ 재시도
+        if is_kr_mkt and (not info or info.get("regularMarketPrice") is None):
+            info = yf.Ticker(f"{tkr}.KQ").info
+
+        if info:
+            # 1) 유니버스 외부 종목의 기업명·섹터 자동 보완
+            if sector_str == "개별종목" and info.get("sector"):
+                raw_sec = str(info.get("sector"))
+                sector_str = YF_SECTOR_MAP.get(raw_sec, raw_sec)
+            if comp_name == tkr and (info.get("shortName") or info.get("longName")):
+                comp_name = str(info.get("shortName") or info.get("longName"))
+
+            # 2) 실제 ROE, PBR, 부채비율 동적 추출 (유니버스 밖 나스닥 전 종목 대응)
+            if info.get("returnOnEquity") is not None:
+                roe = round(float(info["returnOnEquity"]) * 100.0, 1)
+            if info.get("priceToBook") is not None and float(info["priceToBook"]) > 0:
+                pbr = round(float(info["priceToBook"]), 2)
+            if info.get("debtToEquity") is not None and float(info["debtToEquity"]) >= 0:
+                debt = round(float(info["debtToEquity"]), 1)
+
+            # 3) 실제 EPS, PER 및 향후 이익 성장률(Forward EPS Growth) 추출
+            if info.get("trailingEps") and info.get("trailingPE"):
+                est_eps = round(float(info["trailingEps"]), 2)
+                est_per = round(float(info["trailingPE"]), 2)
+            elif info.get("forwardPE") and float(info["forwardPE"]) > 0:
+                est_per = round(float(info["forwardPE"]), 2)
+                est_eps = round(close_p / est_per, 2)
+            else:
+                est_per = round(pbr / max(abs(roe) / 100.0, 0.02), 2)
+                est_eps = round(close_p / max(est_per, 1.0), 2)
+
+            if info.get("earningsGrowth") is not None:
+                eg = float(info["earningsGrowth"]) * 100.0
+                if -50 < eg < 300:
+                    fwd_eps_growth = round(eg, 1)
+            elif info.get("forwardEps") and est_eps > 0:
+                fwd_g = ((float(info["forwardEps"]) / est_eps) - 1.0) * 100.0
+                if -50 < fwd_g < 300:
+                    fwd_eps_growth = round(fwd_g, 1)
+            elif info.get("revenueGrowth") is not None:
+                rg = float(info["revenueGrowth"]) * 100.0
+                if -30 < rg < 250:
+                    fwd_eps_growth = round(max(rg, 5.0), 1)
     except Exception:
         pass
 
     peg = round(est_per / max(fwd_eps_growth, 1.0), 2)
     return {
+        "name": comp_name,
+        "sector": sector_str,
         "eps": est_eps,
         "per": round(est_per, 2),
         "eps_growth": fwd_eps_growth,
         "peg": peg,
         "roe": roe,
-        "pbr": pbr
+        "pbr": pbr,
+        "debt": debt
     }
 
 val_data = fetch_valuation_metrics(custom_tkr, is_kr, close_now, stock_meta)
+# 동적으로 추출된 실제 기업명·섹터·ROE·PBR·부채비율을 stock_meta 및 비교 유니버스에 즉시 동기화
+stock_meta["name"] = val_data["name"]
+stock_meta["sector"] = val_data["sector"]
+stock_meta["roe"] = val_data["roe"]
+stock_meta["pbr"] = val_data["pbr"]
+stock_meta["debt"] = val_data["debt"]
+uni_map[custom_tkr] = stock_meta
 
 sec_peers = [v for k, v in uni_map.items() if v["market"] == market_type and v["sector"] == stock_meta["sector"]]
-sec_avg_per = round(np.mean([p["pbr"] / max(p["roe"] / 100.0, 0.02) for p in sec_peers]), 2) if sec_peers else 15.0
+if not sec_peers:
+    sec_peers = [v for k, v in uni_map.items() if v["market"] == market_type]
+sec_avg_per = round(np.mean([p["pbr"] / max(abs(p["roe"]) / 100.0, 0.02) for p in sec_peers]), 2) if sec_peers else 20.0
 per_premium_pct = round((val_data["per"] / max(sec_avg_per, 1.0) - 1.0) * 100.0, 1)
 
 if val_data["eps_growth"] >= 12.0 and val_data["peg"] <= 1.2:
@@ -652,7 +773,6 @@ elif val_data["peg"] > 1.8 or per_premium_pct > 40.0:
     val_verdict = "🟡 [기대감 선반영 구간] 현재 이익 대비 높은 멀티플 부여 — 추세선/20일선 이탈 시 리스크 관리 필수"
 else:
     val_verdict = "⚪ [적정 밸류에이션 균형] 업종 평균 수준의 이익 반영도와 기대감을 유지 중"
-
 # ------------------------------------------------------------------------------
 # 6. 상단: [점수 폐기 -> 단기·중기·장기 10년 조건부 확률 & 최빈 수익률 패널]
 # ------------------------------------------------------------------------------
