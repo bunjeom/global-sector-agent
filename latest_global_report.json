@@ -1,13 +1,13 @@
 {
   "version": "2.0 (Top-Down Causal & Time-Aligned Architecture)",
-  "generated_at": "2026-10-24 10:27:48",
+  "generated_at": "2026-10-25 09:58:07",
   "time_horizon": {
     "anchor_date_t0": "2026-10-23",
     "lookback_short_20d": "2026-09-21 ~ 2026-10-23 (20영업일, 단기 모멘텀·수급 관측)",
     "lookback_mid_60d": "2026-07-24 ~ 2026-10-23 (60영업일, 중기 추세 관측)",
     "lookback_flow": "최근 5영업일 평균 거래대금 vs 직전 20영업일 평균 거래대금",
     "lookback_fundamental": "최근 확정 연간/분기자료 (TTM ROE, PBR, 부채비율)",
-    "target_holding_period": "향후 20영업일 (1개월 스윙/포지션, 차기 리밸런싱 예정일: 2026-11-21)"
+    "target_holding_period": "향후 20영업일 (1개월 스윙/포지션, 차기 리밸런싱 예정일: 2026-11-22)"
   },
   "macro_regime": {
     "regime_name": "고금리·강달러 경계 국면 (Selective Barbell Regime)",
@@ -15,7 +15,7 @@
     "cold_allocation_pct": 40,
     "per_hot_stock_weight_pct": 20.0,
     "per_cold_stock_weight_pct": 13.3,
-    "rationale": "미국채 10년물(4.96%) 및 원/달러 환율(1,323.7원)이 높은 수준을 유지하여 지수 전반의 밸류에이션 확장보다 확실한 실적 주도주(🔥주목 섹터 60% 배분)와 극단적 저평가 우량주(❄️소외 섹터 40% 배분)를 결합하는 바벨(Barbell) 전략 채택"
+    "rationale": "미국채 10년물(4.96%) 및 원/달러 환율(1,325.4원)이 높은 수준을 유지하여 지수 전반의 밸류에이션 확장보다 확실한 실적 주도주(🔥주목 섹터 60% 배분)와 극단적 저평가 우량주(❄️소외 섹터 40% 배분)를 결합하는 바벨(Barbell) 전략 채택"
   },
   "executive_conclusion": {
     "headline": "[2026-10-23 기준 | 향후 20영업일 포트폴리오 결론] 고금리·강달러 경계 국면 (Selective Barbell Regime)에 대응하여 모멘텀 주도주(60%)와 구조적 흑자 저평가주(40%) 바벨 포트폴리오 구축",
@@ -50,7 +50,7 @@
     },
     {
       "지표": "원/달러 환율",
-      "표기": "[1,323.66원 | 2026-10-23 | FDR]"
+      "표기": "[1,325.40원 | 2026-10-24 | FDR]"
     }
   ],
   "kospi_summary": {
@@ -302,8 +302,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(6.0%)·ROE(6.5%) 우위 및 '셀트리온 목표가 '상향'…‘옴리클로’가 실적 레벨 ...' 촉매 결합",
-      "quote": "셀트리온 목표가 '상향'…‘옴리클로’가 실적 레벨 바꾼다 [주가동향] - 조세일보",
+      "catalyst": "[모멘텀 추종] 20일 수익률(6.0%)·ROE(6.5%) 우위 및 '셀트리온, '역대 최대' 분기 실적 달성...유럽 ...' 촉매 결합",
+      "quote": "셀트리온, '역대 최대' 분기 실적 달성...유럽 실적 순항 - 팜뉴스",
       "qa_pass": true
     },
     {
@@ -494,8 +494,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(5.95%)·ROE(68.0%) 우위 및 'Here's Why Amgen (AMGN) Fell...' 촉매 결합",
-      "quote": "Here's Why Amgen (AMGN) Fell More Than Broader Market - Yahoo Finance",
+      "catalyst": "[모멘텀 추종] 20일 수익률(5.95%)·ROE(68.0%) 우위 및 'Amgen (AMGN) Sales Grew 10%,...' 촉매 결합",
+      "quote": "Amgen (AMGN) Sales Grew 10%, but Can Earnings Catch Up to the Price? - Yahoo Finance",
       "qa_pass": true
     },
     {
@@ -559,7 +559,7 @@
       "exit_rule": "목표 +12% / 손절 -5% (또는 PBR 리레이팅 달성)",
       "loop_info": "20일 탐색(Loop 1)",
       "catalyst": "[가치 평균회귀] 단기 조정(-6.89%)에도 ROE(30.5%)·PBR(6.8배) 저평가 매력 보유",
-      "quote": "Alphabet (GOOGL) Earnings Expected to Grow: What to Know Ahead of Next Week's Release - Yahoo Finance",
+      "quote": "Countdown to Alphabet (GOOGL) Q3 Earnings: Wall Street Forecasts for Key Metrics - Yahoo Finance",
       "qa_pass": true
     },
     {
@@ -591,7 +591,7 @@
       "exit_rule": "목표 +12% / 손절 -5% (또는 PBR 리레이팅 달성)",
       "loop_info": "20일 탐색(Loop 1)",
       "catalyst": "[가치 평균회귀] 단기 조정(1.95%)에도 ROE(135.0%)·PBR(45.0배) 저평가 매력 보유",
-      "quote": "Apple (AAPL) Price Forecast: Record High Breakout Faces Earnings Test - FXEmpire",
+      "quote": "Apple Stock Looks Ripe For A High-Risk, Short-Term Options Trade - Investor's Business Daily",
       "qa_pass": true
     }
   ]
