@@ -964,20 +964,25 @@ with tab_val:
     st.success(f"**⚖️ 밸류에이션 정당성 최종 판정:** {val_verdict}")
 
     col_v1, col_v2 = st.columns(2)
-    with col_v1:
+   with col_v1:
         peer_rows = []
         for k, v in uni_map.items():
             if v["market"] == market_type:
-                p_per = round(v["pbr"] / max(v["roe"] / 100.0, 0.02), 1)
+                roe_v = float(v["roe"]) if pd.notna(v["roe"]) else 0.0
+                pbr_v = float(v["pbr"]) if pd.notna(v["pbr"]) else 1.0
+                p_per = round(pbr_v / max(abs(roe_v) / 100.0, 0.02), 1)
                 peer_rows.append({
-                    "종목명": v["name"], "섹터": v["sector"],
-                    "이익체력(ROE_%)": v["roe"], "기대감(PER_배)": min(p_per, 80.0),
+                    "종목명": v["name"],
+                    "섹터": v["sector"],
+                    "이익체력(ROE_%)": roe_v,
+                    "기대감(PER_배)": min(max(p_per, 0.0), 80.0),
+                    "점크기": max(roe_v, 5.0),  # 음수 ROE일 때도 마커 크기는 양수(최소 5.0) 유지
                     "구분": "🎯 현재 분석 종목" if k == custom_tkr else ("동일 섹터 경쟁사" if v["sector"] == stock_meta["sector"] else "타 섹터 종목")
                 })
         df_peers = pd.DataFrame(peer_rows)
         fig_scatter = px.scatter(
             df_peers, x="이익체력(ROE_%)", y="기대감(PER_배)", color="구분", hover_name="종목명",
-            size="이익체력(ROE_%)",
+            size="점크기",
             title=f"[{market_type}] 이익 체력(X축) 대비 시장 기대감 PER(Y축) 합당성 매트릭스"
         )
         fig_scatter.add_shape(type="line", x0=0, y0=0, x1=60, y1=60, line=dict(color="gray", dash="dot"))
