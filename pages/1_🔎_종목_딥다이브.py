@@ -237,16 +237,18 @@ def get_global_market_dicts():
     except Exception:
         pass
 
-    try:
-        df_ndq = fdr.StockListing("NASDAQ")
-        for _, row in df_ndq.iterrows():
-            sym = str(row["Symbol"]).strip().upper()
-            orig_name = str(row["Name"]).strip()
-            c_name = orig_name.replace(" ", "").upper()
-            us_dict[c_name] = (sym, orig_name)
-            us_ticker_map[sym] = orig_name
-    except Exception:
-        pass
+    # NASDAQ 뿐만 아니라 NYSE(블룸에너지 BE 등) 상장 종목까지 모두 포함
+    for mkt_name in ["NASDAQ", "NYSE"]:
+        try:
+            df_us = fdr.StockListing(mkt_name)
+            for _, row in df_us.iterrows():
+                sym = str(row["Symbol"]).strip().upper()
+                orig_name = str(row["Name"]).strip()
+                c_name = orig_name.replace(" ", "").upper()
+                us_dict[c_name] = (sym, orig_name)
+                us_ticker_map[sym] = orig_name
+        except Exception:
+            pass
 
     return krx_dict, us_dict, us_ticker_map
 
@@ -256,34 +258,42 @@ def resolve_search_query(query: str):
     if not q_clean:
         return "005930", "삼성전자"
 
-    if q_clean in uni_map:
-        return q_clean, uni_map[q_clean]["name"]
-    if q_clean in name_to_tkr:
-        tkr = name_to_tkr[q_clean]
-        return tkr, uni_map[tkr]["name"]
-    for u_name, u_tkr in name_to_tkr.items():
-        if q_clean in u_name:
-            return u_tkr, uni_map[u_tkr]["name"]
-
-    for kr_alias, (us_tkr, us_name) in US_KR_ALIAS.items():
-        if q_clean == kr_alias.replace(" ", "") or q_clean in kr_alias.replace(" ", ""):
-            return us_tkr, f"{kr_alias} ({us_name})"
-
     krx_dict, us_dict, us_ticker_map = get_global_market_dicts()
 
+    # 1순위: 정확한 티커 일치 (유니버스 및 미국 전체 상장 티커) -> 'BE' 입력 시 즉시 Bloom Energy 반환!
+    if q_clean in uni_map:
+        return q_clean, uni_map[q_clean]["name"]
     if q_clean in us_ticker_map:
         return q_clean, us_ticker_map[q_clean]
 
+    # 2순위: 정확한 종목명/별칭 1:1 일치 (부분 일치가 아닌 완전 일치 우선)
+    if q_clean in name_to_tkr:
+        tkr = name_to_tkr[q_clean]
+        return tkr, uni_map[tkr]["name"]
     if q_clean in krx_dict:
         return krx_dict[q_clean]
-    for k_name, (k_code, orig_name) in krx_dict.items():
-        if q_clean in k_name:
-            return k_code, orig_name
-
     if q_clean in us_dict:
         return us_dict[q_clean]
+    for kr_alias, (us_tkr, us_name) in US_KR_ALIAS.items():
+        if q_clean == kr_alias.replace(" ", ""):
+            return us_tkr, f"{kr_alias} ({us_name})"
+
+    # 3순위: 영문 1~5글자로만 이루어진 입력(예: 'BE', 'ON', 'ARM')은 회사명 부분 검색을 타지 않고 티커 그대로 인정
+    if q_clean.isascii() and q_clean.isalpha() and len(q_clean) <= 5:
+        return q_clean, q_clean
+
+    # 4순위: 한글 종목명 또는 긴 영문 회사명(6글자 이상) 부분 포함 검색
+    for kr_alias, (us_tkr, us_name) in US_KR_ALIAS.items():
+        if len(q_clean) >= 2 and q_clean in kr_alias.replace(" ", ""):
+            return us_tkr, f"{kr_alias} ({us_name})"
+    for u_name, u_tkr in name_to_tkr.items():
+        if len(q_clean) >= 2 and q_clean in u_name:
+            return u_tkr, uni_map[u_tkr]["name"]
+    for k_name, (k_code, orig_name) in krx_dict.items():
+        if len(q_clean) >= 2 and q_clean in k_name:
+            return k_code, orig_name
     for u_name, (u_sym, orig_name) in us_dict.items():
-        if len(q_clean) >= 3 and q_clean in u_name:
+        if len(q_clean) >= 4 and q_clean in u_name:
             return u_sym, orig_name
 
     return q_clean, q_raw.upper()
