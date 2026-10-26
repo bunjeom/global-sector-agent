@@ -227,29 +227,16 @@ US_KR_ALIAS = {
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_global_market_dicts():
+    """무한 로딩 방지를 위해 무거운 미국 전 종목 다운로드 대신 KRX 사전만 경량 로드"""
     krx_dict, us_dict, us_ticker_map = {}, {}, {}
     try:
         df_krx = fdr.StockListing("KRX")
-        for _, row in df_krx.iterrows():
-            c_name = str(row["Name"]).replace(" ", "").upper()
-            code = str(row["Code"]).strip()
-            krx_dict[c_name] = (code, str(row["Name"]).strip())
+        if df_krx is not None and not df_krx.empty:
+            for code, name in zip(df_krx["Code"], df_krx["Name"]):
+                c_name = str(name).replace(" ", "").upper()
+                krx_dict[c_name] = (str(code).strip(), str(name).strip())
     except Exception:
         pass
-
-    # NASDAQ 뿐만 아니라 NYSE(블룸에너지 BE 등) 상장 종목까지 모두 포함
-    for mkt_name in ["NASDAQ", "NYSE"]:
-        try:
-            df_us = fdr.StockListing(mkt_name)
-            for _, row in df_us.iterrows():
-                sym = str(row["Symbol"]).strip().upper()
-                orig_name = str(row["Name"]).strip()
-                c_name = orig_name.replace(" ", "").upper()
-                us_dict[c_name] = (sym, orig_name)
-                us_ticker_map[sym] = orig_name
-        except Exception:
-            pass
-
     return krx_dict, us_dict, us_ticker_map
 
 def resolve_search_query(query: str):
