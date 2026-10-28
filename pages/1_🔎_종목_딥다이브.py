@@ -7,10 +7,10 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import FinanceDataReader as fdr
 import yfinance as yf
-from utils import load_report, init_session
+from utils import load_report, init_session, line_icon
 import global_pipeline
 
-st.set_page_config(page_title="3차원 종목 딥다이브", page_icon="🔎", layout="wide")
+st.set_page_config(page_title="3차원 종목 딥다이브", page_icon="⌕", layout="wide")
 init_session()
 report, df_all = load_report()
 
@@ -49,6 +49,24 @@ div[data-testid="stCaptionContainer"] p {
     color: var(--text-muted) !important;
 }
 
+/* 블랙 라인아웃 섹션 헤더 타이포그래피 */
+.main-header {
+    font-size: 1.85rem;
+    font-weight: 800;
+    color: var(--text-primary);
+    margin: 0 0 0.25rem 0;
+    display: flex;
+    align-items: center;
+}
+.sec-header {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0.35rem 0 0.5rem 0;
+    display: flex;
+    align-items: center;
+}
+
 /* 메트릭 위계: 값(크고 굵게) vs 라벨(작고 보통 굵기) 및 말줄임 해제 */
 div[data-testid="stMetricLabel"],
 div[data-testid="stMetricLabel"] > div,
@@ -82,7 +100,7 @@ div[data-testid="stMetricDelta"] > div {
     font-size: 0.84rem !important;
 }
 
-/* 중립 배지(회색 화살표 제거)가 필요한 상단/탭 요약 카드 컴포넌트 */
+/* 상단/탭 요약 카드 컴포넌트 */
 .kpi-box {
     padding: 0.2rem 0;
 }
@@ -193,9 +211,9 @@ div[data-testid="stMetricDelta"] > div {
 """, unsafe_allow_html=True)
 
 # ------------------------------------------------------------------------------
-# 1. 상단 컨트롤 바 & 종목 선택 (KRX + NASDAQ 전 종목 양방향 검색 지원)
+# 1. 상단 컨트롤 바 & 종목 선택 (블랙 라인 검색 아이콘 적용)
 # ------------------------------------------------------------------------------
-st.title("🔎 3차원 종목 딥다이브 & 10년 조건부 확률 터미널")
+st.markdown(f"<div class='main-header'>{line_icon('search', 26)}3차원 종목 딥다이브 & 10년 조건부 확률 터미널</div>", unsafe_allow_html=True)
 st.caption("기술적 구조(차트 강의 5단계) · 당시 밸류에이션(EPS×PER) · 당시 금리 기대(FedWatch·선물) 10년(2016–2026) 통합 백테스트")
 
 uni_map = {}
@@ -222,12 +240,13 @@ US_KR_ALIAS = {
     "시놉시스": ("SNPS", "Synopsys"), "루멘텀": ("LITE", "Lumentum"), "크라우드스트라이크": ("CRWD", "CrowdStrike"),
     "세일즈포스": ("CRM", "Salesforce"), "서비스나우": ("NOW", "ServiceNow"), "어도비": ("ADBE", "Adobe"),
     "아이에스엠엘": ("ASML", "ASML"), "티에스엠씨": ("TSM", "TSMC"), "암젠": ("AMGN", "Amgen"),
-    "코스트코": ("COST", "Costco"), "스타벅스": ("SBUX", "Starbucks"), "보잉": ("BA", "Boeing")
+    "코스트코": ("COST", "Costco"), "스타벅스": ("SBUX", "Starbucks"), "보잉": ("BA", "Boeing"),
+    "블룸에너지": ("BE", "Bloom Energy")
 }
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_global_market_dicts():
-    """무한 로딩 방지를 위해 무거운 미국 전 종목 다운로드 대신 KRX 사전만 경량 로드"""
+    """무한 로딩 방지를 위해 KRX 상장 사전만 경량 캐싱하고 미국 티커는 즉시 통과"""
     krx_dict, us_dict, us_ticker_map = {}, {}, {}
     try:
         df_krx = fdr.StockListing("KRX")
@@ -247,13 +266,13 @@ def resolve_search_query(query: str):
 
     krx_dict, us_dict, us_ticker_map = get_global_market_dicts()
 
-    # 1순위: 정확한 티커 일치 (유니버스 및 미국 전체 상장 티커) -> 'BE' 입력 시 즉시 Bloom Energy 반환!
+    # 1순위: 정확한 티커 일치
     if q_clean in uni_map:
         return q_clean, uni_map[q_clean]["name"]
     if q_clean in us_ticker_map:
         return q_clean, us_ticker_map[q_clean]
 
-    # 2순위: 정확한 종목명/별칭 1:1 일치 (부분 일치가 아닌 완전 일치 우선)
+    # 2순위: 정확한 종목명/별칭 1:1 완전 일치
     if q_clean in name_to_tkr:
         tkr = name_to_tkr[q_clean]
         return tkr, uni_map[tkr]["name"]
@@ -265,11 +284,11 @@ def resolve_search_query(query: str):
         if q_clean == kr_alias.replace(" ", ""):
             return us_tkr, f"{kr_alias} ({us_name})"
 
-    # 3순위: 영문 1~5글자로만 이루어진 입력(예: 'BE', 'ON', 'ARM')은 회사명 부분 검색을 타지 않고 티커 그대로 인정
+    # 3순위: 영문 1~5글자 입력(예: BE, ON, ARM, PLTR)은 부분 검색을 타지 않고 티커 그대로 인정
     if q_clean.isascii() and q_clean.isalpha() and len(q_clean) <= 5:
         return q_clean, q_clean
 
-    # 4순위: 한글 종목명 또는 긴 영문 회사명(6글자 이상) 부분 포함 검색
+    # 4순위: 한글 종목명 또는 긴 회사명 부분 검색
     for kr_alias, (us_tkr, us_name) in US_KR_ALIAS.items():
         if len(q_clean) >= 2 and q_clean in kr_alias.replace(" ", ""):
             return us_tkr, f"{kr_alias} ({us_name})"
@@ -279,9 +298,6 @@ def resolve_search_query(query: str):
     for k_name, (k_code, orig_name) in krx_dict.items():
         if len(q_clean) >= 2 and q_clean in k_name:
             return k_code, orig_name
-    for u_name, (u_sym, orig_name) in us_dict.items():
-        if len(q_clean) >= 4 and q_clean in u_name:
-            return u_sym, orig_name
 
     return q_clean, q_raw.upper()
 
@@ -292,7 +308,7 @@ with st.container(border=True):
     col1, col2, col3 = st.columns([2.2, 1.8, 1])
     with col1:
         user_query = st.text_input(
-            "종목명 또는 티커 검색 (예: 삼성전자, SK하이닉스, 팔란티어, NVDA, PLTR)",
+            "종목명 또는 티커 검색 (예: 삼성전자, SK하이닉스, 팔란티어, NVDA, BE)",
             value=default_display
         )
     with col2:
@@ -300,7 +316,7 @@ with st.container(border=True):
     with col3:
         st.write("")
         st.write("")
-        if st.button("홈으로 이동", use_container_width=True):
+        if st.button("⌂ 홈으로 이동", use_container_width=True):
             st.switch_page("app.py")
 
     with st.expander("시계열별 목표 수익률 기준(Threshold) 직접 설정하기 (기본값: 단기 +5% / 중기 +15% / 장기 +30%)"):
@@ -439,7 +455,7 @@ def load_10yr_3d_dataset(tkr: str, mkt: str):
     rate_mom = float(last_r["Rate_Mom_60d"])
     fed_mom = float(last_r["Fed_Future_Mom_20d"])
 
-    # [항목 g 해결] 금리 인하 기대 국면 표기 완벽 통일
+    # 신호등 아이콘(🟢, 🔴, 🟡)은 요청대로 유지
     if (fed_imp < ffr_now - 0.10) or (rate_mom < -0.15) or (fed_mom < -0.05):
         fed_short_tag = "금리 인하 기대 국면"
         fed_regime_str = "🟢 금리 인하 기대 국면 (선물·국채시장이 기준금리 인하 경로를 선반영 중)"
@@ -472,7 +488,7 @@ df_p = df_full.iloc[-int(period_days):].copy()
 close_now = float(df_p["Close"].iloc[-1])
 
 # ------------------------------------------------------------------------------
-# 3. [10년 3차원 조건부 확률 백테스트 엔진] (단기 10일 / 중기 60일 / 장기 250일)
+# 3. [10년 3차원 조건부 확률 백테스트 엔진]
 # ------------------------------------------------------------------------------
 def run_3d_conditional_backtest(df_10y: pd.DataFrame, horizon: int, target_pct: float, weights: tuple):
     w_tech, w_val, w_macro = weights
@@ -560,7 +576,7 @@ bt_mid = run_3d_conditional_backtest(df_full, horizon=60, target_pct=target_ret_
 bt_long = run_3d_conditional_backtest(df_full, horizon=250, target_pct=target_ret_long, weights=(0.20, 0.50, 0.30))
 
 # ------------------------------------------------------------------------------
-# 4. [차트 강의 알고리즘] 1~4주차 & 마스터클래스 판독 로직
+# 4. [차트 강의 알고리즘] 1~4주차 & 마스터클래스 판독 로직 (신호등 아이콘만 유지)
 # ------------------------------------------------------------------------------
 mkt_regime = "🟡 횡보·전환장 (돌파 대기)"
 if df_bench is not None and len(df_bench) >= 60:
@@ -642,7 +658,7 @@ else:
     rsi_comment = f"RSI {rsi_now:.1f} — 하락 추세에서는 RSI 30 아래서도 추가 하락 가능합니다. [하락 종료 4대 증거 충족: {ev_cnt}/4개]"
 
 # ------------------------------------------------------------------------------
-# 5. [가치 분석 알고리즘] 주가(P) = EPS(이익) × PER(기대감) 분해 (나스닥 전 종목 실시간 연동)
+# 5. [가치 분석 알고리즘] 주가(P) = EPS(이익) × PER(기대감) 분해
 # ------------------------------------------------------------------------------
 YF_SECTOR_MAP = {
     "Technology": "AI·반도체·SW",
@@ -752,15 +768,12 @@ else:
     val_verdict = "⚪ [적정 밸류에이션 균형] 업종 평균 수준의 이익 반영도와 기대감을 유지 중"
 
 # ------------------------------------------------------------------------------
-# 6. 상단: 핵심 지표 요약 & 단기·중기·장기 10년 조건부 확률 패널
+# 6. 상단: 핵심 지표 요약 & 단기·중기·장기 10년 조건부 확률 패널 (블랙 라인 아이콘)
 # ------------------------------------------------------------------------------
-st.markdown(f"### 📌 {stock_meta['name']} ({custom_tkr}) — {stock_meta['market']} · {stock_meta['sector']}")
-
-def fmt_semantic_badge(val: float, prefix: str = "", suffix: str = "%") -> str:
-    cls = "badge-up" if val > 0 else ("badge-down" if val < 0 else "badge-neutral")
-    sign_str = "상승" if val > 0 else ("하락" if val < 0 else "보합")
-    txt = f"{prefix} {val:+.1f}{suffix} ({sign_str})".strip()
-    return f"<span class='semantic-badge {cls}'>{txt}</span>"
+st.markdown(
+    f"<div class='sec-header'>{line_icon('bookmark', 22)}{stock_meta['name']} ({custom_tkr}) — {stock_meta['market']} · {stock_meta['sector']}</div>",
+    unsafe_allow_html=True
+)
 
 def render_top_kpi(col_obj, label_str: str, val_str: str, badge_html: str):
     with col_obj:
@@ -773,7 +786,6 @@ def render_top_kpi(col_obj, label_str: str, val_str: str, badge_html: str):
             unsafe_allow_html=True
         )
 
-# [항목 e, h, i 해결] 불필요한 회색 화살표(↑) 및 과도한 이모지 제거, 의미론적 배지 적용
 h1, h2, h3, h4 = st.columns(4)
 ret_cls = "badge-up" if stock_ret_20d > 0 else ("badge-down" if stock_ret_20d < 0 else "badge-neutral")
 rs_cls = "badge-up" if rs_stk_vs_sec > 0 else ("badge-down" if rs_stk_vs_sec < 0 else "badge-neutral")
@@ -810,6 +822,7 @@ def make_beginner_summary(period_name: str, target_pct: float, bt_res: dict) -> 
     c_prob = bt_res["close_prob"]
     med = bt_res["median_ret"]
 
+    # 신호등 아이콘(🟢, 🟡, ⚪, 🔴)은 유지
     if t_prob >= 60.0 and c_prob >= 45.0:
         return f"🟢 <strong>긍정적:</strong> {period_name} 내 목표(+{target_pct:.0f}%) 달성 및 추세 유지 확률이 모두 높습니다."
     elif t_prob >= 50.0 and c_prob < 40.0:
@@ -861,32 +874,35 @@ render_prob_card(p_col1, "단기 기대 확률", "2주 이내", target_ret_short
 render_prob_card(p_col2, "중기 기대 확률", "3개월 이내", target_ret_mid, bt_mid)
 render_prob_card(p_col3, "장기 기대 확률", "1년 이상", target_ret_long, bt_long)
 
-# [항목 j 해결] 긴 문장을 간결한 단문 리스트로 분리
 with st.container(border=True):
     st.markdown(
-        f"**🧭 3차원 통합 판독 요약**\n"
-        f"- **거시·금리 환경:** {macro_info['fed_regime_str']}\n"
-        f"- **시장 지수 상태:** 벤치마크({bench_sym}) 기준 **{mkt_regime}** 구간입니다.\n"
-        f"- **차트 생애주기:** 현재 **{lifecycle}** 상태입니다.\n"
-        f"- **주요 목표 가격:** 돌파 기준선 **{fmt_p(box_high)}** → 0.25 확인선 **{fmt_p(target_025)}** → 1:1 목표가 **{fmt_p(target_100)}**\n"
-        f"- **가치·기대 합당성:** {val_verdict}"
+        f"<div style='font-size:1.05rem; font-weight:700; margin-bottom:0.5rem; display:flex; align-items:center;'>"
+        f"{line_icon('compass', 18)}3차원 통합 판독 요약</div>"
+        f"<ul style='margin:0; padding-left:1.2rem; line-height:1.8;'>"
+        f"  <li><strong>거시·금리 환경:</strong> {macro_info['fed_regime_str']}</li>"
+        f"  <li><strong>시장 지수 상태:</strong> 벤치마크({bench_sym}) 기준 <strong>{mkt_regime}</strong> 구간입니다.</li>"
+        f"  <li><strong>차트 생애주기:</strong> 현재 <strong>{lifecycle}</strong> 상태입니다.</li>"
+        f"  <li><strong>주요 목표 가격:</strong> 돌파 기준선 <strong>{fmt_p(box_high)}</strong> → 0.25 확인선 <strong>{fmt_p(target_025)}</strong> → 1:1 목표가 <strong>{fmt_p(target_100)}</strong></li>"
+        f"  <li><strong>가치·기대 합당성:</strong> {val_verdict}</li>"
+        f"</ul>",
+        unsafe_allow_html=True
+    )
     )
 
 st.divider()
 
 # ------------------------------------------------------------------------------
-# 7. 3대 영역 상세 분석 탭 + 백테스트 분포 상세 탭
+# 7. 3대 영역 상세 분석 탭 + 백테스트 분포 상세 탭 (차트 탭 📈은 유지, 나머지는 블랙 라인 심볼)
 # ------------------------------------------------------------------------------
 tab_tech, tab_val, tab_macro, tab_bt = st.tabs([
     "📈 1. 기술적 분석 (차트 5단계 판독)",
-    "💎 2. 가치적 분석 (EPS × PER 정당성)",
-    "🌐 3. 거시·FedWatch 금리 기대",
-    "🧪 4. 10년 조건부 확률 분포"
+    "◇ 2. 가치적 분석 (EPS × PER 정당성)",
+    "⊕ 3. 거시·FedWatch 금리 기대",
+    "📊 4. 10년 조건부 확률 분포"
 ])
 
 with tab_tech:
-    st.subheader("📐 Step-by-Step 차트 강의 원리 판독표")
-    # [항목 l 해결] 4개 카드 높이를 height=215로 통일
+    st.markdown(f"<div class='sec-header'>{line_icon('layers', 22)}Step-by-Step 차트 강의 원리 판독표</div>", unsafe_allow_html=True)
     chk1, chk2, chk3, chk4 = st.columns(4)
     with chk1:
         with st.container(border=True, height=215):
@@ -923,7 +939,6 @@ with tab_tech:
                 f"- 1.0 목표가: **{fmt_p(target_100)}**"
             )
 
-    # [항목 k 해결] 한글 이탤릭(*...*) 제거 및 평문 정리
     st.info(
         f"**[3주차 시장 상태별 지표 해석]** {rsi_comment}  \n"
         f"**[DMI/ADX 추세 강도]** ADX {adx_now:.1f} (+DI {plus_di_now:.1f} / -DI {minus_di_now:.1f}) — "
@@ -966,7 +981,7 @@ with tab_tech:
     st.plotly_chart(fig_t, use_container_width=True)
 
 with tab_val:
-    st.subheader("💎 주가(Price) = 이익(EPS) × 기대감(PER) 완전 분해")
+    st.markdown(f"<div class='sec-header'>{line_icon('diamond', 22)}주가(Price) = 이익(EPS) × 기대감(PER) 완전 분해</div>", unsafe_allow_html=True)
     vc1, vc2, vc3, vc4, vc5 = st.columns(5)
     render_top_kpi(vc1, "① 주당순이익 (EPS)", fmt_p(val_data["eps"]), f"<span class='semantic-badge badge-neutral'>예상 성장 {val_data['eps_growth']:+.1f}%</span>")
     render_top_kpi(vc2, "② 시장 기대치 (PER)", f"{val_data['per']}배", f"<span class='semantic-badge badge-neutral'>업종대비 {per_premium_pct:+.1f}%</span>")
@@ -1016,7 +1031,7 @@ with tab_val:
         st.plotly_chart(fig_val_bar, use_container_width=True)
 
 with tab_macro:
-    st.subheader("🌐 FedWatch 금리 선물 기대치 & 거시 민감도(Beta · Correlation)")
+    st.markdown(f"<div class='sec-header'>{line_icon('globe', 22)}FedWatch 금리 선물 기대치 & 거시 민감도(Beta · Correlation)</div>", unsafe_allow_html=True)
     ret_df = pd.DataFrame({"Stock": df_p["Close"].pct_change()})
     if df_bench is not None and not df_bench.empty:
         ret_df["Benchmark"] = df_bench["Close"].pct_change()
@@ -1048,7 +1063,7 @@ with tab_macro:
     )
     st.plotly_chart(fig_rate, use_container_width=True)
 
-    st.markdown("#### 📰 거래량 뒤의 이유 확인 (DART 공시 & 뉴스 촉매)")
+    st.markdown(f"<div class='sec-header' style='font-size:1.1rem;'>{line_icon('news', 18)}거래량 뒤의 이유 확인 (DART 공시 & 뉴스 촉매)</div>", unsafe_allow_html=True)
     matched_row = df_all[df_all["ticker"] == custom_tkr] if not df_all.empty and "ticker" in df_all.columns else pd.DataFrame()
     if not matched_row.empty:
         r_cat = matched_row.iloc[0]
@@ -1060,7 +1075,8 @@ with tab_macro:
         st.info("이 종목은 오늘 선별된 Top 12 리스트 외부의 개별 조회 종목입니다. 거래량 급증 캔들 발생 시 공시 및 실적 발표 일정을 함께 점검하세요.")
 
 with tab_bt:
-    st.subheader("🧪 2016–2026년 3차원 유사 국면 백테스트 수익률 분포")
+    # 차트 아이콘(📊)은 요청대로 유지
+    st.subheader("📊 2016–2026년 3차원 유사 국면 백테스트 수익률 분포")
     st.caption("현재의 [기술적 구조 + 밸류에이션 위치 + 금리 기대]와 가장 닮았던 과거 표본들의 실제 수익률 히스토그램입니다.")
     b_c1, b_c2, b_c3 = st.columns(3)
     with b_c1:
