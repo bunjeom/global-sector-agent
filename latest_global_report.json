@@ -1,13 +1,13 @@
 {
   "version": "2.0 (Top-Down Causal & Time-Aligned Architecture)",
-  "generated_at": "2026-10-31 11:12:01",
+  "generated_at": "2026-11-01 11:02:49",
   "time_horizon": {
     "anchor_date_t0": "2026-10-30",
     "lookback_short_20d": "2026-09-30 ~ 2026-10-30 (20영업일, 단기 모멘텀·수급 관측)",
     "lookback_mid_60d": "2026-07-31 ~ 2026-10-30 (60영업일, 중기 추세 관측)",
     "lookback_flow": "최근 5영업일 평균 거래대금 vs 직전 20영업일 평균 거래대금",
     "lookback_fundamental": "최근 확정 연간/분기자료 (TTM ROE, PBR, 부채비율)",
-    "target_holding_period": "향후 20영업일 (1개월 스윙/포지션, 차기 리밸런싱 예정일: 2026-11-28)"
+    "target_holding_period": "향후 20영업일 (1개월 스윙/포지션, 차기 리밸런싱 예정일: 2026-11-29)"
   },
   "macro_regime": {
     "regime_name": "고금리·강달러 경계 국면 (Selective Barbell Regime)",
@@ -15,7 +15,7 @@
     "cold_allocation_pct": 40,
     "per_hot_stock_weight_pct": 20.0,
     "per_cold_stock_weight_pct": 13.3,
-    "rationale": "미국채 10년물(4.98%) 및 원/달러 환율(1,338.0원)이 높은 수준을 유지하여 지수 전반의 밸류에이션 확장보다 확실한 실적 주도주(🔥주목 섹터 60% 배분)와 극단적 저평가 우량주(❄️소외 섹터 40% 배분)를 결합하는 바벨(Barbell) 전략 채택"
+    "rationale": "미국채 10년물(4.98%) 및 원/달러 환율(1,335.1원)이 높은 수준을 유지하여 지수 전반의 밸류에이션 확장보다 확실한 실적 주도주(🔥주목 섹터 60% 배분)와 극단적 저평가 우량주(❄️소외 섹터 40% 배분)를 결합하는 바벨(Barbell) 전략 채택"
   },
   "executive_conclusion": {
     "headline": "[2026-10-30 기준 | 향후 20영업일 포트폴리오 결론] 고금리·강달러 경계 국면 (Selective Barbell Regime)에 대응하여 모멘텀 주도주(60%)와 구조적 흑자 저평가주(40%) 바벨 포트폴리오 구축",
@@ -50,7 +50,7 @@
     },
     {
       "지표": "원/달러 환율",
-      "표기": "[1,337.98원 | 2026-10-30 | FDR]"
+      "표기": "[1,335.10원 | 2026-10-31 | FDR]"
     }
   ],
   "kospi_summary": {
@@ -238,8 +238,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(-18.36%)·ROE(15.1%) 우위 및 '[실적] 한미약품, 3Q 매출 3774억…누적 1....' 촉매 결합",
-      "quote": "[실적] 한미약품, 3Q 매출 3774억…누적 1.2조 돌파 - 히트뉴스",
+      "catalyst": "[모멘텀 추종] 20일 수익률(-18.36%)·ROE(15.1%) 우위 및 '한미약품, 북경한미 리스크에 '실적 발목'…미회수 ...' 촉매 결합",
+      "quote": "한미약품, 북경한미 리스크에 '실적 발목'…미회수 채권 부담 - 비즈워치",
       "qa_pass": true
     },
     {
@@ -494,8 +494,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(-15.53%)·ROE(34.0%) 우위 및 'Meta Platforms (META) stock ...' 촉매 결합",
-      "quote": "Meta Platforms (META) stock price forecast: AI funding and dilution risks after Q3 earnings - Beinsure",
+      "catalyst": "[모멘텀 추종] 20일 수익률(-15.53%)·ROE(34.0%) 우위 및 'Meta Shares Are Down 12% Sin...' 촉매 결합",
+      "quote": "Meta Shares Are Down 12% Since Earnings. Is the Stock a Buy? - Morningstar",
       "qa_pass": true
     },
     {
@@ -527,7 +527,7 @@
       "exit_rule": "목표 +12% / 손절 -5% (또는 PBR 리레이팅 달성)",
       "loop_info": "20일 탐색(Loop 1)",
       "catalyst": "[가치 평균회귀] 단기 조정(-31.19%)에도 ROE(42.0%)·PBR(11.8배) 저평가 매력 보유",
-      "quote": "Is Lam Research (LRCX) a Buy as Wall Street Analysts Look Optimistic? - Yahoo! Finance Canada",
+      "quote": "Is Lam Research (LRCX) Undervalued As Earnings Reframe The AI Memory Bet? - Yahoo Finance",
       "qa_pass": true
     },
     {
@@ -559,7 +559,7 @@
       "exit_rule": "목표 +12% / 손절 -5% (또는 PBR 리레이팅 달성)",
       "loop_info": "20일 탐색(Loop 1)",
       "catalyst": "[가치 평균회귀] 단기 조정(-23.67%)에도 ROE(75.0%)·PBR(26.0배) 저평가 매력 보유",
-      "quote": "Market Rotation Overshadows KLA Corp’s (KLAC) Solid Results and Guidance - Yahoo Finance",
+      "quote": "5 revealing analyst questions from KLA Corporation’s Q3 earnings call - Yahoo Finance",
       "qa_pass": true
     },
     {
