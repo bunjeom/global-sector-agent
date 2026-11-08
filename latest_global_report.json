@@ -1,13 +1,13 @@
 {
   "version": "2.0 (Top-Down Causal & Time-Aligned Architecture)",
-  "generated_at": "2026-11-07 11:39:46",
+  "generated_at": "2026-11-08 11:13:54",
   "time_horizon": {
     "anchor_date_t0": "2026-11-06",
     "lookback_short_20d": "2026-10-08 ~ 2026-11-06 (20영업일, 단기 모멘텀·수급 관측)",
     "lookback_mid_60d": "2026-08-07 ~ 2026-11-06 (60영업일, 중기 추세 관측)",
     "lookback_flow": "최근 5영업일 평균 거래대금 vs 직전 20영업일 평균 거래대금",
     "lookback_fundamental": "최근 확정 연간/분기자료 (TTM ROE, PBR, 부채비율)",
-    "target_holding_period": "향후 20영업일 (1개월 스윙/포지션, 차기 리밸런싱 예정일: 2026-12-05)"
+    "target_holding_period": "향후 20영업일 (1개월 스윙/포지션, 차기 리밸런싱 예정일: 2026-12-06)"
   },
   "macro_regime": {
     "regime_name": "고금리·강달러 경계 국면 (Selective Barbell Regime)",
@@ -34,7 +34,7 @@
     {
       "market": "NASDAQ",
       "date": "2026-11-06",
-      "close": 24579.42,
+      "close": 24579.43,
       "diff_pct": 0.0,
       "status": "PASS"
     }
@@ -238,8 +238,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(-3.42%)·ROE(15.1%) 우위 및 '한미약품, 기술이전 계약금 인식 4분기로…북경한미 ...' 촉매 결합",
-      "quote": "한미약품, 기술이전 계약금 인식 4분기로…북경한미 정상화 언제쯤 - KB Think",
+      "catalyst": "[모멘텀 추종] 20일 수익률(-3.42%)·ROE(15.1%) 우위 및 '한미약품 3분기 영업이익 31% 급감…북경한미 채권...' 촉매 결합",
+      "quote": "한미약품 3분기 영업이익 31% 급감…북경한미 채권 충격 - 바이오북미디어",
       "qa_pass": true
     },
     {
@@ -430,8 +430,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(21.14%)·ROE(16.5%) 우위 및 'Regeneron Pharmaceuticals' (...' 촉매 결합",
-      "quote": "Regeneron Pharmaceuticals' (NASDAQ:REGN) Earnings Seem To Be Promising - Moomoo",
+      "catalyst": "[모멘텀 추종] 20일 수익률(21.14%)·ROE(16.5%) 우위 및 'Why Regeneron (REGN) Might b...' 촉매 결합",
+      "quote": "Why Regeneron (REGN) Might be Well Poised for a Surge - Yahoo Finance",
       "qa_pass": true
     },
     {
@@ -462,8 +462,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(10.4%)·ROE(24.5%) 우위 및 'Did Earnings Beat Just Shift...' 촉매 결합",
-      "quote": "Did Earnings Beat Just Shift Gilead Sciences' (GILD) Investment Narrative? - Yahoo Finance Singapore",
+      "catalyst": "[모멘텀 추종] 20일 수익률(10.4%)·ROE(24.5%) 우위 및 'Gilead Pays a $3.28 Annual D...' 촉매 결합",
+      "quote": "Gilead Pays a $3.28 Annual Dividend Despite Negative Earnings. Is It Safe? - Yahoo Finance",
       "qa_pass": true
     },
     {
@@ -559,7 +559,7 @@
       "exit_rule": "목표 +12% / 손절 -5% (또는 PBR 리레이팅 달성)",
       "loop_info": "20일 탐색(Loop 1)",
       "catalyst": "[가치 평균회귀] 단기 조정(-0.83%)에도 ROE(35.2%)·PBR(11.2배) 저평가 매력 보유",
-      "quote": "Microsoft Corporation (MSFT) Stock Price, News, Quote & History - Yahoo! Finance Canada",
+      "quote": "Microsoft stock jumps 4% as cloud growth drives earnings and revenue beat - CNBC",
       "qa_pass": true
     },
     {
