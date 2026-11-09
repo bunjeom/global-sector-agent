@@ -1,10 +1,10 @@
 {
   "version": "2.0 (Top-Down Causal & Time-Aligned Architecture)",
-  "generated_at": "2026-11-09 11:31:51",
+  "generated_at": "2026-11-09 21:32:34",
   "time_horizon": {
-    "anchor_date_t0": "2026-11-06",
-    "lookback_short_20d": "2026-10-08 ~ 2026-11-06 (20영업일, 단기 모멘텀·수급 관측)",
-    "lookback_mid_60d": "2026-08-07 ~ 2026-11-06 (60영업일, 중기 추세 관측)",
+    "anchor_date_t0": "2026-11-09",
+    "lookback_short_20d": "2026-10-12 ~ 2026-11-09 (20영업일, 단기 모멘텀·수급 관측)",
+    "lookback_mid_60d": "2026-08-10 ~ 2026-11-09 (60영업일, 중기 추세 관측)",
     "lookback_flow": "최근 5영업일 평균 거래대금 vs 직전 20영업일 평균 거래대금",
     "lookback_fundamental": "최근 확정 연간/분기자료 (TTM ROE, PBR, 부채비율)",
     "target_holding_period": "향후 20영업일 (1개월 스윙/포지션, 차기 리밸런싱 예정일: 2026-12-07)"
@@ -15,10 +15,10 @@
     "cold_allocation_pct": 40,
     "per_hot_stock_weight_pct": 20.0,
     "per_cold_stock_weight_pct": 13.3,
-    "rationale": "미국채 10년물(4.84%) 및 원/달러 환율(1,356.2원)이 높은 수준을 유지하여 지수 전반의 밸류에이션 확장보다 확실한 실적 주도주(🔥주목 섹터 60% 배분)와 극단적 저평가 우량주(❄️소외 섹터 40% 배분)를 결합하는 바벨(Barbell) 전략 채택"
+    "rationale": "미국채 10년물(4.84%) 및 원/달러 환율(1,346.5원)이 높은 수준을 유지하여 지수 전반의 밸류에이션 확장보다 확실한 실적 주도주(🔥주목 섹터 60% 배분)와 극단적 저평가 우량주(❄️소외 섹터 40% 배분)를 결합하는 바벨(Barbell) 전략 채택"
   },
   "executive_conclusion": {
-    "headline": "[2026-11-06 기준 | 향후 20영업일 포트폴리오 결론] 고금리·강달러 경계 국면 (Selective Barbell Regime)에 대응하여 모멘텀 주도주(60%)와 구조적 흑자 저평가주(40%) 바벨 포트폴리오 구축",
+    "headline": "[2026-11-09 기준 | 향후 20영업일 포트폴리오 결론] 고금리·강달러 경계 국면 (Selective Barbell Regime)에 대응하여 모멘텀 주도주(60%)와 구조적 흑자 저평가주(40%) 바벨 포트폴리오 구축",
     "kospi_action": "🇰🇷 KOSPI: 🔥주목 [제약·바이오] 60% (추세 추종) + ❄️소외 [금융·은행·보험] 40% (가치 평균회귀)",
     "nasdaq_action": "🇺🇸 NASDAQ: 🔥주목 [헬스케어·바이오텍] 60% (추세 추종) + ❄️소외 [빅테크·클라우드·SW] 40% (가치 평균회귀)",
     "risk_management": "주목 섹터 종목은 고점 대비 -7% 이탈 시 추세 훼손으로 손절(Stop-Loss), 소외 섹터 종목은 영업적자 전환 또는 -5% 이탈 시 편출하며 20영업일 주기로 리밸런싱 수행"
@@ -26,10 +26,10 @@
   "qa_gates": [
     {
       "market": "KOSPI",
-      "date": "2026-11-06",
-      "close": 5059.69,
-      "diff_pct": 0.0,
-      "status": "PASS"
+      "date": "2026-11-09",
+      "close": 5111.15,
+      "diff_pct": 1.8059,
+      "status": "WARN (시차 보정)"
     },
     {
       "market": "NASDAQ",
@@ -50,7 +50,7 @@
     },
     {
       "지표": "원/달러 환율",
-      "표기": "[1,356.21원 | 2026-11-09 | FDR]"
+      "표기": "[1,346.48원 | 2026-11-09 | FDR]"
     }
   ],
   "kospi_summary": {
@@ -65,58 +65,58 @@
     {
       "sector": "금융·은행·보험",
       "M": 5,
-      "rs_mean": -8.52,
-      "ret20_mean": -6.68,
-      "val_chg_mean": -13.03,
-      "turnover_mean": 82.93,
-      "breadth": 0.0,
+      "rs_mean": -8.55,
+      "ret20_mean": -6.71,
+      "val_chg_mean": -1.71,
+      "turnover_mean": 93.02,
+      "breadth": 20.0,
       "pbr_mean": 0.6,
       "roe_mean": 9.04,
       "op_sum": 5000.0,
       "profit_ratio": 100.0,
-      "hot_score": 38.0,
+      "hot_score": 44.0,
       "struct_pass": true,
       "cold_score": 86.0
     },
     {
       "sector": "반도체·IT하드웨어",
       "M": 5,
-      "rs_mean": -25.8,
-      "ret20_mean": -31.23,
-      "val_chg_mean": -2.01,
-      "turnover_mean": 116.22,
+      "rs_mean": -29.97,
+      "ret20_mean": -35.1,
+      "val_chg_mean": 5.35,
+      "turnover_mean": 125.57,
       "breadth": 0.0,
       "pbr_mean": 2.85,
       "roe_mean": 16.48,
       "op_sum": 5000.0,
       "profit_ratio": 100.0,
-      "hot_score": 46.0,
+      "hot_score": 44.0,
       "struct_pass": true,
       "cold_score": 65.0
     },
     {
       "sector": "자동차·모빌리티",
       "M": 5,
-      "rs_mean": -15.78,
-      "ret20_mean": -9.66,
-      "val_chg_mean": -5.66,
-      "turnover_mean": 104.41,
+      "rs_mean": -17.28,
+      "ret20_mean": -11.27,
+      "val_chg_mean": 3.87,
+      "turnover_mean": 114.48,
       "breadth": 0.0,
       "pbr_mean": 0.71,
       "roe_mean": 11.3,
       "op_sum": 5000.0,
       "profit_ratio": 100.0,
-      "hot_score": 44.0,
+      "hot_score": 42.0,
       "struct_pass": true,
       "cold_score": 77.0
     },
     {
       "sector": "제약·바이오",
       "M": 5,
-      "rs_mean": 10.92,
-      "ret20_mean": 14.56,
-      "val_chg_mean": 48.5,
-      "turnover_mean": 137.51,
+      "rs_mean": 9.09,
+      "ret20_mean": 12.67,
+      "val_chg_mean": 60.11,
+      "turnover_mean": 147.39,
       "breadth": 100.0,
       "pbr_mean": 3.25,
       "roe_mean": 8.88,
@@ -129,16 +129,16 @@
     {
       "sector": "화학·소재·소비재",
       "M": 5,
-      "rs_mean": -4.62,
-      "ret20_mean": -0.2,
-      "val_chg_mean": 5.72,
-      "turnover_mean": 94.51,
+      "rs_mean": -6.47,
+      "ret20_mean": -2.12,
+      "val_chg_mean": 23.58,
+      "turnover_mean": 109.07,
       "breadth": 20.0,
       "pbr_mean": 2.04,
       "roe_mean": 12.54,
       "op_sum": 5000.0,
       "profit_ratio": 100.0,
-      "hot_score": 72.0,
+      "hot_score": 70.0,
       "struct_pass": true,
       "cold_score": 52.0
     }
@@ -216,11 +216,11 @@
       "name": "한미약품",
       "corp_code": "00804480",
       "sector": "제약·바이오",
-      "ret_1m": 4.72,
-      "ret_3m": 19.88,
-      "rs_combo": 10.78,
-      "val_chg": 39.24,
-      "turnover": 112.87,
+      "ret_1m": 2.57,
+      "ret_3m": 17.42,
+      "rs_combo": 8.51,
+      "val_chg": 51.55,
+      "turnover": 121.59,
       "op_inc": 1000.0,
       "roe": 15.1,
       "pbr": 3.45,
@@ -238,8 +238,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(4.72%)·ROE(15.1%) 우위 및 '한미약품, 기술이전 계약금 인식 4분기로…북경한미 ...' 촉매 결합",
-      "quote": "한미약품, 기술이전 계약금 인식 4분기로…북경한미 정상화 언제쯤 - KB Think",
+      "catalyst": "[모멘텀 추종] 20일 수익률(2.57%)·ROE(15.1%) 우위 및 '녹십자·유한·대웅, 3분기 영업익 40% 이상 '껑...' 촉매 결합",
+      "quote": "녹십자·유한·대웅, 3분기 영업익 40% 이상 '껑충'…한미약품 홀로 뒷걸음질 - 뉴스웍스",
       "qa_pass": true
     },
     {
@@ -248,11 +248,11 @@
       "name": "셀트리온",
       "corp_code": "00421045",
       "sector": "제약·바이오",
-      "ret_1m": 17.86,
-      "ret_3m": 5.72,
-      "rs_combo": 13.0,
-      "val_chg": 105.16,
-      "turnover": 189.96,
+      "ret_1m": 17.03,
+      "ret_3m": 4.98,
+      "rs_combo": 12.21,
+      "val_chg": 120.65,
+      "turnover": 201.84,
       "op_inc": 1000.0,
       "roe": 6.5,
       "pbr": 2.4,
@@ -270,8 +270,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(17.86%)·ROE(6.5%) 우위 및 '[단독]서정진 셀트리온 회장 \"롯데바이오와 위탁생산...' 촉매 결합",
-      "quote": "[단독]서정진 셀트리온 회장 \"롯데바이오와 위탁생산 논의…계약 염두\" - 아시아경제",
+      "catalyst": "[모멘텀 추종] 20일 수익률(17.03%)·ROE(6.5%) 우위 및 '셀트리온제약, 3분기 실적 분기 최대…바이오·PFS...' 촉매 결합",
+      "quote": "셀트리온제약, 3분기 실적 분기 최대…바이오·PFS 생산 성장 - 팜이데일리",
       "qa_pass": true
     },
     {
@@ -280,11 +280,11 @@
       "name": "녹십자",
       "corp_code": "00110662",
       "sector": "제약·바이오",
-      "ret_1m": 9.3,
-      "ret_3m": 5.03,
-      "rs_combo": 7.6,
-      "val_chg": 130.55,
-      "turnover": 179.9,
+      "ret_1m": 7.82,
+      "ret_3m": 3.61,
+      "rs_combo": 6.13,
+      "val_chg": 142.12,
+      "turnover": 187.69,
       "op_inc": 1000.0,
       "roe": 4.8,
       "pbr": 1.1,
@@ -302,8 +302,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(9.3%)·ROE(4.8%) 우위 및 '[IB토마토]녹십자, 순익 14배에도 배당은 물음표...' 촉매 결합",
-      "quote": "[IB토마토]녹십자, 순익 14배에도 배당은 물음표…매각 차익 '별도 고려' - 뉴스토마토",
+      "catalyst": "[모멘텀 추종] 20일 수익률(7.82%)·ROE(4.8%) 우위 및 'GC녹십자 3분기 영업이익 492억…알리글로 덕 실...' 촉매 결합",
+      "quote": "GC녹십자 3분기 영업이익 492억…알리글로 덕 실적개선 - 팜이데일리",
       "qa_pass": true
     },
     {
@@ -312,11 +312,11 @@
       "name": "KB금융",
       "corp_code": "00688996",
       "sector": "금융·은행·보험",
-      "ret_1m": -5.92,
-      "ret_3m": -11.12,
-      "rs_combo": -8.0,
-      "val_chg": 6.39,
-      "turnover": 97.29,
+      "ret_1m": -5.98,
+      "ret_3m": -11.18,
+      "rs_combo": -8.06,
+      "val_chg": 18.67,
+      "turnover": 107.62,
       "op_inc": 1000.0,
       "roe": 9.2,
       "pbr": 0.58,
@@ -334,7 +334,7 @@
       "strategy_type": "가치 평균회귀 (Mean-Reversion)",
       "exit_rule": "목표 +12% / 손절 -5% (또는 PBR 리레이팅 달성)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[가치 평균회귀] 단기 조정(-5.92%)에도 ROE(9.2%)·PBR(0.58배) 저평가 매력 보유",
+      "catalyst": "[가치 평균회귀] 단기 조정(-5.98%)에도 ROE(9.2%)·PBR(0.58배) 저평가 매력 보유",
       "quote": "[KB금융] [발행조건확정]증권신고서(채무증권)",
       "qa_pass": true
     },
@@ -344,29 +344,29 @@
       "name": "하나금융지주",
       "corp_code": "00547583",
       "sector": "금융·은행·보험",
-      "ret_1m": -4.69,
-      "ret_3m": -9.66,
-      "rs_combo": -6.68,
-      "val_chg": -26.4,
-      "turnover": 74.7,
+      "ret_1m": -4.53,
+      "ret_3m": -9.51,
+      "rs_combo": -6.52,
+      "val_chg": -18.4,
+      "turnover": 82.33,
       "op_inc": 1000.0,
       "roe": 9.0,
       "pbr": 0.46,
       "debt_ratio": 190.0,
-      "mom_p": 60.0,
+      "mom_p": 56.00000000000001,
       "flow_p": 12.0,
       "qual_p": 48.0,
       "val_p": 100.0,
-      "score_hot": 51.6,
-      "oversold_p": 52.0,
-      "score_cold": 63.2,
+      "score_hot": 50.0,
+      "oversold_p": 48.0,
+      "score_cold": 62.6,
       "role": "❄️ 소외 (금융·은행·보험)",
-      "final_score": 63.2,
+      "final_score": 62.6,
       "weight_pct": 13.3,
       "strategy_type": "가치 평균회귀 (Mean-Reversion)",
       "exit_rule": "목표 +12% / 손절 -5% (또는 PBR 리레이팅 달성)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[가치 평균회귀] 단기 조정(-4.69%)에도 ROE(9.0%)·PBR(0.46배) 저평가 매력 보유",
+      "catalyst": "[가치 평균회귀] 단기 조정(-4.53%)에도 ROE(9.0%)·PBR(0.46배) 저평가 매력 보유",
       "quote": "[하나금융지주] [기재정정]주식소각결정              ",
       "qa_pass": true
     },
@@ -376,29 +376,29 @@
       "name": "삼성화재",
       "corp_code": "00139214",
       "sector": "금융·은행·보험",
-      "ret_1m": -0.98,
-      "ret_3m": -3.33,
-      "rs_combo": -1.92,
-      "val_chg": 7.45,
-      "turnover": 97.49,
+      "ret_1m": 0.16,
+      "ret_3m": -2.22,
+      "rs_combo": -0.79,
+      "val_chg": 25.48,
+      "turnover": 112.59,
       "op_inc": 1000.0,
       "roe": 11.5,
       "pbr": 0.98,
       "debt_ratio": 160.0,
       "mom_p": 76.0,
-      "flow_p": 72.0,
+      "flow_p": 76.0,
       "qual_p": 68.0,
       "val_p": 56.00000000000001,
-      "score_hot": 70.4,
-      "oversold_p": 36.0,
-      "score_cold": 59.4,
+      "score_hot": 71.4,
+      "oversold_p": 28.000000000000004,
+      "score_cold": 58.6,
       "role": "❄️ 소외 (금융·은행·보험)",
-      "final_score": 59.4,
+      "final_score": 58.6,
       "weight_pct": 13.3,
       "strategy_type": "가치 평균회귀 (Mean-Reversion)",
       "exit_rule": "목표 +12% / 손절 -5% (또는 PBR 리레이팅 달성)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[가치 평균회귀] 단기 조정(-0.98%)에도 ROE(11.5%)·PBR(0.98배) 저평가 매력 보유",
+      "catalyst": "[가치 평균회귀] 단기 조정(0.16%)에도 ROE(11.5%)·PBR(0.98배) 저평가 매력 보유",
       "quote": "[삼성화재해상보험] 기업설명회(IR)개최(안내공시)              ",
       "qa_pass": true
     },
@@ -462,8 +462,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(10.4%)·ROE(24.5%) 우위 및 'Gilead Sciences, Inc. (GIS.F...' 촉매 결합",
-      "quote": "Gilead Sciences, Inc. (GIS.F) Stock Price, News, Quote & History - Yahoo! Finance Canada",
+      "catalyst": "[모멘텀 추종] 20일 수익률(10.4%)·ROE(24.5%) 우위 및 'Gilead Sciences, Inc. (GILD)...' 촉매 결합",
+      "quote": "Gilead Sciences, Inc. (GILD) Stock Price, News, Quote & History - Yahoo! Finance Canada",
       "qa_pass": true
     },
     {
@@ -591,8 +591,261 @@
       "exit_rule": "목표 +12% / 손절 -5% (또는 PBR 리레이팅 달성)",
       "loop_info": "20일 탐색(Loop 1)",
       "catalyst": "[가치 평균회귀] 단기 조정(1.7%)에도 ROE(135.0%)·PBR(45.0배) 저평가 매력 보유",
-      "quote": "Apple Posts Fiscal Q4 Beat On Strong iPhone, Services Sales - Investor's Business Daily",
+      "quote": "Apple cut tax bill by $2.7B by moving some earnings to Singapore (AAPL:NASDAQ) - Seeking Alpha",
       "qa_pass": true
     }
-  ]
+  ],
+  "basket_revisions": {
+    "SMH": {
+      "n_used": 5,
+      "n_total": 5,
+      "tickers_used": [
+        "AMD",
+        "AVGO",
+        "MU",
+        "NVDA",
+        "TSM"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": 0.01479,
+      "rev_90d": 0.15084,
+      "reason": null
+    },
+    "IGV": {
+      "n_used": 5,
+      "n_total": 5,
+      "tickers_used": [
+        "CRM",
+        "CRWD",
+        "MSFT",
+        "NOW",
+        "PANW"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": -0.00034,
+      "rev_90d": -0.01048,
+      "reason": null
+    },
+    "GRID": {
+      "n_used": 5,
+      "n_total": 5,
+      "tickers_used": [
+        "CEG",
+        "ETN",
+        "GEV",
+        "PWR",
+        "VST"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": 0.0277,
+      "rev_90d": 0.02152,
+      "reason": null
+    },
+    "ITA": {
+      "n_used": 5,
+      "n_total": 5,
+      "tickers_used": [
+        "AXON",
+        "GE",
+        "LMT",
+        "NOC",
+        "RTX"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": 0.01909,
+      "rev_90d": 0.01912,
+      "reason": null
+    },
+    "IBB": {
+      "n_used": 4,
+      "n_total": 4,
+      "tickers_used": [
+        "AMGN",
+        "GILD",
+        "REGN",
+        "VRTX"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": 0.02113,
+      "rev_90d": 0.02986,
+      "reason": null
+    },
+    "XLK": {
+      "n_used": 3,
+      "n_total": 3,
+      "tickers_used": [
+        "AAPL",
+        "MSFT",
+        "NVDA"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": 0.01479,
+      "rev_90d": 0.03074,
+      "reason": null
+    },
+    "XLC": {
+      "n_used": 3,
+      "n_total": 3,
+      "tickers_used": [
+        "GOOGL",
+        "META",
+        "NFLX"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": -0.00165,
+      "rev_90d": 0.00071,
+      "reason": null
+    },
+    "XLF": {
+      "n_used": 4,
+      "n_total": 4,
+      "tickers_used": [
+        "BRK-B",
+        "GS",
+        "JPM",
+        "V"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": 0.01624,
+      "rev_90d": 0.01828,
+      "reason": null
+    },
+    "XLV": {
+      "n_used": 4,
+      "n_total": 4,
+      "tickers_used": [
+        "ABBV",
+        "JNJ",
+        "LLY",
+        "UNH"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": 0.01176,
+      "rev_90d": 0.01519,
+      "reason": null
+    },
+    "XLY": {
+      "n_used": 3,
+      "n_total": 3,
+      "tickers_used": [
+        "AMZN",
+        "HD",
+        "TSLA"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": -0.00257,
+      "rev_90d": -0.01037,
+      "reason": null
+    },
+    "XLI": {
+      "n_used": 3,
+      "n_total": 3,
+      "tickers_used": [
+        "CAT",
+        "HON",
+        "UNP"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": -0.00374,
+      "rev_90d": 0.00892,
+      "reason": null
+    },
+    "XLE": {
+      "n_used": 3,
+      "n_total": 3,
+      "tickers_used": [
+        "CVX",
+        "EOG",
+        "XOM"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": 0.08595,
+      "rev_90d": 0.18167,
+      "reason": null
+    },
+    "XLU": {
+      "n_used": 3,
+      "n_total": 3,
+      "tickers_used": [
+        "DUK",
+        "NEE",
+        "SO"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": -0.00026,
+      "rev_90d": 0.00073,
+      "reason": null
+    },
+    "XLB": {
+      "n_used": 3,
+      "n_total": 3,
+      "tickers_used": [
+        "FCX",
+        "LIN",
+        "SHW"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": -0.01794,
+      "rev_90d": -0.00862,
+      "reason": null
+    },
+    "XLP": {
+      "n_used": 3,
+      "n_total": 3,
+      "tickers_used": [
+        "COST",
+        "PG",
+        "WMT"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": 0.0002,
+      "rev_90d": -0.00136,
+      "reason": null
+    },
+    "XLRE": {
+      "n_used": 3,
+      "n_total": 3,
+      "tickers_used": [
+        "AMT",
+        "EQIX",
+        "PLD"
+      ],
+      "period": "+1y",
+      "as_of": "2026-11-09",
+      "source": "yfinance eps_trend (애널리스트 컨센서스)",
+      "rev_30d": 0.08075,
+      "rev_90d": 0.05878,
+      "reason": null
+    }
+  }
 }
