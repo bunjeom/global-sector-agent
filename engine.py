@@ -4761,7 +4761,9 @@ def run_consistency_checks(dashboard_data: Dict[str, Any]) -> List[Dict[str, str
                 "target": label_id,
                 "detail": f"{label_id} 항목이 SAMPLE_DATA(예시 데이터)를 사용 중입니다."
             })
-        if not rec.get("as_of"):
+        # 예시 데이터는 규칙상 as_of=None이므로 '기준일 없음'으로 중복 경고하지 않는다
+        is_sample_rec = rec.get("is_sample") or "SAMPLE_DATA" in str(rec.get("source", ""))
+        if not rec.get("as_of") and not is_sample_rec:
             violations.append({
                 "type": "MISSING_AS_OF",
                 "target": label_id,

@@ -143,7 +143,16 @@ else:
 leaders_txt = ", ".join(
     f"{x['basket']}({short_name(x['name'])})" for x in ev.get("leading_top3", [])
 ) or "해당 없음"
-release_txt = us_gate["release_condition"] if top_level > 0 else "해당 없음"
+# 해제 조건은 더 나쁜(높은) 게이트 쪽을 보여준다. 같은 단계면 조건이 다를 때 둘 다 표시.
+if top_level == 0:
+    release_txt = "해당 없음"
+elif us_gate["level"] == kr_gate["level"]:
+    release_txt = (us_gate["release_condition"] if us_gate["release_condition"] == kr_gate["release_condition"]
+                   else f"미국: {us_gate['release_condition']} / 한국: {kr_gate['release_condition']}")
+elif us_gate["level"] > kr_gate["level"]:
+    release_txt = f"미국: {us_gate['release_condition']}"
+else:
+    release_txt = f"한국: {kr_gate['release_condition']}"
 
 st.markdown(f"""
 <div style="border-left:6px solid {GATE_COLOR[top_level]};background:#f8fafc;padding:14px 18px;border-radius:6px;margin-bottom:14px;">
@@ -327,7 +336,7 @@ else:
             active_coords, structural_coords, rb["meta"],
             "일봉" if clock_choice == "daily" else "주봉", highlight, show_all_tails,
         )
-        st.plotly_chart(rrg_fig, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(rrg_fig, width="stretch", config={"displayModeBar": False})
         hidden_txt = f"라벨 생략 {hidden_cnt}개(마우스를 올리면 표시) · " if hidden_cnt > 0 else ""
         st.caption(f"{hidden_txt}기준일 {rb['as_of']} · 출처 yfinance 종가 · 축은 각 ETF 자체 변동성(σ)으로 정규화")
 
@@ -559,10 +568,32 @@ for mk, g in (("US", us_gate), ("KR", kr_gate)):
     elif h_list[-1]["level"] != g["level"]:
         violations.append({"type": "GATE_HISTORY_MISMATCH",
                            "detail": f"{mk} 게이트: 오늘 판정 G{g['level']} ≠ 과거 재계산 마지막 날 G{h_list[-1]['level']}"})
-v_count = len(violations)
-with st.expander(f"데이터 점검: {v_count}건" if v_count else "데이터 점검: 이상 없음", expanded=False):
-    if v_count == 0:
+# 예시 데이터 사용은 '알고 있는 미연결 항목'이라 진짜 문제(데이터 없음·오래됨·불일치)와 따로 센다.
+V_TYPE_NAME = {
+    "DATA_MISSING": "데이터 없음", "STALE_DATA": "오래된 데이터", "MISSING_AS_OF": "기준일 없음",
+    "DIRECTION_MISMATCH": "방향 불일치", "BADGE_STATE_MISMATCH": "배지-판정 불일치",
+    "CRYPTO_EPS_BADGE": "크립토 EPS 배지", "GATE_HISTORY_MISMATCH": "게이트 기록 불일치",
+    "SAMPLE_DATA_USED": "예시 데이터 사용",
+}
+problems = [v for v in violations if v.get("type") != "SAMPLE_DATA_USED"]
+samples = [v for v in violations if v.get("type") == "SAMPLE_DATA_USED"]
+if problems:
+    v_title = f"데이터 점검: 확인 필요 {len(problems)}건 · 예시 데이터 {len(samples)}건"
+elif samples:
+    v_title = f"데이터 점검: 문제 없음 · 예시 데이터 {len(samples)}건"
+else:
+    v_title = "데이터 점검: 이상 없음"
+with st.expander(v_title, expanded=False):
+    if not violations:
         st.success("이상 없음 — 방향성, 기준일, 신선도, 배지-상태 정합성이 모두 통과되었습니다.")
     else:
-        st.caption("기준일 누락, 신선도 초과, 예시 데이터 사용 내역입니다.")
-        st.dataframe(pd.DataFrame(violations), use_container_width=True, hide_index=True)
+        summary = pd.DataFrame(violations).assign(
+            종류=lambda d: d["type"].map(V_TYPE_NAME).fillna(d["type"])
+        ).groupby("종류", sort=False).size().reset_index(name="건수")
+        st.caption("종류별 건수입니다. '예시 데이터 사용'은 실제 출처가 아직 연결되지 않은 항목이라 오류가 아닙니다.")
+        st.dataframe(summary, width="stretch", hide_index=True)
+        if problems:
+            st.markdown("**확인 필요 항목**")
+            st.dataframe(pd.DataFrame(problems), width="stretch", hide_index=True)
+        if st.toggle("예시 데이터 항목 전체 보기", value=False, key="show_sample_violations"):
+            st.dataframe(pd.DataFrame(samples), width="stretch", hide_index=True)

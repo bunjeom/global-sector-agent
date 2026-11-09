@@ -490,7 +490,7 @@ with tab_syn:
 
     with col_b2:
         st.markdown(f'**{utils.line_icon("shield", 16)} 통합 D-day 감시 캘린더 (우선순위 순 정렬)**', unsafe_allow_html=True)
-        st.dataframe(pd.DataFrame(u_watch), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(u_watch), width="stretch", hide_index=True)
 
 
 # =====================================================================
@@ -602,7 +602,7 @@ with tab_t1:
         xaxis_rangeslider_visible=False, template="plotly_white",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     with st.expander("상세 기술 진단 펼치기 — A. 7상태 기계 & 환경 · B. 6대 판정 모듈 · C. 수직 레벨 맵 & T 티켓", expanded=True):
         st.markdown(f'#### {utils.line_icon("compass", 18)} 섹션 A — 생애주기 상태 기계 (3장) & 환경 배지 (2-2~2-4)', unsafe_allow_html=True)
@@ -890,7 +890,7 @@ with tab_t2:
         col_e1, col_e2 = st.columns([1.2, 1.0])
         with col_e1:
             st.markdown(f'**{utils.line_icon("activity", 16)} 표 1 — E1. 실적 서프라이즈 및 성장률 궤적**', unsafe_allow_html=True)
-            st.dataframe(pd.DataFrame(earn_out["e1_surprise_table"]), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(earn_out["e1_surprise_table"]), width="stretch", hide_index=True)
 
         with col_e2:
             squeeze_msg = "🔴 매출 상회 + 마진 하회(마진 압착) 감지됨" if qual["margin_squeeze_detected"] else "🟢 매출 상회 + 마진 하회(마진 압착) 없음"
@@ -971,7 +971,7 @@ with tab_t3:
             height=380, margin=dict(l=20, r=20, t=40, b=20), template="plotly_white",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
         )
-        st.plotly_chart(fig_band, use_container_width=True)
+        st.plotly_chart(fig_band, width="stretch")
 
     with col_ch2:
         eps_c = mdec["eps_contribution_12m"] * 100.0
@@ -997,7 +997,7 @@ with tab_t3:
             title=f"📊 F4. 최근 12M 주가 수익률 3층 로그 분해 ({mdec['dominant_driver'][:22]}...)",
             height=380, margin=dict(l=20, r=20, t=40, b=20), template="plotly_white"
         )
-        st.plotly_chart(fig_wf, use_container_width=True)
+        st.plotly_chart(fig_wf, width="stretch")
 
     col_tr1, col_tr2 = st.columns([1.2, 1.0])
     with col_tr1:
@@ -1047,7 +1047,7 @@ with tab_t3:
         col_f1, col_f2 = st.columns(2)
         with col_f1:
             st.markdown(f'**{utils.line_icon("target", 16)} F8-1. 매도목표가 4대 독립 앵커 검증표**', unsafe_allow_html=True)
-            st.dataframe(pd.DataFrame(vt["anchors_table"]), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(vt["anchors_table"]), width="stretch", hide_index=True)
 
             sr = vt["scenario_returns"]
             cb_str = f" · CycleBear {sr['cycle_bear']*100:+.1f}%" if sr.get("cycle_bear") is not None else ""
@@ -1068,7 +1068,7 @@ with tab_t3:
                 f'**{utils.line_icon("shield", 16)} F2-2. 피어 대비 프리미엄·디스카운트 8대 요인 (순우위 점수: {ind_p["peer_net_advantage_score"]:+d}점 — {ind_p["peer_justification"]})**',
                 unsafe_allow_html=True
             )
-            st.dataframe(pd.DataFrame(ind_p["peer_factors_table"]), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(ind_p["peer_factors_table"]), width="stretch", hide_index=True)
 
             st.markdown(f"""
             <div class="term-card">
@@ -1150,7 +1150,7 @@ with tab_t4:
                 height=420, margin=dict(l=20, r=20, t=65, b=20), template="plotly_white",
                 legend=dict(orientation="h", yanchor="bottom", y=1.04, xanchor="left", x=0, font=dict(size=11))
             )
-            st.plotly_chart(fig_attr, use_container_width=True)
+            st.plotly_chart(fig_attr, width="stretch")
 
     with col_mc2:
         if m_sens:
@@ -1168,7 +1168,7 @@ with tab_t4:
                 title="<b>4-2·6-1. 가설 변수 1σ 변동 시 조건부 주가 반응</b>",
                 xaxis_title="예상 주가 반응 (%)", height=420, margin=dict(l=20, r=60, t=65, b=20), template="plotly_white"
             )
-            st.plotly_chart(fig_sens, use_container_width=True)
+            st.plotly_chart(fig_sens, width="stretch")
 
     col_ms1, col_ms2 = st.columns([1.25, 1.0])
     with col_ms1:
@@ -1213,7 +1213,7 @@ with tab_t4:
         col_md1, col_md2 = st.columns([1.2, 1.0])
         with col_md1:
             st.markdown(f'**{utils.line_icon("layers", 16)} 5-1. 가설 변수 최근 13주 동일 구간 변화 및 4주 쏠림 몫**', unsafe_allow_html=True)
-            st.dataframe(pd.DataFrame(m_state), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(m_state), width="stretch", hide_index=True)
 
         with col_md2:
             ev_weeks = m_res.get("event_weeks", [])

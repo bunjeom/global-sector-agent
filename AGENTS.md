@@ -20,7 +20,7 @@
 6. 임계값은 설정 딕셔너리 한 곳에만 둔다: `GATE_CONFIG`(국면 게이트), `RRG_CONFIG`(4분면), `DATA_FRESHNESS`(신선도).
 
 ## 3. engine.py 주의사항
-- 같은 이름이 **두 번 정의된** 것들이 있다: `GATE_CONFIG`, `calculate_single_gate`, `evaluate_market_gate`, `apply_gate_action_matrix`. 파이썬은 **파일 아래쪽(마지막) 정의**를 쓴다. 수정은 마지막 정의에만 하고, 새로 같은 이름을 또 정의하지 않는다.
+- 게이트 관련 함수·설정(GATE_CONFIG 등)은 한 번씩만 정의되어 있다. 새로 같은 이름을 또 정의하지 않는다.
 - `_build_default_rrg_sample_dataset()`은 합성 데이터 생성 함수다. **테스트 전용**이며 화면에서 호출하지 않는다.
 - 실제 4분면은 `build_real_rrg_bundle(etf_map, baskets)`(파일 맨 끝)로 만든다.
 - 국면 게이트 입력은 `build_gate_inputs_from_header(macro_header, "US"|"KR")`로 홈 헤더의 실제 데이터에서 만든다.
