@@ -3,15 +3,44 @@ import os
 import json
 import streamlit as st
 
+# GitHub Actions가 매일 갱신하는 리포트의 원본 주소 (공개 저장소라 로그인 없이 읽힘)
+REPORT_REMOTE_URL = "https://raw.githubusercontent.com/bunjeom/global-sector-agent/main/latest_global_report.json"
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _fetch_remote_report(url: str = REPORT_REMOTE_URL):
+    """GitHub에서 최신 리포트를 읽는다. 실패하면 None (30분 동안 결과 재사용)."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
 def load_latest_report(filepath: str = "latest_global_report.json") -> dict:
-    """최신 글로벌 리포트 JSON 로드 (없을 시 기본 구조 반환)"""
+    """
+    최신 글로벌 리포트 JSON 로드.
+    GitHub의 리포트와 PC 파일 중 generated_at이 더 최근인 것을 쓴다. 둘 다 없으면 기본 구조.
+    PC 파일에는 다시 쓰지 않는다(쓰면 git pull 때 충돌이 난다).
+    반환값의 "_loaded_from"에 출처("github" | "local" | "none")를 남긴다.
+    """
+    local = None
     if os.path.exists(filepath):
         try:
             with open(filepath, "r", encoding="utf-8") as f:
-                return json.load(f)
+                local = json.load(f)
         except Exception:
-            pass
-    return {"macro": {}, "news": [], "stocks": []}
+            local = None
+    remote = _fetch_remote_report()
+
+    candidates = [(r, src) for r, src in ((remote, "github"), (local, "local")) if isinstance(r, dict)]
+    if not candidates:
+        return {"macro": {}, "news": [], "stocks": [], "_loaded_from": "none"}
+    best, src = max(candidates, key=lambda rs: str(rs[0].get("generated_at", "")))
+    out = dict(best)
+    out["_loaded_from"] = src
+    return out
 
 def line_icon(name: str, size: int = 16) -> str:
     """블랙 라인아웃(Black Line-art SVG) 아이콘 반환 함수"""
