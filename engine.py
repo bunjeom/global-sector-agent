@@ -6365,3 +6365,140 @@ def build_real_rrg_bundle(etf_data_map: dict, narrative_baskets: list = None, wr
         "evaluation": evaluation,
         "as_of": as_of,
     }
+
+
+# ==============================================================================
+# 실행 레이더 — 실제 T(추세매매) 신호 (2026-11-09 추가)
+# - 대상: 섹터 흐름의 '지금 강한 곳'·'다음 후보' 섹터 대표 종목 (나중에 사용자 관심 종목을 앞에 추가 가능)
+# - 신호: analyze_technical_track(딥다이브와 같은 엔진)의 T 판정. V(가치)는 딥다이브에서만 계산한다.
+# ==============================================================================
+RADAR_CONFIG = {
+    "PROXIES_PER_BASKET": 3,       # 섹터당 대표 종목 수
+    "MAX_TICKERS": 18,             # 종목당 약 1.5초 → 최대 약 30초
+    "PRICE_PERIOD": "2y",          # EMA200·250일 변동성 계산에 필요한 기간
+    "MIN_BARS": 260,               # 이보다 짧으면 신호를 만들지 않음
+    "FX_TICKER": "KRW=X",          # 미국 종목을 원화 기준 엔진에 넣기 위한 USD/KRW 환율
+    "BENCH": {"US": "SPY", "KR": "^KS11"},
+    "MARKET_CLOSE": {"US": ("America/New_York", 16, 15), "KR": ("Asia/Seoul", 15, 45)},  # 장 마감 + 여유 15분
+    "DEFENSE_STATES": ["K", "D"],  # 붕괴 경계·하락 진행 → 보유자 방어 신호 (방어가 공격보다 우선)
+}
+
+
+def select_radar_universe(evaluation: dict) -> List[Dict[str, Any]]:
+    """섹터 흐름 평가(build_real_rrg_bundle의 evaluation)에서 레이더 대상 종목을 고른다."""
+    spec_map = {s["ticker"]: s for s in NARRATIVE_BASKETS_SPEC}
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    groups = [("지금 강한 곳", (evaluation or {}).get("leading_top3", [])),
+              ("다음 후보", (evaluation or {}).get("igniting_top3", []))]
+    for role, items in groups:
+        for it in items:
+            spec = spec_map.get(it.get("basket"))
+            if not spec:
+                continue
+            for p in spec["proxies"][:RADAR_CONFIG["PROXIES_PER_BASKET"]]:
+                if p in seen:
+                    continue
+                seen.add(p)
+                out.append({"ticker": p, "market": "KR" if p.endswith((".KS", ".KQ")) else "US",
+                            "basket": spec["ticker"], "basket_role": role, "origin": "강한 섹터 대표 종목"})
+    return out[:RADAR_CONFIG["MAX_TICKERS"]]
+
+
+def _drop_incomplete_bar(df: Optional[pd.DataFrame], market: str, now=None) -> Optional[pd.DataFrame]:
+    """오늘 장이 아직 안 끝났으면 마지막(진행 중) 일봉을 뺀다 — 미완성 봉으로 신호를 만들지 않기 위해."""
+    if df is None or len(df) == 0:
+        return df
+    tz, hh, mm = RADAR_CONFIG["MARKET_CLOSE"].get(market, RADAR_CONFIG["MARKET_CLOSE"]["US"])
+    now_l = pd.Timestamp.now(tz=tz) if now is None else pd.Timestamp(now).tz_convert(tz)
+    last = pd.Timestamp(df.index[-1])
+    last_date = (last.tz_convert(tz) if last.tzinfo is not None else last).date()
+    if last_date == now_l.date() and (now_l.hour, now_l.minute) < (hh, mm):
+        return df.iloc[:-1]
+    return df
+
+
+def _krw_text_to_usd(text: Any, fx: float) -> str:
+    """엔진 문구 안의 원화 금액(예: '232,500원')을 달러로 바꾼다 (미국 종목 표시용)."""
+    import re
+    return re.sub(r"(\d[\d,]*)원", lambda m: f"${int(m.group(1).replace(',', '')) / fx:,.2f}", str(text))
+
+
+def build_radar_signal(item: Dict[str, Any], df: Optional[pd.DataFrame], bench_df: Optional[pd.DataFrame],
+                       vix_series: Optional[pd.Series], account_cfg: Optional[Dict[str, Any]],
+                       fx_usdkrw: Optional[float] = None) -> Dict[str, Any]:
+    """
+    한 종목의 실제 T 신호를 레이더 형식(apply_gate_action_matrix 입력)으로 만든다.
+    - 가치 트랙(매수 기준선·매도 목표가·Thesis)은 넣지 않는다 → 엔진이 임의 매수선을 만들지 않도록 빈 값 전달.
+    - T 엔진은 원화 기준(유동성 50억 원, 정수 가격, 원화 사이징)이므로 미국 종목은 최신 환율(상수 하나)을 곱해
+      넣고, 결과 가격은 달러로 되돌린다. 상수를 곱하므로 차트 모양과 신호는 바뀌지 않는다.
+    반환 kind: "signal"(실행·관찰·방어) | "none"(신호 없음) | "error"(계산 불가)
+    """
+    mkt = item.get("market", "US")
+    base = {**item, "source": "엔진 T 트랙 (yfinance 일봉)", "is_sample": False, "tranche_stage": 0}
+    try:
+        df = _drop_incomplete_bar(df, mkt)
+        n_bars = 0 if df is None else len(df)
+        as_of = str(df.index[-1])[:10] if n_bars else None
+        if n_bars < RADAR_CONFIG["MIN_BARS"]:
+            return {**base, "kind": "error", "as_of": as_of,
+                    "reason": f"일봉 {n_bars}개 ({RADAR_CONFIG['MIN_BARS']}개 필요)"}
+        fx = 1.0
+        if mkt == "US":
+            if not fx_usdkrw or float(fx_usdkrw) <= 0:
+                return {**base, "kind": "error", "as_of": as_of, "reason": "USD/KRW 환율 데이터 없음"}
+            fx = float(fx_usdkrw)
+        px = df.copy()
+        for c in ("Open", "High", "Low", "Close"):
+            px[c] = pd.to_numeric(px[c], errors="coerce") * fx
+        px = px.dropna(subset=["Open", "High", "Low", "Close"])
+        neutral_value = {"thesis_status": "미확인", "kill_flags": [], "buy_tranches": [], "sell_target": None,
+                         "position_cap": TECH_PARAMS["MAX_POS_RATIO_TOTAL"], "real_signal": "중립",
+                         "macro_regime_override": None}
+        cfg = {**(account_cfg or {}), "is_krx": mkt == "KR"}
+        out = analyze_technical_track(px, bench_df, vix_series, value_macro_input=neutral_value, account_cfg=cfg)
+    except Exception as e:
+        return {**base, "kind": "error", "as_of": None, "reason": f"계산 오류: {type(e).__name__}: {e}"[:200]}
+
+    sb, ls, tkt = out["summary_banner"], out["lifecycle_state"], (out.get("t_ticket") or {})
+    to_px = (lambda v: round(float(v) / fx, 2)) if mkt == "US" else (lambda v: int(v))
+    to_txt = (lambda s: _krw_text_to_usd(s, fx)) if mkt == "US" else (lambda s: str(s))
+    detail = {
+        "currency": "USD" if mkt == "US" else "KRW",
+        "setup_id": sb.get("setup_id"), "grade": sb.get("grade"),
+        "state": ls.get("state"), "state_label": ls.get("state_label"),
+        "headline": to_txt(sb.get("headline_reason", "")),
+        "next_cond": to_txt(sb.get("next_or_end_condition", "")),
+        "as_of": as_of,
+    }
+    if isinstance(tkt.get("entry_price"), (int, float)) and isinstance(tkt.get("stop_price"), (int, float)):
+        detail["entry"] = to_px(tkt["entry_price"])
+        detail["stop"] = to_px(tkt["stop_price"])
+        if isinstance(tkt.get("target_1"), (int, float)):
+            detail["target_1"] = to_px(tkt["target_1"])
+        if tkt.get("expected_r") is not None:
+            detail["expected_r"] = tkt.get("expected_r")
+
+    if ls.get("state") in RADAR_CONFIG["DEFENSE_STATES"]:
+        sig_type, action = "RISK_DEFENSE", f"보유 중이면 비중 축소·손절 검토 ({ls.get('state_label')})"
+    elif sb.get("t_verdict") == "진입":
+        sig_type, action = "T_ENTRY", f"T {sb.get('setup_id')} {sb.get('grade')}등급 진입"
+    elif sb.get("t_verdict") == "대기":
+        sig_type, action = "T_WATCH", f"T {sb.get('setup_id')} {sb.get('grade')}등급 대기"
+    else:
+        return {**base, **detail, "kind": "none", "reason": detail["headline"]}
+    return {**base, **detail, "kind": "signal", "signal_type": sig_type, "action_text": action,
+            "suggested_weight": 100,
+            "is_bnf_oversold": bool(sig_type == "T_ENTRY" and sb.get("setup_id") == "ST-1")}
+
+
+def build_radar_signals(universe: List[Dict[str, Any]], price_map: Dict[str, pd.DataFrame],
+                        bench_map: Dict[str, Optional[pd.DataFrame]], vix_series: Optional[pd.Series],
+                        account_cfg: Optional[Dict[str, Any]], fx_usdkrw: Optional[float]) -> Dict[str, Any]:
+    """레이더 대상 전체를 계산해 신호 / 신호 없음 / 계산 불가로 나눈다."""
+    res: Dict[str, Any] = {"signals": [], "no_signal": [], "errors": []}
+    for item in universe or []:
+        r = build_radar_signal(item, (price_map or {}).get(item["ticker"]),
+                               (bench_map or {}).get(item.get("market", "US")), vix_series, account_cfg, fx_usdkrw)
+        {"signal": res["signals"], "none": res["no_signal"]}.get(r["kind"], res["errors"]).append(r)
+    return res

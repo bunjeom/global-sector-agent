@@ -61,23 +61,28 @@ def short_name(full: str) -> str:
 # =====================================================================
 # 데이터 로드 (3년치: 주봉 4분면이 2년 표준편차를 쓰기 때문)
 # =====================================================================
+def download_ohlc_map(symbols: list, period: str, min_rows: int = 25) -> dict:
+    """yfinance로 여러 종목 일봉을 한 번에 받는다. 받지 못한 종목은 빠진다(예시 데이터로 채우지 않음)."""
+    out = {}
+    try:
+        raw = yf.download(symbols, period=period, group_by="ticker", auto_adjust=False, progress=False, threads=True)
+        if raw is not None and len(raw) > 0:
+            for sym in symbols:
+                if sym in raw.columns.get_level_values(0):
+                    sub_df = raw[sym].dropna(subset=["Close"]).copy()
+                    if len(sub_df) >= min_rows:
+                        out[sym] = sub_df
+    except Exception:
+        pass
+    return out
+
+
 @st.cache_data(ttl=1800, show_spinner="시장 데이터를 불러오는 중...")
 def load_home_dashboard_data() -> dict:
     core_tickers = ["SPY", "QQQ", "^KS11", "^VIX", "RSP", "IWM", "TLT"]
     basket_tickers = [b["ticker"] for b in engine.NARRATIVE_BASKETS_SPEC]
     all_syms = list(dict.fromkeys(core_tickers + basket_tickers))
-
-    etf_map = {}
-    try:
-        raw = yf.download(all_syms, period="3y", group_by="ticker", auto_adjust=False, progress=False, threads=True)
-        if raw is not None and len(raw) > 0:
-            for sym in all_syms:
-                if sym in raw.columns.get_level_values(0):
-                    sub_df = raw[sym].dropna(subset=["Close"]).copy()
-                    if len(sub_df) >= 25:
-                        etf_map[sym] = sub_df
-    except Exception:
-        pass
+    etf_map = download_ohlc_map(all_syms, period="3y")
 
     report_json = utils.load_latest_report()
     dash = engine.run_home_dashboard_engine(etf_data_map=etf_map, report_json=report_json)
@@ -88,6 +93,26 @@ def load_home_dashboard_data() -> dict:
     # 국면 게이트 히스테리시스: 최근 거래일을 과거 종가로 다시 계산해 '어제까지의 단계'를 만든다
     dash["gate_history"] = {mk: engine.build_gate_history_state(etf_map, mk) for mk in ("US", "KR")}
     return dash
+
+
+@st.cache_data(ttl=1800, show_spinner="실행 레이더 신호를 계산하는 중... (종목당 1~2초)")
+def load_radar_signals(universe_key: tuple, total_equity: float, t_sleeve_ratio: float) -> dict:
+    """레이더 대상 종목의 일봉을 받아 실제 T 신호를 계산한다 (engine.build_radar_signals)."""
+    universe = [dict(zip(("ticker", "market", "basket", "basket_role", "origin"), u)) for u in universe_key]
+    cfg = engine.RADAR_CONFIG
+    syms = list(dict.fromkeys([u["ticker"] for u in universe]
+                              + [cfg["FX_TICKER"], cfg["BENCH"]["US"], cfg["BENCH"]["KR"], "^VIX"]))
+    pm = download_ohlc_map(syms, period=cfg["PRICE_PERIOD"])
+    fx_df = pm.get(cfg["FX_TICKER"])
+    fx_close = fx_df["Close"].dropna() if fx_df is not None else None
+    fx = float(fx_close.iloc[-1]) if fx_close is not None and len(fx_close) > 0 else None
+    vix = pm["^VIX"]["Close"] if "^VIX" in pm else None
+    res = engine.build_radar_signals(
+        universe, pm, {m: pm.get(t) for m, t in cfg["BENCH"].items()}, vix,
+        {"total_equity": total_equity, "t_sleeve_ratio": t_sleeve_ratio}, fx,
+    )
+    res["fx_usdkrw"] = fx
+    return res
 
 
 def format_meta_badges(rec: dict) -> str:
@@ -471,11 +496,19 @@ with g_kr:
     st.markdown(gate_box("한국 게이트", kr_gate), unsafe_allow_html=True)
 st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
-radar_raw = engine.SAMPLE_DATA.get("radar_signals", {})
-if baskets_eval:
-    radar_raw = engine.sync_radar_basket_badges(radar_raw, baskets_eval)
-all_signals = [s for col in radar_raw.values() for s in col]
-all_sample = bool(all_signals) and all(is_sample_rec(s) for s in all_signals)
+# 레이더 대상: 섹터 흐름의 '지금 강한 곳'·'다음 후보' 섹터 대표 종목 (나중에 사용자 관심 종목을 앞에 추가)
+radar_universe = engine.select_radar_universe(ev) if ev else []
+if radar_universe:
+    radar_res = load_radar_signals(
+        tuple((u["ticker"], u["market"], u["basket"], u["basket_role"], u["origin"]) for u in radar_universe),
+        float(st.session_state["total_equity"]), float(st.session_state["t_sleeve_ratio"]),
+    )
+else:
+    radar_res = {"signals": [], "no_signal": [], "errors": [],
+                 "fatal": "섹터 흐름 데이터가 없어 레이더 종목을 고르지 못했습니다"}
+all_signals = radar_res["signals"]
+if baskets_eval and all_signals:
+    all_signals = engine.sync_radar_basket_badges({"all": all_signals}, baskets_eval)["all"]
 
 # 게이트 적용 후 '실행 / 관찰 / 방어 / 동결 / 장기보유 예외'로 다시 분류
 buckets = {"실행": [], "관찰": [], "방어": [], "동결": [], "예외": []}
@@ -495,6 +528,13 @@ for sig in all_signals:
         buckets["실행"].append(a)
 
 
+def fmt_px(v, currency) -> str:
+    """가격 표시: 미국 종목은 달러, 한국 종목은 원"""
+    if v is None:
+        return "-"
+    return f"${float(v):,.2f}" if currency == "USD" else f"{int(v):,}원"
+
+
 def render_signal(a: dict, key_prefix: str):
     g = a["_gate"]
     color = GATE_COLOR.get(g["level"], "#64748b")
@@ -504,17 +544,21 @@ def render_signal(a: dict, key_prefix: str):
         f"{str(a.get('market', 'US')).upper()} · {g['code']}</span>",
         unsafe_allow_html=True,
     )
-    if a.get("basket_sync_badge"):
-        st.caption(f"섹터 맥락: {a['basket_sync_badge']}")
+    st.caption(f"섹터 맥락: {a.get('basket_sync_badge') or a.get('basket', '')} · {a.get('basket_role', '')}")
     if a.get("gate_applied"):
-        st.markdown(f"<span style='color:#94a3b8;'>원신호: <s>{a['orig_action']} (비중 {a['orig_weight']}%)</s></span>",
+        st.markdown(f"<span style='color:#94a3b8;'>원신호: <s>{a['orig_action']} (계획 비중의 {a['orig_weight']}%)</s></span>",
                     unsafe_allow_html=True)
-    st.markdown(f"**{a['effective_action']}** · 승인 비중 {a.get('effective_weight', 0)}%")
-    st.caption(f"사유: {a.get('reason', '')}")
-    src = a.get("source", "")
-    if is_sample_rec(a):
-        src = f"예시 신호 (원래 표기: {a.get('orig_source', '없음')})"
-    st.caption(f"출처: {src} · 기준일: {a.get('as_of') or '없음'}")
+    is_def = a.get("status") == "DEFENSE_PRIORITY"
+    st.markdown(f"**{a['effective_action']}**" + ("" if is_def else f" · 계획 비중의 {a.get('effective_weight', 0)}%"))
+    if a.get("entry") is not None and not is_def:
+        r_txt = f" · 예상 {a['expected_r']}R" if a.get("expected_r") is not None else ""
+        st.caption(f"진입 {fmt_px(a['entry'], a.get('currency'))} · 손절 {fmt_px(a.get('stop'), a.get('currency'))}"
+                   f" · 1차 목표 {fmt_px(a.get('target_1'), a.get('currency'))}{r_txt}")
+    st.caption(f"근거: {a.get('headline', '')} · 상태: {a.get('state_label', '')}")
+    if a.get("next_cond"):
+        st.caption(a["next_cond"])
+    st.caption(f"게이트: {a.get('reason', '')}")
+    st.caption(f"출처: {a.get('source', '')} · 기준일: {a.get('as_of') or '없음'}")
     if st.button("딥다이브 →", key=f"{key_prefix}_{a.get('ticker')}_{a.get('market')}"):
         st.session_state["selected_ticker"] = a.get("ticker")
         st.switch_page("pages/1_🔎_종목_딥다이브.py")
@@ -539,15 +583,19 @@ def render_radar():
                 st.markdown("<hr style='margin:6px 0;'>", unsafe_allow_html=True)
     if buckets["예외"]:
         st.caption("장기 보유 예외 (게이트 미적용, 보유 유지): " + ", ".join(a.get("ticker", "") for a in buckets["예외"]))
+    if radar_res["no_signal"]:
+        with st.expander(f"지금 신호 없는 종목 {len(radar_res['no_signal'])}개", expanded=False):
+            st.dataframe(pd.DataFrame([
+                {"종목": r["ticker"], "섹터": r.get("basket"), "구분": r.get("basket_role"),
+                 "상태": r.get("state_label", ""), "사유": r.get("reason", "")}
+                for r in radar_res["no_signal"]
+            ]), width="stretch", hide_index=True)
 
 
-if not all_signals:
-    st.caption("표시할 종목 신호가 없습니다.")
-elif all_sample:
-    st.info("아래 종목 신호는 아직 실제 신호 엔진과 연결되지 않은 예시 데이터입니다. "
-            "게이트가 신호를 어떻게 바꾸는지 미리 보는 용도로만 쓰세요.")
-    with st.expander("예시 신호로 게이트 동작 미리보기", expanded=False):
-        render_radar()
+st.caption(f"대상: 섹터 흐름의 '지금 강한 곳'·'다음 후보' 섹터 대표 종목 {len(radar_universe)}개 · "
+           "T(추세매매) 신호만 표시 — V(가치 분할매수)는 종목 딥다이브에서 확인하세요.")
+if radar_res.get("fatal"):
+    st.warning(f"실행 레이더: {radar_res['fatal']}. 예시 신호로 대신 채우지 않습니다.")
 else:
     render_radar()
 
@@ -555,8 +603,8 @@ else:
 # 6. 데이터 점검 (접이식)
 # =====================================================================
 violations = list(dash.get("consistency_violations", []))
-if all_sample:
-    violations.append({"type": "SAMPLE_DATA_USED", "detail": "실행 레이더 종목 신호 전체가 예시 데이터입니다(실제 신호 엔진 미연결)."})
+for e_item in radar_res.get("errors", []):
+    violations.append({"type": "DATA_MISSING", "detail": f"실행 레이더 {e_item.get('ticker')}: {e_item.get('reason')}"})
 if not rb.get("available"):
     violations.append({"type": "DATA_MISSING", "detail": f"섹터 흐름(4분면) 데이터 없음: {rb.get('reason', '')}"})
 for mk, g in (("US", us_gate), ("KR", kr_gate)):

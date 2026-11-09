@@ -36,23 +36,83 @@ KR_US_NAME_TO_TICKER = {
     "마이크론": "MU", "어플라이드머티어리얼즈": "AMAT", "ASML": "ASML",
 }
 
+import urllib.request
+import urllib.parse
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _load_krx_master_dict() -> dict:
+    """KRX 상장법인목록(코스피·코스닥)을 불러와 {한글명/6자리코드: yfinance티커} 사전 생성"""
+    mapping = {}
+    market_codes = [("stockMkt", ".KS"), ("kosdaqMkt", ".KQ")]
+    for mkt_type, suffix in market_codes:
+        try:
+            url = f"https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13&marketType={mkt_type}"
+            dfs = pd.read_html(url, encoding="euc-kr")
+            if dfs:
+                df = dfs[0]
+                for _, row in df.iterrows():
+                    name = str(row["회사명"]).strip().replace(" ", "").upper()
+                    code = str(row["종목코드"]).strip().zfill(6)
+                    yf_ticker = f"{code}{suffix}"
+                    mapping[name] = yf_ticker
+                    mapping[code] = yf_ticker
+        except Exception:
+            continue
+    return mapping
+
+def _search_naver_stock_ticker(query: str) -> str | None:
+    """KRX 목록에 없는 ETF·신규 상장주 등을 네이버 금융 자동완성 API로 보조 검색"""
+    try:
+        q_enc = urllib.parse.quote(query)
+        url = f"https://ac.stock.naver.com/ac?q={q_enc}&target=stock"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            import json
+            data = json.loads(resp.read().decode("utf-8"))
+            items = data.get("items", [])
+            if items:
+                top = items[0]
+                code = str(top.get("code", "")).strip()
+                type_code = str(top.get("typeCode", "")).upper()
+                if len(code) == 6 and code.isdigit():
+                    suffix = ".KQ" if "KOSDAQ" in type_code else ".KS"
+                    return f"{code}{suffix}"
+    except Exception:
+        pass
+    return None
+
 def resolve_ticker(user_input: str) -> str:
-    """한글 종목명, 6자리 숫자, 또는 영문 티커를 yfinance 표준 티커로 자동 변환"""
+    """한글 종목명(전 종목), 6자리 숫자(코스피/코스닥 자동구분), 영문 티커를 yfinance 티커로 변환"""
     raw = user_input.strip()
     if not raw:
         return "005930.KS"
     clean_key = raw.replace(" ", "").upper()
+
+    # 1. 기존 내장 사전(주요 한·미 종목) 우선 확인
     for k, v in KR_US_NAME_TO_TICKER.items():
         if k.replace(" ", "").upper() == clean_key:
             return v
+
+    # 2. 리포트 캐시 종목 확인
     report_data = utils.load_latest_report()
     for item in report_data.get("stocks", []):
-        if item.get("name", "").replace(" ", "") == raw.replace(" ", ""):
+        if item.get("name", "").replace(" ", "").upper() == clean_key:
             return item.get("ticker", raw)
+
+    # 3. KRX 전체 상장사(코스피·코스닥) 한글명 및 6자리 코드 매칭
+    krx_map = _load_krx_master_dict()
+    if clean_key in krx_map:
+        return krx_map[clean_key]
+
+    # 4. 네이버 금융 자동완성 API 보조 매칭 (국내 상장 ETF 및 우선주 등)
+    naver_match = _search_naver_stock_ticker(raw)
+    if naver_match:
+        return naver_match
+
+    # 5. 폴백: 6자리 숫자면 기본 .KS 부여, 그 외에는 영문 티커로 간주
     if raw.isdigit() and len(raw) == 6:
         return f"{raw}.KS"
     return raw.upper()
-
 # =====================================================================
 # 2. 종목별 [섹터 유형] & [거시 산업 분류] 100% 자동 판별기
 # =====================================================================
