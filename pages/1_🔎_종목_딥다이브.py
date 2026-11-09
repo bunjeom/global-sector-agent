@@ -307,6 +307,22 @@ with col_t5:
     log_scale_opt = st.checkbox("로그 스케일 차트", value=True)
 
 is_krx_ticker = ticker_input.upper().endswith((".KS", ".KQ"))
+
+
+def px(v) -> str:
+    """가격·금액 표시: 한국 종목은 원, 미국 종목은 달러 (engine.fmt_price)"""
+    return engine.fmt_price(v, is_krx_ticker)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_usdkrw():
+    """미국 종목 T 엔진 환산용 USD/KRW 최신 환율 (실패 시 None → 엔진이 사이징을 막는다)"""
+    try:
+        c = yf.Ticker("KRW=X").history(period="10d")["Close"].dropna()
+        return float(c.iloc[-1]) if len(c) else None
+    except Exception:
+        return None
+
 stock_df_raw, _, _ = fetch_ohlcv_and_benchmark(ticker_input)
 
 if len(stock_df_raw) < 30:
@@ -352,6 +368,7 @@ account_cfg = {
     "total_equity": st.session_state.get("total_equity", 100_000_000),
     "t_sleeve_ratio": st.session_state.get("t_sleeve_ratio", 0.30),
     "is_krx": is_krx_ticker,
+    "fx_to_krw": 1.0 if is_krx_ticker else fetch_usdkrw(),
     "hard_block_evt": evt_block_opt or is_halted_opt,
     "earnings_blackout": days_to_earn_opt <= 3,
     "mktcap_krw": 1_000_000_000_000,
@@ -498,10 +515,10 @@ with tab_syn:
                 <span class="term-badge">상태 코드: {v_card["status_code"]}</span>
             </div>
             <ul class="term-list">
-                <li><b>현재가 vs 1차 매수기준선 괴리율:</b> 현재 <b>{int(last_close):,}원</b> (1차선 대비 <b>{v_card["distance_to_1st_tranche_pct"]*100:+.1f}%</b>)</li>
-                <li><b>기준 차수 및 매수기준선 가격:</b> <b>{v_card["active_tranche"]}차 매수선 ({v_card["tranche_price"]:,}원)</b> · {ov_tag}</li>
+                <li><b>현재가 vs 1차 매수기준선 괴리율:</b> 현재 <b>{px(last_close)}</b> (1차선 대비 <b>{v_card["distance_to_1st_tranche_pct"]*100:+.1f}%</b>)</li>
+                <li><b>기준 차수 및 매수기준선 가격:</b> <b>{v_card["active_tranche"]}차 매수선 ({px(v_card["tranche_price"])})</b> · {ov_tag}</li>
                 <li><b>당일 집행 비율 (단일 감속 하한 50% 규칙):</b> <b>{int(v_card["execution_ratio"]*100)}%</b> → 권장 매수 비중 <b>총자산의 {v_card["recommended_weight"]*100:.2f}%</b></li>
-                <li><b>1Y 채택 매도목표가 / 기대수익률:</b> <b>{v_card["sell_target_1y"]:,}원</b> / 확률가중 <b>{v_card["expected_return_weighted"]*100:+.1f}%</b> (MDD Ratio <b>{v_card["mdd_ratio"]:.2f}</b>)</li>
+                <li><b>1Y 채택 매도목표가 / 기대수익률:</b> <b>{px(v_card["sell_target_1y"])}</b> / 확률가중 <b>{v_card["expected_return_weighted"]*100:+.1f}%</b> (MDD Ratio <b>{v_card["mdd_ratio"]:.2f}</b>)</li>
             </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -518,8 +535,8 @@ with tab_syn:
                 <span class="term-badge">고평가 위험계수 조정: ×{t_card["risk_modifier_applied"]:.1f}</span>
             </div>
             <ul class="term-list">
-                <li><b>진입가 / 손절가 (종가 기준):</b> 진입 <b>{t_card["entry_price"]:,}원</b> / 손절 <b>{t_card["stop_price"]:,}원</b></li>
-                <li><b>산출 주문 수량 / 1차 목표가:</b> <b>{t_card["shares"]:,}주</b> / 목표 <b>{t_card["target_price"]:,}원</b> (예상 <b>{t_card["expected_r"]}R</b>)</li>
+                <li><b>진입가 / 손절가 (종가 기준):</b> 진입 <b>{px(t_card["entry_price"])}</b> / 손절 <b>{px(t_card["stop_price"])}</b></li>
+                <li><b>산출 주문 수량 / 1차 목표가:</b> <b>{t_card["shares"]:,}주</b> / 목표 <b>{px(t_card["target_price"])}</b> (예상 <b>{t_card["expected_r"]}R</b>)</li>
                 <li><b>시간 손절 및 무효화 규칙:</b> {t_card["time_stop_rule"]} ｜ {t_card["invalidation_rule"]}</li>
                 <li><b>실적 발표 보유분 지침 (T_EARNINGS_RULE):</b> {t_card["earnings_hold_guide"]}</li>
             </ul>
@@ -570,10 +587,10 @@ with tab_t1:
 
     if banner["t_verdict"] == "진입" and t_ticket.get("is_executable"):
         line2_html = (
-            f'진입가 <b>{t_ticket["entry_price"]:,}원</b> · '
-            f'손절가(종가) <b>{t_ticket["stop_price"]:,}원</b> · '
-            f'수량 <b>{t_ticket["shares"]:,}주</b> ({t_ticket["position_value"]:,}원) · '
-            f'1차목표 <b>{t_ticket["target_1"]:,}원</b> · '
+            f'진입가 <b>{px(t_ticket["entry_price"])}</b> · '
+            f'손절가(종가) <b>{px(t_ticket["stop_price"])}</b> · '
+            f'수량 <b>{t_ticket["shares"]:,}주</b> ({px(t_ticket["position_value"])}) · '
+            f'1차목표 <b>{px(t_ticket["target_1"])}</b> · '
             f'예상 <b>{t_ticket["expected_r"]}R</b> &nbsp;|&nbsp; {banner["next_or_end_condition"]}'
         )
     else:
@@ -738,7 +755,7 @@ with tab_t1:
 
             li_html = "".join([
                 f'<li style="{"background:#f1f5f9;font-weight:700;padding:8px 6px;" if it["kind"]=="NOW" else ""}">'
-                f'<span style="font-family:monospace;display:inline-block;width:110px;">{it["price"]:,}원</span> '
+                f'<span style="font-family:monospace;display:inline-block;width:110px;">{px(it["price"])}</span> '
                 f'<span class="term-badge">{it["kind"]}</span> {it["tag"]}</li>'
                 for it in ladder_items
             ])
@@ -757,12 +774,12 @@ with tab_t1:
                     <ul class="term-list">
                         <li><b>셋업 ID / 등급:</b> {t_ticket["setup_id"]} ({t_ticket.get("setup_name", "")}) · 등급 {t_ticket.get("grade", "-")}</li>
                         <li><b>목적:</b> {t_ticket.get("purpose", "-")}</li>
-                        <li><b>진입 기준가 (호가 보정):</b> {t_ticket["entry_price"]:,}원 (추격 금지 상한: {t_ticket.get("chase_ban_price", 0):,}원)</li>
-                        <li><b>손절 기준가 (종가 기준):</b> {t_ticket["stop_price"]:,}원 (주당 1R 위험: {t_ticket["unit_r_krw"]:,}원)</li>
-                        <li><b>할당 위험 금액 (R$):</b> {t_ticket.get("r_budget_krw", 0):,}원</li>
-                        <li><b>산출 수량 / 포지션 금액:</b> {t_ticket["shares"]:,}주 ({t_ticket["position_value"]:,}원)</li>
-                        <li><b>1차 목표 / 잔량 규칙:</b> {t_ticket["target_1"]:,}원 (예상 {t_ticket["expected_r"]}R) / {t_ticket["target_2"]}</li>
-                        <li><b>시간 손절 / 최대 보유:</b> {t_ticket["time_stop_days"]}거래일 내 {t_ticket["time_stop_min_price"]:,}원 미달 시 청산 / 최대 {t_ticket["max_hold_days"]}일</li>
+                        <li><b>진입 기준가 (호가 보정):</b> {px(t_ticket["entry_price"])} (추격 금지 상한: {px(t_ticket.get("chase_ban_price", 0))})</li>
+                        <li><b>손절 기준가 (종가 기준):</b> {px(t_ticket["stop_price"])} (주당 1R 위험: {px(t_ticket["unit_r_krw"])})</li>
+                        <li><b>할당 위험 금액 (R$):</b> {px(t_ticket.get("r_budget_krw", 0))}</li>
+                        <li><b>산출 수량 / 포지션 금액:</b> {t_ticket["shares"]:,}주 ({px(t_ticket["position_value"])})</li>
+                        <li><b>1차 목표 / 잔량 규칙:</b> {px(t_ticket["target_1"])} (예상 {t_ticket["expected_r"]}R) / {t_ticket["target_2"]}</li>
+                        <li><b>시간 손절 / 최대 보유:</b> {t_ticket["time_stop_days"]}거래일 내 {px(t_ticket["time_stop_min_price"])} 미달 시 청산 / 최대 {t_ticket["max_hold_days"]}일</li>
                         <li><b>무효화 조건:</b> {t_ticket["invalidation"]}</li>
                     </ul>
                 </div>
@@ -868,7 +885,7 @@ with tab_t2:
     with col_p1:
         e1y = proj["eps_1y"]
         e2y = proj["eps_2y"]
-        c_bear_str = f"{e1y['cycle_bear']:,}원" if e1y.get("cycle_bear") is not None else "해당 없음 (비사이클)"
+        c_bear_str = f"{px(e1y['cycle_bear'])}" if e1y.get("cycle_bear") is not None else "해당 없음 (비사이클)"
         st.markdown(f"""
         <div class="term-card">
             <div style="font-weight:700;margin-bottom:8px;">
@@ -879,9 +896,9 @@ with tab_t2:
                 <span style="color:#475569;">({proj["certainty_label"]})</span>
             </div>
             <ul class="term-list">
-                <li><b>1Y NTM EPS 혼합식 ({e1y["formula"]}):</b> Base(50%) <b>{e1y["base"]:,}원</b> · Bull(25%) <b>{e1y["bull"]:,}원</b> · Bear(25%) <b>{e1y["bear"]:,}원</b></li>
+                <li><b>1Y NTM EPS 혼합식 ({e1y["formula"]}):</b> Base(50%) <b>{px(e1y["base"])}</b> · Bull(25%) <b>{px(e1y["bull"])}</b> · Bear(25%) <b>{px(e1y["bear"])}</b></li>
                 <li><b>1Y CycleBear (사이클형 정점→저점 낙폭 기저율):</b> <b>{c_bear_str}</b></li>
-                <li><b>2Y NTM EPS 혼합식 ({e2y["formula"]}):</b> Base(50%) <b>{e2y["base"]:,}원</b> · Bull(25%) <b>{e2y["bull"]:,}원</b> · Bear(25%) <b>{e2y["bear"]:,}원</b></li>
+                <li><b>2Y NTM EPS 혼합식 ({e2y["formula"]}):</b> Base(50%) <b>{px(e2y["base"])}</b> · Bull(25%) <b>{px(e2y["bull"])}</b> · Bear(25%) <b>{px(e2y["bear"])}</b></li>
                 <li><b>1-2. 자본구조(분모) 점검:</b> {th_drv["capital_structure_note"]}</li>
             </ul>
         </div>
@@ -1063,7 +1080,7 @@ with tab_t3:
     with col_tr1:
         tr_rows_html = "".join([
             f'<li>'
-            f'<span style="font-family:monospace;font-weight:700;display:inline-block;width:105px;">{tr["price"]:,}원</span> '
+            f'<span style="font-family:monospace;font-weight:700;display:inline-block;width:105px;">{px(tr["price"])}</span> '
             f'<span class="term-badge">{"도달(체결권)" if last_close <= tr["price"] else "미도달(대기)"}</span> '
             f'<b>{tr["label"]}</b> — 목표비중 <b>{tr["weight"]*100:.2f}%</b>'
             f'</li>'
@@ -1072,7 +1089,7 @@ with tab_t3:
         st.markdown(f"""
         <div class="term-card">
             <div style="font-weight:700;margin-bottom:8px;">
-                {utils.line_icon("check", 16)}F7-3. 기술 트랙(V 라우터) 직결 0~3차 분할 매수기준선 (유효 1Y EPS: {vt["effective_eps_1y"]:,}원)
+                {utils.line_icon("check", 16)}F7-3. 기술 트랙(V 라우터) 직결 0~3차 분할 매수기준선 (유효 1Y EPS: {px(vt["effective_eps_1y"])})
             </div>
             <ul class="term-list">{tr_rows_html}</ul>
             <div style="font-size:0.82rem;color:#555;margin-top:6px;">

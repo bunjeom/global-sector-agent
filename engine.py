@@ -89,6 +89,15 @@ def adjust_krx_price(price: float, direction: str = "nearest", is_krx: bool = Tr
         return float(math.floor(price / tick) * tick)
     return float(round(price / tick) * tick)
 
+def fmt_price(v: Any, is_krx: bool = True) -> str:
+    """가격·금액 문구: 한국 종목 '232,500원', 미국 종목 '$172.50' (T 엔진·딥다이브 공통)"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    return f"{int(f):,}원" if is_krx else f"${f:,.2f}"
+
+
 def calc_zone_bounds(level_price: float, atr14: float) -> Tuple[float, float]:
     """2-1. ZONE: P ± max(0.01 * P, 0.5 * ATR14)[cite: 1]"""
     half_width = max(
@@ -691,7 +700,8 @@ def evaluate_signals_and_modules_at(
     s_mode: str,
     rs_info: Dict[str, Any],
     levels_info: Dict[str, Any],
-    channel_info: Dict[str, Any]
+    channel_info: Dict[str, Any],
+    is_krx: bool = True
 ) -> Dict[str, Any]:
     """특정 봉 idx_pos에서 2-7 생애주기 신호와 2-8의 6대 판정 모듈을 계산[cite: 1]"""
     row = df.iloc[idx_pos]
@@ -847,7 +857,7 @@ def evaluate_signals_and_modules_at(
     # ④ ⭐⭐ 이상 수평 지지 ZONE[cite: 1]
     for hz in levels_info["horizontal_zones"]:
         if hz["stars"] >= 2 and hz["low"] <= c_t <= hz["high"]:
-            overlap_supports.append(f"{'⭐'*hz['stars']} 수평지지({int(hz['price']):,}원)")
+            overlap_supports.append(f"{'⭐'*hz['stars']} 수평지지({fmt_price(hz['price'], is_krx)})")
             break
     # ⑤ S-CROSS 기준선 ZONE[cite: 1]
     for hz in levels_info["horizontal_zones"]:
@@ -916,7 +926,7 @@ def evaluate_signals_and_modules_at(
         "box_high": box_high, "box_low": box_low, "box_width": box_width, "box_pos": box_pos,
         "in_box_bottom": in_box_bottom, "range_react_cnt": range_react_cnt,
         "modules": {
-            "breakout": {"stage": breakout_stage, "label": breakout_label, "detail": f"기준선 B={int(b_neck):,}원 / RVOL={rvol_t:.2f}"},
+            "breakout": {"stage": breakout_stage, "label": breakout_label, "detail": f"기준선 B={fmt_price(b_neck, is_krx)} / RVOL={rvol_t:.2f}"},
             "disparity": {"stage": disp_stage, "label": disp_label, "detail": f"25일이격도 {row['DISP25']:.1f} (750일 백분위 {disp_pctl:.1f}%)"},
             "bottom": {"stage": bottom_stage, "label": bottom_label, "detail": f"충족 카테고리 {len(distinct_cats)}개"},
             "pullback": {
@@ -927,7 +937,7 @@ def evaluate_signals_and_modules_at(
             "range": {
                 "stage": range_react_cnt,
                 "label": f"박스 위치 {box_pos:.2f} · 반응 {range_react_cnt}개",
-                "detail": f"박스 [{int(box_low):,} ~ {int(box_high):,}원] (폭 {box_width*100:.1f}%)"
+                "detail": f"박스 [{fmt_price(box_low, is_krx)} ~ {fmt_price(box_high, is_krx)}] (폭 {box_width*100:.1f}%)"
             },
             "weakness": {
                 "stage": 2 if s_brk_1 else (1 if is_s_weak else 0),
@@ -941,7 +951,7 @@ def evaluate_signals_and_modules_at(
 # =====================================================================
 # 3. 종목 7상태 기계 (250거래일 Warm-up 및 단일·하향 우선 전이)[cite: 1]
 # =====================================================================
-def run_lifecycle_state_machine(df: pd.DataFrame, s_modes: List[str], rs_info: Dict[str, Any]) -> Dict[str, Any]:
+def run_lifecycle_state_machine(df: pd.DataFrame, s_modes: List[str], rs_info: Dict[str, Any], is_krx: bool = True) -> Dict[str, Any]:
     """
     3장. 직전 250거래일 데이터를 처음부터 순차적으로 돌려(Warm-up) 현재 상태(D/B/R/S/H/W/K)와
     전이가 일어난 이유를 산출[cite: 1]. 하루 1전이, 하향 전이(2, 6, 8, 10, 11, 12, 14) 최우선[cite: 1].
@@ -981,7 +991,7 @@ def run_lifecycle_state_machine(df: pd.DataFrame, s_modes: List[str], rs_info: D
         rvol_t = float(row["RVOL"])
         mode_i = s_modes[i]
         ch_i = compute_auto_trend_channel(df, i)
-        sig = evaluate_signals_and_modules_at(df, i, mode_i, rs_info, levels_cache, ch_i)
+        sig = evaluate_signals_and_modules_at(df, i, mode_i, rs_info, levels_cache, ch_i, is_krx=is_krx)
         sh_l, sl_l = get_confirmed_swings_up_to(df, i)
 
         new_state = state
@@ -1000,7 +1010,7 @@ def run_lifecycle_state_machine(df: pd.DataFrame, s_modes: List[str], rs_info: D
             # 하향 전이 2 (우선): B -> D (바닥 구간 최저점 종가 갱신)[cite: 1]
             if c_t < b_low_anchor:
                 new_state = "D"
-                reason = f"전이 #2 (B→D): 바닥 최저점({int(b_low_anchor):,}원) 종가 하향 이탈"
+                reason = f"전이 #2 (B→D): 바닥 최저점({fmt_price(b_low_anchor, is_krx)}) 종가 하향 이탈"
             # 상향 전이 3: B -> S (S-START 확정 또는 S-DBL 쌍바닥 확정)[cite: 1]
             elif sig["s_start_confirmed"] or sig["dbl_bottom_confirmed"]:
                 new_state = "S"
@@ -1026,7 +1036,7 @@ def run_lifecycle_state_machine(df: pd.DataFrame, s_modes: List[str], rs_info: D
                 k_break_level = box_low_z_l
                 k_days_elapsed = 0
                 k_recover_streak = 0
-                reason = f"전이 #12 (R→K①): 박스 하단 ZONE({int(box_low_z_l):,}원) 종가 이탈"
+                reason = f"전이 #12 (R→K①): 박스 하단 ZONE({fmt_price(box_low_z_l, is_krx)}) 종가 이탈"
             # 상향 전이 5: R -> S (박스 상단 돌파 + S-START 확정)[cite: 1]
             elif sig["s_start_confirmed"] and c_t > sig["box_high"]:
                 new_state = "S"
@@ -1043,7 +1053,7 @@ def run_lifecycle_state_machine(df: pd.DataFrame, s_modes: List[str], rs_info: D
             # 하향 전이 6 (우선): S -> R (MB0.25 미도달 상태에서 돌파선 B ZONE 하단 아래 종가)[cite: 1]
             if high_since_s < s_mb025_target and c_t < b_z_l:
                 new_state = "R"
-                reason = f"전이 #6 (S→R): 가짜 돌파 (MB0.25 미도달 후 돌파선 {int(b_z_l):,}원 하향 이탈)"
+                reason = f"전이 #6 (S→R): 가짜 돌파 (MB0.25 미도달 후 돌파선 {fmt_price(b_z_l, is_krx)} 하향 이탈)"
             # 상향 전이 7: S -> H (돌파 후 확정 스윙 고점·저점이 한 번 더 상승)[cite: 1]
             elif (len(sh_l) > s_entry_sh_count or len(sl_l) > s_entry_sl_count) and sig["sh1"] > sig["sh2"] and sig["sl1"] > sig["sl2"]:
                 new_state = "H"
@@ -1057,7 +1067,7 @@ def run_lifecycle_state_machine(df: pd.DataFrame, s_modes: List[str], rs_info: D
                 k_break_level = sig["sl1_z_low"]
                 k_days_elapsed = 0
                 k_recover_streak = 0
-                reason = f"전이 #10 (H→K①): 주요 지지 ZONE({int(k_break_level):,}원) 또는 추세선 종가 이탈"
+                reason = f"전이 #10 (H→K①): 주요 지지 ZONE({fmt_price(k_break_level, is_krx)}) 또는 추세선 종가 이탈"
             # 하향 전이 8: H -> W (S-WEAK 약화 성립)[cite: 1]
             elif sig["is_s_weak"]:
                 new_state = "W"
@@ -1071,7 +1081,7 @@ def run_lifecycle_state_machine(df: pd.DataFrame, s_modes: List[str], rs_info: D
                 k_break_level = sig["sl1_z_low"]
                 k_days_elapsed = 0
                 k_recover_streak = 0
-                reason = f"전이 #11 (W→K①): 약화 상태에서 주요 지지({int(k_break_level):,}원) 종가 이탈"
+                reason = f"전이 #11 (W→K①): 약화 상태에서 주요 지지({fmt_price(k_break_level, is_krx)}) 종가 이탈"
             # 상향 전이 9: W -> H (신고가 C_t > SH_-1 + RVOL >= 1.5)[cite: 1]
             elif c_t > sig["sh1"] and rvol_t >= 1.5:
                 new_state = "H"
@@ -1111,7 +1121,7 @@ def run_lifecycle_state_machine(df: pd.DataFrame, s_modes: List[str], rs_info: D
         "S": "S 추세 시작", "H": "H 추세 유지", "W": "W 약화",
         "K": f"{sub_state or 'K'} 붕괴 경계"
     }
-    res_sig = evaluate_signals_and_modules_at(df, n - 1, s_modes[-1], rs_info, levels_cache, compute_auto_trend_channel(df, n - 1))
+    res_sig = evaluate_signals_and_modules_at(df, n - 1, s_modes[-1], rs_info, levels_cache, compute_auto_trend_channel(df, n - 1), is_krx=is_krx)
     if state == "K":
         res_sig["modules"]["weakness"]["stage"] = 3 if sub_state == "K②" else 2
         res_sig["modules"]["weakness"]["label"] = f"{sub_state or 'K①'} 붕괴 경계"
@@ -1159,6 +1169,15 @@ def scan_t_setups_and_size(
     s_reg = env_info["s_reg"]
     s_vix = env_info["s_vix"]
     is_krx = account_cfg.get("is_krx", True)
+    # 통화: T 엔진 기준값(유동성 50억 원·계좌 금액)은 원화. 해외 종목은 fx_to_krw(현지통화 1 = ?원)로 환산한다.
+    fx_to_krw = account_cfg.get("fx_to_krw")
+    if fx_to_krw is None and is_krx:
+        fx_to_krw = 1.0
+    fx_missing = fx_to_krw is None or float(fx_to_krw) <= 0
+    fx_to_krw = 1.0 if fx_missing else float(fx_to_krw)
+    _px = (lambda v: int(v)) if is_krx else (lambda v: round(float(v), 2))             # 가격 표기
+    _pxr = (lambda v: int(round(v, 0))) if is_krx else (lambda v: round(float(v), 2))  # 반올림 가격
+    min_tick = 1.0 if is_krx else 0.01                                                 # 1주당 위험 최소값
 
     # 4-1. 공통 관문 점검[cite: 1]
     hard_block = bool(account_cfg.get("hard_block_evt", False) or value_macro_input.get("thesis_status") == "붕괴")
@@ -1167,7 +1186,7 @@ def scan_t_setups_and_size(
     tr_val_20 = float(row.get("TRADING_VAL_MA20", 10_000_000_000))
     if np.isnan(tr_val_20):
         tr_val_20 = 10_000_000_000.0
-    liquidity_ok = (tr_val_20 >= TECH_PARAMS["MIN_TRADING_VAL_KRW"]) and (mktcap >= TECH_PARAMS["MIN_MKTCAP_KRW"])
+    liquidity_ok = (tr_val_20 * fx_to_krw >= TECH_PARAMS["MIN_TRADING_VAL_KRW"]) and (mktcap >= TECH_PARAMS["MIN_MKTCAP_KRW"])
     history_ok = n >= 120
 
     candidates: List[Dict[str, Any]] = []
@@ -1219,7 +1238,7 @@ def scan_t_setups_and_size(
             "time_stop_days": TECH_PARAMS["ST1_TIME_STOP_DAYS"],  # TP-20 (5거래일)[cite: 1]
             "max_hold_days": TECH_PARAMS["ST1_MAX_HOLD_DAYS"],   # TP-16 (30거래일)[cite: 1]
             "headline": "극단 이격도(하위 2.5%) 진입 후 투매 진정·확인봉 포착" if is_triggered else "극단 이격/투매 구간 진입 — 홀드봉+확인봉 대기",
-            "next_cond": f"전일 고가({int(row['High']):,}원) 돌파 양봉(확인봉) 종가 마감 시 진입",
+            "next_cond": f"전일 고가({fmt_price(row['High'], is_krx)}) 돌파 양봉(확인봉) 종가 마감 시 진입",
         })
 
     # -----------------------------------------------------------------
@@ -1257,8 +1276,8 @@ def scan_t_setups_and_size(
             "time_stop_days": TECH_PARAMS["ST2_TIME_STOP_DAYS"],
             "time_stop_min_price": mb025,
             "max_hold_days": 60,
-            "headline": f"주요 저항 ZONE({int(b_lvl):,}원) RVOL≥1.5 돌파",
-            "next_cond": f"돌파 기준선 ZONE 상단({int(sig['b_z_high']):,}원) 위 RVOL≥1.5 종가 안착",
+            "headline": f"주요 저항 ZONE({fmt_price(b_lvl, is_krx)}) RVOL≥1.5 돌파",
+            "next_cond": f"돌파 기준선 ZONE 상단({fmt_price(sig['b_z_high'], is_krx)}) 위 RVOL≥1.5 종가 안착",
         })
 
     if state == "B" and mods["bottom"]["stage"] >= 2 and not hard_block:
@@ -1291,8 +1310,8 @@ def scan_t_setups_and_size(
             "time_stop_days": TECH_PARAMS["ST2_TIME_STOP_DAYS"],
             "time_stop_min_price": mb025,
             "max_hold_days": 60,
-            "headline": f"바닥 해제 및 넥라인({int(b_lvl):,}원) 돌파 시도",
-            "next_cond": f"넥라인({int(b_lvl):,}원) RVOL≥1.5 종가 돌파 시 1차 50% 진입",
+            "headline": f"바닥 해제 및 넥라인({fmt_price(b_lvl, is_krx)}) 돌파 시도",
+            "next_cond": f"넥라인({fmt_price(b_lvl, is_krx)}) RVOL≥1.5 종가 돌파 시 1차 50% 진입",
         })
 
     # -----------------------------------------------------------------
@@ -1328,11 +1347,11 @@ def scan_t_setups_and_size(
             "entry_price": entry_p,
             "stop_price": stop_p,
             "target_1": target_1,
-            "target_2": f"채널 상단({int(ch['upper']):,}원) 1/3 청산 후 SMA20 트레일링",
+            "target_2": f"채널 상단({fmt_price(ch['upper'], is_krx)}) 1/3 청산 후 SMA20 트레일링",
             "time_stop_days": 10,
             "max_hold_days": 45,
             "headline": f"추세 유지(H) 중 겹침 지지 {len(sig['overlap_supports'])}개 구간 눌림",
-            "next_cond": f"겹침 지지 구간 위 확인봉(전일 고가 {int(row['High']):,}원 돌파 양봉) 출현 시 진입",
+            "next_cond": f"겹침 지지 구간 위 확인봉(전일 고가 {fmt_price(row['High'], is_krx)} 돌파 양봉) 출현 시 진입",
         })
 
     # -----------------------------------------------------------------
@@ -1363,16 +1382,16 @@ def scan_t_setups_and_size(
                 "entry_price": entry_p,
                 "stop_price": stop_p,
                 "target_1": box_mid,
-                "target_2": f"박스 상단 ZONE 하단({int(sig['box_high']):,}원) 전량 청산",
+                "target_2": f"박스 상단 ZONE 하단({fmt_price(sig['box_high'], is_krx)}) 전량 청산",
                 "time_stop_days": 10,
                 "time_stop_min_price": box_mid,
                 "max_hold_days": 20,
-                "headline": f"레인지 하단({int(sig['box_low']):,}원) 지지 도달",
-                "next_cond": f"박스 하단 ZONE에서 확인봉(전일 고가 {int(row['High']):,}원 돌파) 마감 시 진입",
+                "headline": f"레인지 하단({fmt_price(sig['box_low'], is_krx)}) 지지 도달",
+                "next_cond": f"박스 하단 ZONE에서 확인봉(전일 고가 {fmt_price(row['High'], is_krx)} 돌파) 마감 시 진입",
             })
 
-    if hard_block or not history_ok or not liquidity_ok:
-        block_reason = "기업 고유 악재(S-EVT) 또는 가치 논리(Thesis) 붕괴" if hard_block else ("상장 120거래일 미만" if not history_ok else "유동성/시가총액 최소 기준 미달")
+    if hard_block or not history_ok or not liquidity_ok or fx_missing:
+        block_reason = "기업 고유 악재(S-EVT) 또는 가치 논리(Thesis) 붕괴" if hard_block else ("상장 120거래일 미만" if not history_ok else ("환율 데이터 없음 (해외 종목 사이징 불가)" if fx_missing else "유동성/시가총액 최소 기준 미달"))
         return {
             "t_verdict": "금지" if hard_block else "관찰",
             "setup_id": None,
@@ -1388,12 +1407,12 @@ def scan_t_setups_and_size(
             "setup_id": None,
             "grade": None,
             "headline_reason": f"현재 상태({lifecycle['state_label']})에서 성립된 T 셋업 없음",
-            "next_or_end_condition": f"주요 돌파선({int(sig['b_neck']):,}원) 돌파 또는 지지 구간 눌림 대기",
+            "next_or_end_condition": f"주요 돌파선({fmt_price(sig['b_neck'], is_krx)}) 돌파 또는 지지 구간 눌림 대기",
             "t_ticket": {"is_executable": False, "reason": "활성 셋업 없음"},
         }
 
     # 각 후보에 대해 5-1 리스크·사이징 및 예상 R 계산[cite: 1]
-    total_equity = float(account_cfg.get("total_equity", 100_000_000))
+    total_equity = float(account_cfg.get("total_equity", 100_000_000)) / fx_to_krw  # 계좌(원화) → 종목 통화
     sleeve_ratio = float(account_cfg.get("t_sleeve_ratio", TECH_PARAMS["T_SLEEVE_RATIO"]))
     sleeve_krw = total_equity * sleeve_ratio
     loss_streak = int(account_cfg.get("loss_streak", 0))
@@ -1416,7 +1435,7 @@ def scan_t_setups_and_size(
         r_dollars = sleeve_krw * TECH_PARAMS["RISK_PER_TRADE"] * reg_mult * grade_mult * streak_mult * overval_mult
         entry_p = cand["entry_price"]
         stop_p = cand["stop_price"]
-        unit_1r = max(1.0, (entry_p - stop_p) + entry_p * TECH_PARAMS["ROUND_TRIP_COST"])
+        unit_1r = max(min_tick, (entry_p - stop_p) + entry_p * TECH_PARAMS["ROUND_TRIP_COST"])
         expected_r = (cand["target_1"] - entry_p) / unit_1r
 
         q_base = math.floor(r_dollars / unit_1r) if r_dollars > 0 else 0
@@ -1461,13 +1480,13 @@ def scan_t_setups_and_size(
 
     # 시간 손절 기준가 계산 (ST-1은 진입가 + 0.5R)[cite: 1]
     if best["setup_id"] == "ST-1":
-        time_min_p = int(round(best["entry_price"] + TECH_PARAMS["ST1_TIME_STOP_MIN_R"] * best["unit_r_krw"], 0))
+        time_min_p = _pxr(best["entry_price"] + TECH_PARAMS["ST1_TIME_STOP_MIN_R"] * best["unit_r_krw"])
     else:
-        time_min_p = int(round(best.get("time_stop_min_price", best["entry_price"] + best["unit_r_krw"]), 0))
+        time_min_p = _pxr(best.get("time_stop_min_price", best["entry_price"] + best["unit_r_krw"]))
 
     if best["can_enter"]:
         t_verdict = "진입"
-        end_cond = f"끝나는 조건: {int(best['stop_price']):,}원 아래 종가, 또는 {best['time_stop_days']}거래일째 {time_min_p:,}원 미만"
+        end_cond = f"끝나는 조건: {fmt_price(best['stop_price'], is_krx)} 아래 종가, 또는 {best['time_stop_days']}거래일째 {fmt_price(time_min_p, is_krx)} 미만"
     elif best["grade"] in ["A", "B"] and best["reg_mult"] > 0:
         t_verdict = "대기"
         if not best["triggered"]:
@@ -1492,20 +1511,21 @@ def scan_t_setups_and_size(
             "setup_name": best["name"],
             "grade": best["grade"],
             "purpose": best["purpose"],
-            "entry_price": int(best["entry_price"]),
-            "stop_price": int(best["stop_price"]),
+            "entry_price": _px(best["entry_price"]),
+            "stop_price": _px(best["stop_price"]),
             "shares": int(best["shares"]),
             "position_value": int(best["position_value"]),
-            "target_1": int(best["target_1"]),
+            "target_1": _px(best["target_1"]),
             "target_2": best["target_2"],
             "time_stop_days": int(best["time_stop_days"]),
             "time_stop_min_price": time_min_p,
             "max_hold_days": int(best["max_hold_days"]),
-            "invalidation": f"S-EVT 기업 고유 악재 발생 또는 {int(best['stop_price']):,}원 종가 이탈",
+            "invalidation": f"S-EVT 기업 고유 악재 발생 또는 {fmt_price(best['stop_price'], is_krx)} 종가 이탈",
             "expected_r": best["expected_r"],
-            "unit_r_krw": int(best["unit_r_krw"]),
-            "r_budget_krw": int(best["r_budget_krw"]),
-            "chase_ban_price": int(adjust_krx_price(c_t * (1.0 + TECH_PARAMS["MAX_CHASE_GAP"]), "down", is_krx)),
+            "unit_r_krw": _px(best["unit_r_krw"]),
+            "r_budget_krw": _px(best["r_budget_krw"]),
+            "currency": "KRW" if is_krx else "USD",
+            "chase_ban_price": _px(adjust_krx_price(c_t * (1.0 + TECH_PARAMS["MAX_CHASE_GAP"]), "down", is_krx)),
         }
     }
 
@@ -1518,7 +1538,8 @@ def evaluate_v_tranche_timings(
     s_mode: str,
     lifecycle: Dict[str, Any],
     env_info: Dict[str, Any],
-    value_macro_input: Dict[str, Any]
+    value_macro_input: Dict[str, Any],
+    is_krx: bool = True
 ) -> Tuple[List[Dict[str, Any]], str, List[int]]:
     """
     6-3. 가치 트랙의 buy_tranches 각 차수에 대해 '즉시(1.0) / 절반(0.5) / 이월(0.0)'과 이유 코드를 판정[cite: 1].
@@ -1659,7 +1680,7 @@ def evaluate_v_tranche_timings(
         v_line = "V 차수 미설정 (가치 트랙 매수기준선 입력 대기)"
     else:
         parts = [
-            f"{r['tranche']}차({r['price']:,}원): {r['verdict']}" + (" [고신뢰]" if r["high_confidence"] else "")
+            f"{r['tranche']}차({fmt_price(r['price'], is_krx)}): {r['verdict']}" + (" [고신뢰]" if r["high_confidence"] else "")
             for r in results
         ]
         v_line = "V 판정 — " + " · ".join(parts)
@@ -1791,6 +1812,7 @@ def analyze_technical_track(
         }
     if account_cfg is None:
         account_cfg = {"total_equity": 100_000_000, "t_sleeve_ratio": 0.30, "is_krx": True}
+    is_krx = bool(account_cfg.get("is_krx", True))
 
     # 1~2단계: 기초값 7개 연산[cite: 1]
     chart_df = compute_base_primitives(df)
@@ -1804,7 +1826,7 @@ def analyze_technical_track(
     chart_df["S_MODE"] = s_modes
 
     # 4~6단계: 생애주기 신호, 6대 판정 모듈, 7상태 기계[cite: 1]
-    lifecycle = run_lifecycle_state_machine(chart_df, s_modes, rs_info)
+    lifecycle = run_lifecycle_state_machine(chart_df, s_modes, rs_info, is_krx=is_krx)
     sig = lifecycle["latest_signals"]
     lvls = lifecycle["levels_cache"]
     ch = lifecycle["channel_cache"]
@@ -1812,7 +1834,7 @@ def analyze_technical_track(
     # 7단계: 분기 라우터 — T 셋업 스캔·사이징 & V 차수별 타이밍 판정[cite: 1]
     t_res = scan_t_setups_and_size(chart_df, s_modes, lifecycle, env_info, rs_info, value_macro_input, account_cfg)
     v_verdicts, v_summary_line, high_conf_tranches = evaluate_v_tranche_timings(
-        chart_df, s_modes[-1], lifecycle, env_info, value_macro_input
+        chart_df, s_modes[-1], lifecycle, env_info, value_macro_input, is_krx=is_krx
     )
 
     # S-MAT 이평 배열 판정[cite: 1]
@@ -1912,6 +1934,7 @@ def analyze_earnings_track(
     실적 분석 트랙 v1.0 메인 파이프라인 (E1 ~ E8 연산, G1~G5 생애주기 분류, 5대 축 점수 산출)[cite: 2].
     * 순환논리 원천 차단: 주가나 PER을 입력으로 받지 않으며 오직 실물/재무/리비전 데이터만 사용함[cite: 2].
     """
+    is_krx = str(ticker).upper().endswith((".KS", ".KQ"))  # EPS 문구 통화 표기용
     # 1. 기본 시드 데이터 및 오버라이드 병합 (yfinance 재무/컨센서스 또는 사용자/리포트 입력값 연동)
     default_data = {
         # E1. 최근 3개 분기 YoY 성장률 궤적 (t-2 -> t-1 -> t) 및 서프라이즈[cite: 2]
@@ -2042,8 +2065,8 @@ def analyze_earnings_track(
         },
         {
             "metric": "EPS (완전희석)",
-            "actual": f"{ac['eps_actual']:,.0f}원",
-            "consensus": f"{ac['eps_cons']:,.0f}원",
+            "actual": f"{fmt_price(ac['eps_actual'], is_krx)}",
+            "consensus": f"{fmt_price(ac['eps_cons'], is_krx)}",
             "surprise": f"{eps_beat_pct*100:+.1f}%",
             "qoq": f"{ac['eps_qoq']*100:+.1f}%",
             "yoy": f"{ac['eps_yoy']*100:+.1f}%",
@@ -2366,9 +2389,9 @@ def analyze_earnings_track(
             "change_30d": round(delta_30, 4),
             "inflection_flag": inflection_flag,
             "table": [
-                {"period": "현재 (t)", "ntm_eps": f"{rev['ntm_t']:,.0f}원", "fy1_eps": f"{rev['fy1_t']:,.0f}원", "fy2_eps": f"{rev['fy2_t']:,.0f}원", "analysts": f"{rev['analysts_t']}명"},
-                {"period": "30일 전 (t-30)", "ntm_eps": f"{rev['ntm_30d']:,.0f}원", "fy1_eps": f"{rev['fy1_30d']:,.0f}원", "fy2_eps": f"{rev['fy2_30d']:,.0f}원", "analysts": f"{rev['analysts_30d']}명"},
-                {"period": "90일 전 (t-90)", "ntm_eps": f"{rev['ntm_90d']:,.0f}원", "fy1_eps": f"{rev['fy1_90d']:,.0f}원", "fy2_eps": f"{rev['fy2_90d']:,.0f}원", "analysts": f"{rev['analysts_90d']}명"},
+                {"period": "현재 (t)", "ntm_eps": f"{fmt_price(rev['ntm_t'], is_krx)}", "fy1_eps": f"{fmt_price(rev['fy1_t'], is_krx)}", "fy2_eps": f"{fmt_price(rev['fy2_t'], is_krx)}", "analysts": f"{rev['analysts_t']}명"},
+                {"period": "30일 전 (t-30)", "ntm_eps": f"{fmt_price(rev['ntm_30d'], is_krx)}", "fy1_eps": f"{fmt_price(rev['fy1_30d'], is_krx)}", "fy2_eps": f"{fmt_price(rev['fy2_30d'], is_krx)}", "analysts": f"{rev['analysts_30d']}명"},
+                {"period": "90일 전 (t-90)", "ntm_eps": f"{fmt_price(rev['ntm_90d'], is_krx)}", "fy1_eps": f"{fmt_price(rev['fy1_90d'], is_krx)}", "fy2_eps": f"{fmt_price(rev['fy2_90d'], is_krx)}", "analysts": f"{rev['analysts_90d']}명"},
             ],
         },
         "quality_checks": {
@@ -2848,7 +2871,7 @@ def analyze_fundamental_track(
     # 최종 채택 매도목표가: 독립 앵커 2와 앵커 3의 평균[cite: 4]
     adopted_sell_per = round((anchor2_per + anchor3_per) / 2.0, 1)
     sell_target_1y = int(adjust_krx_price(adopted_sell_per * eps_1y_base, "down", is_krx))
-    sell_target_formula = f"{sell_target_1y:,}원 = 1Y Base EPS {int(eps_1y_base):,}원 × 목표 PER {adopted_sell_per:.1f}배 (독립 앵커2·3 평균)"
+    sell_target_formula = f"{fmt_price(sell_target_1y, is_krx)} = 1Y Base EPS {fmt_price(eps_1y_base, is_krx)} × 목표 PER {adopted_sell_per:.1f}배 (독립 앵커2·3 평균)"
 
     # 2Y 매도목표가 및 보유기간 상한 경고 (2Y 목표가 < 1Y 목표가 역전 여부)[cite: 4]
     per_2y_target = max(theoretical_mature_per, base_mult)
@@ -2856,10 +2879,10 @@ def analyze_fundamental_track(
     holding_cap_warn = bool(sell_target_2y < sell_target_1y)
 
     anchors_table = [
-        {"id": "앵커 1", "name": "증권사 컨센서스 평균", "target_per": f"{anchor1_per:.1f}배", "target_price": f"{anchor1_price:,}원", "indep": "반종속 (참고 교차검증)"},
-        {"id": "앵커 2", "name": "역사적 밴드 상단 (μ+1σ)", "target_per": f"{anchor2_per:.1f}배", "target_price": f"{anchor2_price:,}원", "indep": "✅ 독립 (채택 반영)"},
-        {"id": "앵커 3", "name": f"PEG 적정 배수 (PEG={peg_target})", "target_per": f"{anchor3_per:.1f}배", "target_price": f"{anchor3_price:,}원", "indep": "✅ 독립 (채택 반영)"},
-        {"id": "앵커 4", "name": "피어 상위 25% 배수", "target_per": f"{anchor4_per:.1f}배", "target_price": f"{anchor4_price:,}원", "indep": "유효 참고" if anchor4_valid else "미충족 (순우위<2)"},
+        {"id": "앵커 1", "name": "증권사 컨센서스 평균", "target_per": f"{anchor1_per:.1f}배", "target_price": f"{fmt_price(anchor1_price, is_krx)}", "indep": "반종속 (참고 교차검증)"},
+        {"id": "앵커 2", "name": "역사적 밴드 상단 (μ+1σ)", "target_per": f"{anchor2_per:.1f}배", "target_price": f"{fmt_price(anchor2_price, is_krx)}", "indep": "✅ 독립 (채택 반영)"},
+        {"id": "앵커 3", "name": f"PEG 적정 배수 (PEG={peg_target})", "target_per": f"{anchor3_per:.1f}배", "target_price": f"{fmt_price(anchor3_price, is_krx)}", "indep": "✅ 독립 (채택 반영)"},
+        {"id": "앵커 4", "name": "피어 상위 25% 배수", "target_per": f"{anchor4_per:.1f}배", "target_price": f"{fmt_price(anchor4_price, is_krx)}", "indep": "유효 참고" if anchor4_valid else "미충족 (순우위<2)"},
     ]
 
     # -----------------------------------------------------------------
@@ -2876,16 +2899,16 @@ def analyze_fundamental_track(
         pq_status = "QUALIFIED"
         pq_icon = "🟢"
         gap_pct = (current_price / t1_price - 1.0) * 100.0
-        pq_reason = f"현재가({int(current_price):,}원)가 1차 매수기준선({t1_price:,}원, {gap_pct:+.1f}%) 이하 및 MDD Ratio {mdd_ratio:.2f}로 가격 자격 충족"
+        pq_reason = f"현재가({fmt_price(current_price, is_krx)})가 1차 매수기준선({fmt_price(t1_price, is_krx)}, {gap_pct:+.1f}%) 이하 및 MDD Ratio {mdd_ratio:.2f}로 가격 자격 충족"
     elif (open_t0 and current_price <= t0_price) or (current_price <= t1_price and mdd_ratio >= 0.15):
         pq_status = "CONDITIONAL"
         pq_icon = "🟡"
-        pq_reason = f"조건부 가격 자격 — 0차 탐색선({t0_price:,}원) 이하 도달 또는 목표 비중 50% 축소 가동 구간 (MDD Ratio {mdd_ratio:.2f})"
+        pq_reason = f"조건부 가격 자격 — 0차 탐색선({fmt_price(t0_price, is_krx)}) 이하 도달 또는 목표 비중 50% 축소 가동 구간 (MDD Ratio {mdd_ratio:.2f})"
     else:
         pq_status = "DISQUALIFIED"
         pq_icon = "🔴"
         gap_to_t1 = (current_price / max(t1_price, 1) - 1.0) * 100.0
-        pq_reason = f"현재가({int(current_price):,}원)가 1차 매수기준선({t1_price:,}원) 대비 +{gap_to_t1:.1f}% 높음 — 지정가 도달 전까지 추격 매수 금지(대기)"
+        pq_reason = f"현재가({fmt_price(current_price, is_krx)})가 1차 매수기준선({fmt_price(t1_price, is_krx)}) 대비 +{gap_to_t1:.1f}% 높음 — 지정가 도달 전까지 추격 매수 금지(대기)"
 
     # F10. 멀티플 오판 포인트 자동 문장 생성[cite: 4]
     if implied_5y_cagr < consensus_2y_cagr:
@@ -3686,6 +3709,7 @@ def synthesize_4tracks(
         synth_cfg = {}
 
     stock_name = synth_cfg.get("stock_name", ticker.upper())
+    is_krx = ticker.upper().endswith((".KS", ".KQ"))  # 문구 통화 표기용
     is_halted = bool(synth_cfg.get("is_halted", False))
     bad_evt_flag = bool(synth_cfg.get("bad_evt_flag", False))          # 횡령·배임·악성 유상증자·리픽싱 CB 등[cite: 6]
     pead_days_left = int(synth_cfg.get("pead_lockout_days_left", 0))   # 단발 어닝 쇼크 후 5거래일 냉각기 잔여일[cite: 6]
@@ -3961,16 +3985,16 @@ def synthesize_4tracks(
         elif v_status_code == "V_EXEC_HALF":
             v_act_str = f"오늘 V(가치)는 {active_tr_num}차 매수물량의 절반(50%, 총자산의 {rec_v_weight*100:.2f}%)을 집행하고"
         elif v_status_code == "V_DEFERRED_CHART":
-            v_act_str = f"현재 V(가치)는 {active_tr_num}차 매수선({active_tr_price:,}원) 도달 후 차트 바닥 확인 대기 중(이월)이며"
+            v_act_str = f"현재 V(가치)는 {active_tr_num}차 매수선({fmt_price(active_tr_price, is_krx)}) 도달 후 차트 바닥 확인 대기 중(이월)이며"
         elif v_status_code == "V_WAIT_PRICE":
-            v_act_str = f"V(가치) 기준으로는 아직 매수선 위여서 가격 대기(1차선 {t1_price:,}원까지 {-dist_to_t1_pct*100:+.1f}% 필요) 구간이나"
+            v_act_str = f"V(가치) 기준으로는 아직 매수선 위여서 가격 대기(1차선 {fmt_price(t1_price, is_krx)}까지 {-dist_to_t1_pct*100:+.1f}% 필요) 구간이나"
         elif v_status_code == "V_PROFIT_TAKE":
-            v_act_str = f"현재 V(가치)는 매도목표가({sell_target_1y:,}원) 권역에 도달해 분할 차익실현 구간이며"
+            v_act_str = f"현재 V(가치)는 매도목표가({fmt_price(sell_target_1y, is_krx)}) 권역에 도달해 분할 차익실현 구간이며"
         else:
             v_act_str = f"현재 V(가치)는 {v_badge} 상태이며"
 
         if t_status_code == "T_ENTRY":
-            t_act_str = f"T(트레이딩)는 {setup_id}({t_grade}등급) 진입(진입가 {t_ticket['entry_price']:,}원, {t_ticket['shares']:,}주)이 열렸습니다."
+            t_act_str = f"T(트레이딩)는 {setup_id}({t_grade}등급) 진입(진입가 {fmt_price(t_ticket['entry_price'], is_krx)}, {t_ticket['shares']:,}주)이 열렸습니다."
         elif t_status_code == "T_READY":
             t_act_str = f"T(트레이딩)는 {setup_id}({t_grade}등급) 트리거 임박 상태로 확인봉 출현 시 진입합니다."
         elif t_status_code == "T_BLOCKED_BY_V_EXIT":
@@ -3995,9 +4019,9 @@ def synthesize_4tracks(
     elif v_status_code == "V_EXEC_HALF":
         v_cond_str = f"V 잔여 50% 추가 집행: 차트 바닥 전환(STATE_B/S) 확정 또는 지수 레짐 🟢 상향 시"
     elif v_status_code == "V_WAIT_PRICE":
-        v_cond_str = f"V 개방 조건: 주가가 1차 매수기준선({t1_price:,}원) 이하로 조정 도달 시"
+        v_cond_str = f"V 개방 조건: 주가가 1차 매수기준선({fmt_price(t1_price, is_krx)}) 이하로 조정 도달 시"
     else:
-        v_cond_str = f"V 매도목표가: {sell_target_1y:,}원 ｜ 핵심 드라이버 무효화 감시: {earn_out['thesis_driver']['invalidation_condition']}"
+        v_cond_str = f"V 매도목표가: {fmt_price(sell_target_1y, is_krx)} ｜ 핵심 드라이버 무효화 감시: {earn_out['thesis_driver']['invalidation_condition']}"
 
     line_3_trigger = f"{t_cond_str} ｜ {v_cond_str}"
 
@@ -4017,7 +4041,7 @@ def synthesize_4tracks(
         unified_watchlist.append({
             "priority": 1,
             "category": "T 손절/기한",
-            "item": f"손절가({t_ticket['stop_price']:,}원) 종가 이탈 및 {t_ticket['time_stop_days']}일 시간손절({t_ticket['time_stop_min_price']:,}원)",
+            "item": f"손절가({fmt_price(t_ticket['stop_price'], is_krx)}) 종가 이탈 및 {t_ticket['time_stop_days']}일 시간손절({fmt_price(t_ticket['time_stop_min_price'], is_krx)})",
             "d_day": f"D-{t_ticket['time_stop_days']}"
         })
     unified_watchlist.append({
@@ -4077,7 +4101,7 @@ def synthesize_4tracks(
             },
             "fundamental": {
                 "icon": f_pq.get("grade_icon", "🟡"),
-                "label": f"{price_qual_code} (1차선 {t1_price:,}원)",
+                "label": f"{price_qual_code} (1차선 {fmt_price(t1_price, is_krx)})",
                 "state": f"MDD Ratio {mdd_ratio:.2f} · 자기 {f_tz.get('self_5y_z', 0.0):+.2f}σ"
             },
             "macro": {
@@ -4112,7 +4136,7 @@ def synthesize_4tracks(
             "shares": int(t_ticket.get("shares", 0) * t_risk_mod),
             "target_price": int(t_ticket.get("target_1", current_price * 1.10)),
             "expected_r": float(t_ticket.get("expected_r", 0.0)),
-            "time_stop_rule": f"{t_ticket.get('time_stop_days', 5)}거래일째 {t_ticket.get('time_stop_min_price', 0):,}원 미달 시 다음 날 시가 청산",
+            "time_stop_rule": f"{t_ticket.get('time_stop_days', 5)}거래일째 {fmt_price(t_ticket.get('time_stop_min_price', 0), is_krx)} 미달 시 다음 날 시가 청산",
             "invalidation_rule": t_ticket.get("invalidation", "손절가 종가 이탈 또는 S-EVT 악재 발생"),
             "earnings_hold_guide": earnings_hold_guide,
         },
@@ -5205,19 +5229,8 @@ def run_home_dashboard_engine(
         micro_out[grp_key] = grp_items
 
     # -----------------------------------------------------------------
-    # 5. [모듈 4] 자동 기회 포착 레이더 (as_of, published, source 및 신선도 배지 부여)
+    # 5. (삭제 2026-11-09) 옛 예시 기회 레이더 — 실행 레이더는 app.py의 build_radar_signals(실제 T 신호)로 대체
     # -----------------------------------------------------------------
-    raw_radar = report_json.get("opportunity_radar") or SAMPLE_DATA["opportunity_radar"]
-    radar_out: Dict[str, List[Dict[str, Any]]] = {}
-    for col_key in ["col1_action_flips", "col2_approaching", "col3_risk_alerts"]:
-        col_items = []
-        for item in raw_radar.get(col_key, []):
-            rec = dict(item)
-            rec["freshness"] = evaluate_record_freshness(
-                rec.get("as_of"), kind="price", reference_date=latest_mkt_as_of, is_sample=bool(rec.get("is_sample"))
-            )
-            col_items.append(rec)
-        radar_out[col_key] = col_items
 
     dashboard_payload = {
         "meta": {
@@ -5253,7 +5266,6 @@ def run_home_dashboard_engine(
             "kr_inst_foreign_top3": kr_flow_out,
             "micro_smart_signals": micro_out,
         },
-        "opportunity_radar": radar_out,
     }
 
     # 2단계 일관성 점검 결과 첨부
@@ -6418,20 +6430,13 @@ def _drop_incomplete_bar(df: Optional[pd.DataFrame], market: str, now=None) -> O
     return df
 
 
-def _krw_text_to_usd(text: Any, fx: float) -> str:
-    """엔진 문구 안의 원화 금액(예: '232,500원')을 달러로 바꾼다 (미국 종목 표시용)."""
-    import re
-    return re.sub(r"(\d[\d,]*)원", lambda m: f"${int(m.group(1).replace(',', '')) / fx:,.2f}", str(text))
-
-
 def build_radar_signal(item: Dict[str, Any], df: Optional[pd.DataFrame], bench_df: Optional[pd.DataFrame],
                        vix_series: Optional[pd.Series], account_cfg: Optional[Dict[str, Any]],
                        fx_usdkrw: Optional[float] = None) -> Dict[str, Any]:
     """
     한 종목의 실제 T 신호를 레이더 형식(apply_gate_action_matrix 입력)으로 만든다.
     - 가치 트랙(매수 기준선·매도 목표가·Thesis)은 넣지 않는다 → 엔진이 임의 매수선을 만들지 않도록 빈 값 전달.
-    - T 엔진은 원화 기준(유동성 50억 원, 정수 가격, 원화 사이징)이므로 미국 종목은 최신 환율(상수 하나)을 곱해
-      넣고, 결과 가격은 달러로 되돌린다. 상수를 곱하므로 차트 모양과 신호는 바뀌지 않는다.
+    - 미국 종목은 fx_to_krw(USD/KRW)를 넘겨, 엔진이 유동성 기준·계좌 금액만 원화로 환산하게 한다(가격은 달러 그대로).
     반환 kind: "signal"(실행·관찰·방어) | "none"(신호 없음) | "error"(계산 불가)
     """
     mkt = item.get("market", "US")
@@ -6443,26 +6448,20 @@ def build_radar_signal(item: Dict[str, Any], df: Optional[pd.DataFrame], bench_d
         if n_bars < RADAR_CONFIG["MIN_BARS"]:
             return {**base, "kind": "error", "as_of": as_of,
                     "reason": f"일봉 {n_bars}개 ({RADAR_CONFIG['MIN_BARS']}개 필요)"}
-        fx = 1.0
-        if mkt == "US":
-            if not fx_usdkrw or float(fx_usdkrw) <= 0:
-                return {**base, "kind": "error", "as_of": as_of, "reason": "USD/KRW 환율 데이터 없음"}
-            fx = float(fx_usdkrw)
-        px = df.copy()
-        for c in ("Open", "High", "Low", "Close"):
-            px[c] = pd.to_numeric(px[c], errors="coerce") * fx
-        px = px.dropna(subset=["Open", "High", "Low", "Close"])
+        if mkt == "US" and (not fx_usdkrw or float(fx_usdkrw) <= 0):
+            return {**base, "kind": "error", "as_of": as_of, "reason": "USD/KRW 환율 데이터 없음"}
+        px = df.dropna(subset=["Open", "High", "Low", "Close"])
         neutral_value = {"thesis_status": "미확인", "kill_flags": [], "buy_tranches": [], "sell_target": None,
                          "position_cap": TECH_PARAMS["MAX_POS_RATIO_TOTAL"], "real_signal": "중립",
                          "macro_regime_override": None}
-        cfg = {**(account_cfg or {}), "is_krx": mkt == "KR"}
+        cfg = {**(account_cfg or {}), "is_krx": mkt == "KR", "fx_to_krw": 1.0 if mkt == "KR" else float(fx_usdkrw)}
         out = analyze_technical_track(px, bench_df, vix_series, value_macro_input=neutral_value, account_cfg=cfg)
     except Exception as e:
         return {**base, "kind": "error", "as_of": None, "reason": f"계산 오류: {type(e).__name__}: {e}"[:200]}
 
     sb, ls, tkt = out["summary_banner"], out["lifecycle_state"], (out.get("t_ticket") or {})
-    to_px = (lambda v: round(float(v) / fx, 2)) if mkt == "US" else (lambda v: int(v))
-    to_txt = (lambda s: _krw_text_to_usd(s, fx)) if mkt == "US" else (lambda s: str(s))
+    to_px = (lambda v: round(float(v), 2)) if mkt == "US" else (lambda v: int(v))
+    to_txt = str
     detail = {
         "currency": "USD" if mkt == "US" else "KRW",
         "setup_id": sb.get("setup_id"), "grade": sb.get("grade"),

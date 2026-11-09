@@ -56,3 +56,10 @@
 - 2026-11-09 (Claude): engine.py의 위쪽 중복 정의 4개(GATE_CONFIG, calculate_single_gate, evaluate_market_gate, apply_gate_action_matrix) 삭제. 이전/이후 결과 992건 동일 확인. 백업: engine.py.bak_before_task6.
 
 - 2026-11-09 (Claude): 국면 게이트 히스테리시스 적용 — build_gate_history_state가 최근 10거래일(GATE_CONFIG["HISTORY_LOOKBACK_DAYS"])을 과거 종가로 재계산해 이전 단계를 만들고(파일 저장 없음), 완화는 2거래일 연속 확인 후 한 단계씩. 레짐·VIX·거시 국면 계산을 build_regime_vix_header로 분리(단일 출처). 백업: *.bak_before_task4.
+
+- 2026-11-09 (Claude): 오늘의 결론 해제 조건을 더 나쁜 게이트 기준으로 표시. use_container_width → width="stretch"(app.py 2곳, 딥다이브 10곳). 데이터 점검을 '확인 필요/예시 데이터'로 분리하고 예시 데이터의 기준일 없음 중복 경고 제거. AGENTS.md 3번 23번째 줄 갱신. 백업: *.bak_before_task7.
+- 2026-11-09 (Gemini): `pages/1_🔎_종목_딥다이브.py`에서 종목 검색 시 `resolve_ticker(raw_query)` 호출이 누락되어 한글 종목명·6자리 코드가 변환되지 않던 오류 수정.
+- 2026-11-09 (Claude): utils.load_latest_report가 GitHub raw의 최신 리포트를 읽어 PC 파일과 generated_at을 비교해 최신 것을 사용(30분 캐시, 실패 시 PC 파일). PC 파일은 덮어쓰지 않음. 리포트 때문에 git pull할 필요 없음. 백업: utils.py.bak_before_report.
+- 2026-11-09 (Gemini): `pages/1_🔎_종목_딥다이브.py`의 `resolve_ticker`에 KRX 상장법인 목록 캐싱 및 네이버 금융 자동완성 보조 검색을 연동하여 한국 코스피·코스닥 전 종목 및 ETF의 한글명·6자리 코드(`.KS`/`.KQ` 자동 판별) 검색 지원.
+- 2026-11-09 (Claude): 실행 레이더를 실제 T 신호로 교체 — 섹터 흐름 '지금 강한 곳'·'다음 후보' 대표 종목(RADAR_CONFIG, 최대 18개)을 analyze_technical_track로 계산(build_radar_signals). 미국 종목은 USD/KRW 환율 상수로 원화 환산 후 달러로 표시, 장중 미완성 봉 제외, V 트랙은 딥다이브 전용. 붕괴·하락 상태는 방어 신호 우선. 예시 레이더 신호 사용 중단. 백업: *.bak_before_task2.
+- 2026-11-09 (Claude): T 엔진을 통화 인식형으로 수정 — account_cfg["fx_to_krw"]로 해외 종목 유동성·계좌 금액을 원화 환산, 가격 소수 유지, 최소 1R 0.01, 문구는 engine.fmt_price($/원). 딥다이브 가격 표시 28곳·실적/펀더멘털/종합 문구 32곳 통화 표기 수정, 미국 종목은 USD/KRW 환율 전달. 레이더 환산 우회 제거, 옛 예시 기회 레이더 삭제. 한국 종목 결과 불변 확인. 백업: *.bak_before_fx.
