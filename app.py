@@ -96,15 +96,27 @@ def load_home_dashboard_data() -> dict:
 
 
 @st.cache_data(ttl=1800, show_spinner="실행 레이더 신호를 계산하는 중... (종목당 1~2초)")
-def load_radar_signals(universe_key: tuple, total_equity: float, t_sleeve_ratio: float) -> dict:
-    """레이더 대상 종목의 일봉을 받아 실제 T 신호를 계산한다 (engine.build_radar_signals)."""
-    universe = [dict(zip(("ticker", "market", "basket", "basket_role", "origin"), u)) for u in universe_key]
-    cfg = engine.RADAR_CONFIG
-    syms = list(dict.fromkeys([u["ticker"] for u in universe]
-                              + [cfg["FX_TICKER"], cfg["BENCH"]["US"], cfg["BENCH"]["KR"], "^VIX"]))
-    pm = download_ohlc_map(syms, period=cfg["PRICE_PERIOD"])
-    # 다음 실적 발표일 (실적 발표 D-3 ~ 당일 신규 진입 보류용). 여러 종목을 동시에 조회한다.
+def load_radar_signals(basket_key: tuple, total_equity: float, t_sleeve_ratio: float) -> dict:
+    """
+    강한 섹터 ETF의 상위 구성 종목에서 레이더 종목을 고르고(engine.select_radar_universe),
+    실제 T 신호를 계산한다(engine.build_radar_signals).
+    """
     from concurrent.futures import ThreadPoolExecutor
+    baskets = [{"basket": b, "basket_role": r} for b, r in basket_key]
+    cfg = engine.RADAR_CONFIG
+    # 1) 섹터 ETF 상위 구성 종목 (여러 ETF 동시 조회)
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        holdings = list(ex.map(engine.fetch_etf_top_holdings, [b["basket"] for b in baskets]))
+    cand_map = {b["basket"]: engine.build_basket_candidates(b["basket"], h) for b, h in zip(baskets, holdings)}
+    # 2) 후보 전체 일봉 + 환율·기준 지수·VIX
+    cand_syms = [c["ticker"] for v in cand_map.values() for c in v["candidates"]]
+    syms = list(dict.fromkeys(cand_syms + [cfg["FX_TICKER"], cfg["BENCH"]["US"], cfg["BENCH"]["KR"], "^VIX"]))
+    pm = download_ohlc_map(syms, period=cfg["PRICE_PERIOD"])
+    bench_map = {m: pm.get(t) for m, t in cfg["BENCH"].items()}
+    # 3) 추세 통과 + 3개월 상대강도 순으로 섹터당 상위 종목 선정
+    sel = engine.select_radar_universe(baskets, cand_map, pm, bench_map)
+    universe = sel["universe"]
+    # 4) 다음 실적 발표일 (실적 발표 D-3 ~ 당일 신규 진입 보류용)
     with ThreadPoolExecutor(max_workers=8) as ex:
         earn_dates = list(ex.map(engine.fetch_next_earnings_date, [u["ticker"] for u in universe]))
     for u, d in zip(universe, earn_dates):
@@ -114,10 +126,12 @@ def load_radar_signals(universe_key: tuple, total_equity: float, t_sleeve_ratio:
     fx = float(fx_close.iloc[-1]) if fx_close is not None and len(fx_close) > 0 else None
     vix = pm["^VIX"]["Close"] if "^VIX" in pm else None
     res = engine.build_radar_signals(
-        universe, pm, {m: pm.get(t) for m, t in cfg["BENCH"].items()}, vix,
+        universe, pm, bench_map, vix,
         {"total_equity": total_equity, "t_sleeve_ratio": t_sleeve_ratio}, fx,
     )
     res["fx_usdkrw"] = fx
+    res["universe"] = universe
+    res["selection_log"] = sel["log"]
     return res
 
 
@@ -502,16 +516,21 @@ with g_kr:
     st.markdown(gate_box("한국 게이트", kr_gate), unsafe_allow_html=True)
 st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
-# 레이더 대상: 섹터 흐름의 '지금 강한 곳'·'다음 후보' 섹터 대표 종목 (나중에 사용자 관심 종목을 앞에 추가)
-radar_universe = engine.select_radar_universe(ev) if ev else []
-if radar_universe:
+# 레이더 대상: '지금 강한 곳'·'다음 후보' 섹터 ETF의 상위 구성 종목 중 추세·상대강도 상위 (나중에 사용자 관심 종목을 앞에 추가)
+radar_baskets = engine.select_radar_baskets(ev) if ev else []
+radar_universe = []
+if radar_baskets:
     radar_res = load_radar_signals(
-        tuple((u["ticker"], u["market"], u["basket"], u["basket_role"], u["origin"]) for u in radar_universe),
+        tuple((b["basket"], b["basket_role"]) for b in radar_baskets),
         float(st.session_state["total_equity"]), float(st.session_state["t_sleeve_ratio"]),
     )
+    radar_universe = radar_res.get("universe", [])
+    if not radar_universe:
+        radar_res["fatal"] = "강한 섹터의 후보 종목 중 추세(50일선 위)를 통과한 종목이 없습니다"
 else:
-    radar_res = {"signals": [], "no_signal": [], "errors": [],
-                 "fatal": "섹터 흐름 데이터가 없어 레이더 종목을 고르지 못했습니다"}
+    no_basket_msg = ("지금 '주도'·'개선' 사분면에 있는 섹터가 없어 레이더 대상 종목이 없습니다" if rb.get("available")
+                     else "섹터 흐름 데이터가 없어 레이더 종목을 고르지 못했습니다")
+    radar_res = {"signals": [], "no_signal": [], "errors": [], "fatal": no_basket_msg}
 all_signals = radar_res["signals"]
 if baskets_eval and all_signals:
     all_signals = engine.sync_radar_basket_badges({"all": all_signals}, baskets_eval)["all"]
@@ -558,6 +577,8 @@ def render_signal(a: dict, key_prefix: str):
         unsafe_allow_html=True,
     )
     st.caption(f"섹터 맥락: {a.get('basket_sync_badge') or a.get('basket', '')} · {a.get('basket_role', '')}")
+    if a.get("selection_note"):
+        st.caption(f"선정 이유: {a['selection_note']}")
     if a.get("gate_applied"):
         st.markdown(f"<span style='color:#94a3b8;'>원신호: <s>{a['orig_action']} (계획 비중의 {a['orig_weight']}%)</s></span>",
                     unsafe_allow_html=True)
@@ -603,6 +624,7 @@ def render_radar():
         with st.expander(f"지금 신호 없는 종목 {len(radar_res['no_signal'])}개", expanded=False):
             st.dataframe(pd.DataFrame([
                 {"종목": r["ticker"], "섹터": r.get("basket"), "구분": r.get("basket_role"),
+                 "선정 이유": r.get("selection_note", ""),
                  "상태": r.get("state_label", ""),
                  "실적 발표": f"{r['next_earnings']} (D-{r['days_to_earnings']})" if r.get("days_to_earnings") is not None else "미확인",
                  "사유": r.get("reason", "")}
@@ -610,8 +632,12 @@ def render_radar():
             ]), width="stretch", hide_index=True)
 
 
-st.caption(f"대상: 섹터 흐름의 '지금 강한 곳'·'다음 후보' 섹터 대표 종목 {len(radar_universe)}개 · "
+st.caption(f"대상: '지금 강한 곳'·'다음 후보' 섹터 ETF의 상위 구성 종목 중 추세(50일선 위)·3개월 상대강도 상위 {len(radar_universe)}개 · "
            "T(추세매매) 신호만 표시 — V(가치 분할매수)는 종목 딥다이브에서 확인하세요.")
+if radar_res.get("selection_log"):
+    with st.expander("종목 선정 과정 보기", expanded=False):
+        st.dataframe(pd.DataFrame(radar_res["selection_log"]), width="stretch", hide_index=True)
+        st.caption("후보 = 섹터 ETF 상위 구성 종목(미국·한국 상장만). 구성 데이터가 없으면 미리 정한 대표 종목으로 보충합니다.")
 if radar_res.get("fatal"):
     st.warning(f"실행 레이더: {radar_res['fatal']}. 예시 신호로 대신 채우지 않습니다.")
 else:
