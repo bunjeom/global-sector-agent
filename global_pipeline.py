@@ -414,6 +414,17 @@ def run_global_pipeline() -> dict:
         "risk_management": "주목 섹터 종목은 고점 대비 -7% 이탈 시 추세 훼손으로 손절(Stop-Loss), 소외 섹터 종목은 영업적자 전환 또는 -5% 이탈 시 편출하며 20영업일 주기로 리밸런싱 수행"
     }
 
+    print("⏳ [Stage 5] 섹터 바스켓 실적 리비전(애널리스트 EPS 추정치 변화) 수집...")
+    try:
+        import engine  # 계산 로직은 engine.fetch_basket_revisions 한 곳에만 둔다
+        basket_revisions = engine.fetch_basket_revisions()
+        ok_cnt = sum(1 for v in basket_revisions.values() if v.get("rev_30d") is not None)
+        print(f"   - 리비전 계산 완료: {ok_cnt}/{len(basket_revisions)}개 바스켓")
+    except Exception as e:
+        # 실패해도 파이프라인 전체는 계속. 앱은 빈 값을 '데이터 없음'으로 표시한다(예시 데이터로 채우지 않음).
+        print(f"⚠️ 실적 리비전 수집 실패: {e}")
+        basket_revisions = {}
+
     report = {
         "version": "2.0 (Top-Down Causal & Time-Aligned Architecture)",
         "generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -426,7 +437,8 @@ def run_global_pipeline() -> dict:
         "nasdaq_summary": {"hot_sector": nasdaq_res["hot_sector"], "cold_sector": nasdaq_res["cold_sector"]},
         "kospi_sectors_table": kospi_res["sectors_df"].to_dict(orient="records"),
         "nasdaq_sectors_table": nasdaq_res["sectors_df"].to_dict(orient="records"),
-        "top12_stocks": final_stocks
+        "top12_stocks": final_stocks,
+        "basket_revisions": basket_revisions,
     }
 
     with open("latest_global_report.json", "w", encoding="utf-8") as f:

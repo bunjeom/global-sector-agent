@@ -214,7 +214,7 @@ with col_t1:
     "종목명 또는 티커 (예: 삼성전자, 000720, NVDA)",
     value=st.session_state.get("selected_ticker", "삼성전자")
 )
-ticker_input = raw_query.strip()
+ticker_input = resolve_ticker(raw_query)
 # 티커가 바뀌면 자동으로 해당 종목의 (섹터 유형, 거시 산업 분류)를 감지하여 드롭다운 초기값 갱신
 sector_options = ["구조성장형", "사이클형", "방어형", "정책의존형"]
 macro_ind_list = list(engine.INDUSTRY_MACRO_HYPOTHESIS_MAP.keys())

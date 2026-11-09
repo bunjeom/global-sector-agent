@@ -4152,6 +4152,12 @@ DATA_FRESHNESS: Dict[str, Any] = {
     "13f_always_badge": "분기 데이터",   # C-3. 13F는 항상 '분기 데이터' 회색 배지 부여
     "revision_neutral_band": 0.001,    # E. 리비전 보합 임계값 (0.1%p)
     "breadth_neutral_band": 1.0,       # B. 시장 폭 중립 임계값 (1.0%p)
+    # 바스켓 실적 리비전 (yfinance 애널리스트 EPS 추정치, 2026-11-09 추가)
+    "revision_max_days": 7,            # 리비전 데이터가 이보다 오래되면 판정에 쓰지 않음 (달력일)
+    "revision_period": "+1y",          # 다음 회계연도 EPS 추정치 기준
+    "revision_min_names": 2,           # 바스켓 값을 내기 위한 최소 종목 수
+    "revision_min_coverage": 0.5,      # 대표 종목 중 추정치가 있어야 하는 비율
+    "revision_min_abs_base_eps": 0.05, # 비교 기준 EPS 절댓값이 이보다 작으면(적자 근처) 비율 계산 제외
 }
 
 # C-5 & D-3. 0단계에서 식별된 하드코딩 예시 데이터 보관 상수 (삭제 금지 -> SAMPLE_DATA 이관)
@@ -4412,6 +4418,76 @@ def revision_state(
     }
 
 
+
+def summarize_basket_revisions(eps_trends: Dict[str, Any], as_of: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    바스켓 대표 종목(NARRATIVE_BASKETS_SPEC의 proxies)의 EPS 추정치 추이로 바스켓 실적 리비전을 계산한다.
+    네트워크를 쓰지 않는 순수 함수 — eps_trends는 {종목: yfinance Ticker.eps_trend 표(없으면 None)}.
+    - 종목별: revision_period(기본 '+1y' = 다음 회계연도) EPS 추정치의
+      30일 변화율 = (현재 - 30일 전) / |30일 전|, 90일 변화율 = (현재 - 90일 전) / |90일 전|
+    - 비교 기준 EPS의 절댓값이 revision_min_abs_base_eps 미만(적자 근처)이면 비율이 의미 없어 제외
+    - 바스켓 값 = 계산된 종목들의 중앙값(한 종목이 크게 튀어도 덜 흔들림).
+      종목 수가 revision_min_names 이상이고 대표 종목의 revision_min_coverage 이상일 때만 값을 내고, 아니면 None.
+    - 크립토 바스켓은 EPS가 없어 계산하지 않는다(엔진이 수익률·플로우로 대체).
+    """
+    cfg = DATA_FRESHNESS
+    period = cfg["revision_period"]
+    min_abs = float(cfg["revision_min_abs_base_eps"])
+
+    def _one(df_t):
+        try:
+            if df_t is None or len(df_t) == 0 or period not in df_t.index:
+                return None
+            row = df_t.loc[period]
+            cur, d30, d90 = (float(pd.to_numeric(row.get(k), errors="coerce")) for k in ("current", "30daysAgo", "90daysAgo"))
+            if any(np.isnan(v) for v in (cur, d30, d90)) or abs(d30) < min_abs or abs(d90) < min_abs:
+                return None
+            return (cur - d30) / abs(d30), (cur - d90) / abs(d90)
+        except Exception:
+            return None
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for spec in NARRATIVE_BASKETS_SPEC:
+        if spec.get("asset_class") == "crypto":
+            continue
+        tk, proxies = spec["ticker"], spec["proxies"]
+        used = {p: v for p, v in ((p, _one((eps_trends or {}).get(p))) for p in proxies) if v is not None}
+        need = max(int(cfg["revision_min_names"]), int(math.ceil(len(proxies) * float(cfg["revision_min_coverage"]))))
+        rec: Dict[str, Any] = {
+            "n_used": len(used), "n_total": len(proxies), "tickers_used": sorted(used),
+            "period": period, "as_of": as_of, "source": "yfinance eps_trend (애널리스트 컨센서스)",
+        }
+        if len(used) >= need:
+            rec["rev_30d"] = round(float(np.median([v[0] for v in used.values()])), 5)
+            rec["rev_90d"] = round(float(np.median([v[1] for v in used.values()])), 5)
+            rec["reason"] = None
+        else:
+            rec["rev_30d"] = rec["rev_90d"] = None
+            rec["reason"] = f"추정치가 있는 대표 종목 {len(used)}/{len(proxies)}개 ({need}개 필요)"
+        out[tk] = rec
+    return out
+
+
+def fetch_basket_revisions(pause_sec: float = 0.3) -> Dict[str, Dict[str, Any]]:
+    """
+    yfinance에서 바스켓 대표 종목들의 EPS 추정치 추이를 받아 summarize_basket_revisions로 계산한다.
+    매일 GitHub Actions의 global_pipeline.py가 호출해 latest_global_report.json의 "basket_revisions"에 저장한다.
+    as_of = 미국 동부 시간 기준 조회 날짜(컨센서스 스냅샷의 날짜). 파이프라인은 미국 장 마감 뒤에 돈다.
+    """
+    import time
+    import yfinance as yf
+    tickers = sorted({p for s in NARRATIVE_BASKETS_SPEC if s.get("asset_class") != "crypto" for p in s["proxies"]})
+    trends: Dict[str, Any] = {}
+    for t in tickers:
+        try:
+            trends[t] = yf.Ticker(t).eps_trend
+        except Exception:
+            trends[t] = None
+        time.sleep(pause_sec)
+    as_of = pd.Timestamp.now(tz="America/New_York").strftime("%Y-%m-%d")
+    return summarize_basket_revisions(trends, as_of)
+
+
 def etf_net_flow(
     ticker: str,
     days: int = 20,
@@ -4571,6 +4647,7 @@ def evaluate_record_freshness(
         "price": DATA_FRESHNESS["price_indicator_max_days"],
         "krx_flow": DATA_FRESHNESS["krx_flow_max_days"],
         "form4": DATA_FRESHNESS["form4_max_days"],
+        "revision": DATA_FRESHNESS["revision_max_days"],
         "13f": 135,  # 분기 데이터(분기말 후 45일 공시 + 90일 유효)
     }
     limit_days = max_days_map.get(kind, 3)
@@ -4703,6 +4780,14 @@ def run_consistency_checks(dashboard_data: Dict[str, Any]) -> List[Dict[str, str
             "type": "DATA_MISSING",
             "target": f"바스켓:{mb_item.get('ticker')}",
             "detail": f"{mb_item.get('ticker')} 섹터 제외됨 — {mb_item.get('reason', '원인 미상')}"
+        })
+
+    # 0-1) 실적 리비전을 판정에 쓰지 못한 바스켓
+    for ri in dashboard_data.get("narrative_rotation", {}).get("revision_issues", []):
+        violations.append({
+            "type": ri.get("type", "DATA_MISSING"),
+            "target": f"바스켓리비전:{ri.get('ticker')}",
+            "detail": f"{ri.get('ticker')} 실적 리비전 — {ri.get('reason', '원인 미상')}"
         })
 
     # 2) & 5) 바스켓별 배지 문구-판정 상태 일치, 크립토 EPS 배지 금지, as_of/SAMPLE_DATA 점검
@@ -4839,7 +4924,9 @@ def run_home_dashboard_engine(
             report_json = {}
 
     news_items = report_json.get("news", []) if isinstance(report_json, dict) else []
-    report_revisions = report_json.get("basket_revisions", {}) if isinstance(report_json, dict) else {}
+    report_revisions = (report_json.get("basket_revisions") or {}) if isinstance(report_json, dict) else {}
+    # 리포트에 basket_revisions 키가 있으면 실제 출처가 연결된 것 → 빠진 바스켓을 예시 데이터로 채우지 않는다
+    has_real_rev_source = isinstance(report_json, dict) and "basket_revisions" in report_json
 
     spy_df = etf_data_map.get("SPY")
     qqq_df = etf_data_map.get("QQQ")
@@ -4913,6 +5000,8 @@ def run_home_dashboard_engine(
     baskets_out: List[Dict[str, Any]] = []
     # 실제 가격이 부족해 계산하지 못한 바스켓(예시 좌표로 대신 채우지 않고 목록만 남긴다)
     missing_baskets: List[Dict[str, str]] = []
+    # 실적 리비전을 판정에 쓰지 못한 바스켓(데이터 없음·오래됨)
+    revision_issues: List[Dict[str, str]] = []
     for spec in NARRATIVE_BASKETS_SPEC:
         tk = spec["ticker"]
         a_class = spec["asset_class"]
@@ -4967,8 +5056,21 @@ def run_home_dashboard_engine(
             dir_str = ibit_ssot["crypto_direction"]
             tooltip_note = ibit_ssot["crypto_substitution_note"]
         else:
-            if tk in report_revisions:
-                r30, r90 = float(report_revisions[tk]["rev_30d"]), float(report_revisions[tk]["rev_90d"])
+            rev_rec = report_revisions.get(tk) if has_real_rev_source else None
+            if has_real_rev_source:
+                r30 = rev_rec.get("rev_30d") if rev_rec else None
+                r90 = rev_rec.get("rev_90d") if rev_rec else None
+                rev_as_of = rev_rec.get("as_of") if rev_rec else None
+                if r30 is None or r90 is None:
+                    revision_issues.append({"ticker": tk, "type": "DATA_MISSING",
+                                            "reason": (rev_rec or {}).get("reason") or "리포트에 이 바스켓의 리비전 없음"})
+                    r30, r90 = None, None
+                elif evaluate_record_freshness(rev_as_of, kind="revision", reference_date=latest_mkt_as_of)["is_stale"]:
+                    revision_issues.append({"ticker": tk, "type": "STALE_DATA",
+                                            "reason": f"기준일 {rev_as_of or '없음'} — {DATA_FRESHNESS['revision_max_days']}일 초과로 판정에서 제외 (git pull로 최신 리포트 받기)"})
+                    r30, r90 = None, None
+                else:
+                    r30, r90 = float(r30), float(r90)
             elif tk in SAMPLE_DATA["basket_revisions_30d_90d"]:
                 r30, r90 = SAMPLE_DATA["basket_revisions_30d_90d"][tk]
                 is_sample_rev = True
@@ -4978,7 +5080,13 @@ def run_home_dashboard_engine(
             badge_str = rev_info["badge"] + (" [예시]" if is_sample_rev else "")
             state_str = rev_info["state"]
             dir_str = rev_info["direction"]
-            tooltip_note = f"30일 리비전 {r30*100:+.2f}%, 90일 리비전 {r90*100:+.2f}% ({'SAMPLE_DATA' if is_sample_rev else '컨센서스'})" if r30 is not None else "리비전 데이터 없음"
+            if r30 is None:
+                tooltip_note = "리비전 데이터 없음"
+            elif is_sample_rev:
+                tooltip_note = f"30일 리비전 {r30*100:+.2f}%, 90일 리비전 {r90*100:+.2f}% (SAMPLE_DATA)"
+            else:
+                tooltip_note = (f"30일 리비전 {r30*100:+.2f}%, 90일 리비전 {r90*100:+.2f}% "
+                                f"(yfinance 컨센서스 · 대표 종목 {rev_rec.get('n_used')}/{rev_rec.get('n_total')}개 중앙값 · 조회일 {rev_rec.get('as_of')})")
 
         n_grade = _classify_narrative_grade(quad, state_str, r_acc)
 
@@ -5136,6 +5244,7 @@ def run_home_dashboard_engine(
             "top_current_leaders": leaders_sorted[:3],
             "top_next_rotations": next_rot_sorted[:3],
             "missing_baskets": missing_baskets,
+            "revision_issues": revision_issues,
         },
         "smart_money_tracker": {
             "cross_asset_flow": cross_asset_flow,
