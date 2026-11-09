@@ -27,6 +27,7 @@ TECH_PARAMS: Dict[str, Any] = {
     "MIN_MKTCAP_KRW": 300_000_000_000,   # TP-15: 최소 시가총액 (3,000억)[cite: 1]
     "ST1_MAX_HOLD_DAYS": 30,             # TP-16: ST-1 잔량 최대 보유 기간[cite: 1]
     "ST1_LOOKBACK_HIGH": 40,             # TP-17: 급락 시작일 탐색 범위[cite: 1]
+    "EARNINGS_BLACKOUT_DAYS": 3,         # 실적 발표 D-3 ~ 당일: 전 셋업(ST-1~4) 신규 T 진입 금지
     "MAX_CHASE_GAP": 0.03,               # TP-18: 추격 금지 갭상승 (3%)[cite: 1]
     "ST1_MAX_STOP_PCT": 0.12,            # TP-19: ST-1 최대 손절폭 (12%)[cite: 1]
     "ST1_TIME_STOP_DAYS": 5,             # TP-20: ST-1 초기 반응 시간 손절 기한[cite: 1]
@@ -96,6 +97,36 @@ def fmt_price(v: Any, is_krx: bool = True) -> str:
     except (TypeError, ValueError):
         return str(v)
     return f"{int(f):,}원" if is_krx else f"${f:,.2f}"
+
+
+def trading_days_until(as_of: Any, event_date: Any) -> Optional[int]:
+    """기준일(데이터 날짜)부터 행사일까지 남은 거래일 수 (당일=0, 주말 제외·공휴일 미반영). 지났거나 없으면 None."""
+    if not as_of or not event_date:
+        return None
+    try:
+        a = pd.Timestamp(str(as_of)[:10]).date()
+        e = pd.Timestamp(str(event_date)[:10]).date()
+    except Exception:
+        return None
+    if e < a:
+        return None
+    return int(np.busday_count(a, e))
+
+
+def is_earnings_blackout(days_to_earnings: Optional[int]) -> bool:
+    """실적 발표 블랙아웃 여부 (D-EARNINGS_BLACKOUT_DAYS ~ 당일). 일정을 모르면 False."""
+    return days_to_earnings is not None and int(days_to_earnings) <= TECH_PARAMS["EARNINGS_BLACKOUT_DAYS"]
+
+
+def fetch_next_earnings_date(ticker: str) -> Optional[str]:
+    """yfinance 일정(calendar)의 다음 실적 발표일. 범위로 주어지면 가장 이른 날(보수적). 없거나 실패하면 None."""
+    try:
+        import yfinance as yf
+        cal = yf.Ticker(ticker).calendar or {}
+        ds = [d for d in (cal.get("Earnings Date") or []) if d is not None]
+        return str(min(ds))[:10] if ds else None
+    except Exception:
+        return None
 
 
 def calc_zone_bounds(level_price: float, atr14: float) -> Tuple[float, float]:
@@ -3713,7 +3744,9 @@ def synthesize_4tracks(
     is_halted = bool(synth_cfg.get("is_halted", False))
     bad_evt_flag = bool(synth_cfg.get("bad_evt_flag", False))          # 횡령·배임·악성 유상증자·리픽싱 CB 등[cite: 6]
     pead_days_left = int(synth_cfg.get("pead_lockout_days_left", 0))   # 단발 어닝 쇼크 후 5거래일 냉각기 잔여일[cite: 6]
-    days_to_earnings = int(synth_cfg.get("days_to_earnings", 45))      # 차기 실적 발표까지 남은 거래일[cite: 6]
+    days_raw = synth_cfg.get("days_to_earnings")        # 차기 실적 발표까지 남은 거래일 (None = 일정 미확인)
+    days_known = days_raw is not None
+    days_to_earnings = int(days_raw) if days_known else None
 
     # 트랙별 핵심 데이터 추출 및 프리픽스 표준화 (0-2)[cite: 6]
     e_regime = earn_out.get("regime", {}).get("earnings_regime", "G2")     # G1 ~ G5[cite: 2, 6]
@@ -3896,7 +3929,7 @@ def synthesize_4tracks(
         t_status_code = "T_BLACKOUT"
         t_badge = f"🟠 T 진입 보류 (PEAD 냉각기 잔여 {pead_days_left}일)"
         t_risk_mod = 0.0
-    elif days_to_earnings <= 3:
+    elif is_earnings_blackout(days_to_earnings):
         # 3-2. 전 셋업(단기 ST-1·4 및 중기 ST-2·3 모두) 실적 발표 D-3 ~ 당일 신규 진입 금지 통일[cite: 6]
         t_verdict_final = "금지"
         t_status_code = "T_BLACKOUT"
@@ -3927,7 +3960,7 @@ def synthesize_4tracks(
             t_badge = "⚪ T 관찰 (활성 셋업 대기)"
 
     earnings_hold_guide = (
-        f"차기 실적(D-{days_to_earnings}) 전날(D-1) 종가 기준 평가수익 +1.0R 미만 시 보유 물량 50% 사전 축소, "
+        f"차기 실적({('D-' + str(days_to_earnings)) if days_known else '일정 미확인'}) 전날(D-1) 종가 기준 평가수익 +1.0R 미만 시 보유 물량 50% 사전 축소, "
         f"+1.0R 이상 시 손절가를 진입가(본전) 위로 상향 후 실적 통과"
     )
 
@@ -4061,7 +4094,7 @@ def synthesize_4tracks(
         "priority": 3,
         "category": "실적 블랙아웃",
         "item": "차기 분기 실적 발표 (D-3부터 전 셋업 신규 진입 제한 및 기보유 +1R 점검)",
-        "d_day": f"D-{days_to_earnings}"
+        "d_day": f"D-{days_to_earnings}" if days_known else "일정 미확인"
     })
 
     return {
@@ -6454,7 +6487,10 @@ def build_radar_signal(item: Dict[str, Any], df: Optional[pd.DataFrame], bench_d
         neutral_value = {"thesis_status": "미확인", "kill_flags": [], "buy_tranches": [], "sell_target": None,
                          "position_cap": TECH_PARAMS["MAX_POS_RATIO_TOTAL"], "real_signal": "중립",
                          "macro_regime_override": None}
-        cfg = {**(account_cfg or {}), "is_krx": mkt == "KR", "fx_to_krw": 1.0 if mkt == "KR" else float(fx_usdkrw)}
+        days_to_earn = trading_days_until(as_of, item.get("next_earnings"))
+        blackout = is_earnings_blackout(days_to_earn)
+        cfg = {**(account_cfg or {}), "is_krx": mkt == "KR", "fx_to_krw": 1.0 if mkt == "KR" else float(fx_usdkrw),
+               "earnings_blackout": blackout}
         out = analyze_technical_track(px, bench_df, vix_series, value_macro_input=neutral_value, account_cfg=cfg)
     except Exception as e:
         return {**base, "kind": "error", "as_of": None, "reason": f"계산 오류: {type(e).__name__}: {e}"[:200]}
@@ -6469,6 +6505,9 @@ def build_radar_signal(item: Dict[str, Any], df: Optional[pd.DataFrame], bench_d
         "headline": to_txt(sb.get("headline_reason", "")),
         "next_cond": to_txt(sb.get("next_or_end_condition", "")),
         "as_of": as_of,
+        "next_earnings": item.get("next_earnings") if days_to_earn is not None else None,
+        "days_to_earnings": days_to_earn,
+        "earnings_blackout": False,
     }
     if isinstance(tkt.get("entry_price"), (int, float)) and isinstance(tkt.get("stop_price"), (int, float)):
         detail["entry"] = to_px(tkt["entry_price"])
@@ -6485,7 +6524,13 @@ def build_radar_signal(item: Dict[str, Any], df: Optional[pd.DataFrame], bench_d
     elif sb.get("t_verdict") == "대기":
         sig_type, action = "T_WATCH", f"T {sb.get('setup_id')} {sb.get('grade')}등급 대기"
     else:
-        return {**base, **detail, "kind": "none", "reason": detail["headline"]}
+        why = detail["headline"] + (f" · 실적 발표 D-{days_to_earn} (신규 진입 제한 기간)" if blackout else "")
+        return {**base, **detail, "kind": "none", "reason": why}
+    if sig_type in ("T_ENTRY", "T_WATCH") and blackout:
+        # 종합 결론(synthesize_4tracks)과 같은 규칙: 실적 발표 D-3 ~ 당일 전 셋업 신규 진입 금지. 방어 신호는 막지 않는다.
+        return {**base, **detail, "kind": "signal", "signal_type": sig_type, "earnings_blackout": True,
+                "action_text": f"T {sb.get('setup_id')} {sb.get('grade')}등급 — 실적 발표 D-{days_to_earn}로 신규 진입 보류",
+                "suggested_weight": 0, "is_bnf_oversold": False}
     return {**base, **detail, "kind": "signal", "signal_type": sig_type, "action_text": action,
             "suggested_weight": 100,
             "is_bnf_oversold": bool(sig_type == "T_ENTRY" and sb.get("setup_id") == "ST-1")}

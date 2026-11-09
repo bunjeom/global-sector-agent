@@ -334,7 +334,16 @@ last_close = float(stock_df_raw["Close"].iloc[-1])
 evt_block_opt = sim_mode_opt == "하드 킬 (악성 이벤트/드라이버 붕괴)"
 is_halted_opt = sim_mode_opt == "거래정지 동결 (FROZEN_HALT)"
 pead_days_opt = 3 if sim_mode_opt == "단발 어닝쇼크 (PEAD 냉각기 D-3)" else 0
-days_to_earn_opt = 2 if sim_mode_opt == "실적 발표 임박 (블랙아웃 D-2)" else 45
+@st.cache_data(ttl=21600, show_spinner=False)
+def cached_next_earnings(t: str):
+    """다음 실적 발표일 (6시간 캐시)"""
+    return engine.fetch_next_earnings_date(t)
+
+
+# 실적 발표까지 남은 거래일: 실제 일정 사용(모르면 None = 일정 미확인). 시뮬레이션을 고르면 D-2로 가정.
+next_earn_date = cached_next_earnings(ticker_input)
+days_to_earn_real = engine.trading_days_until(str(stock_df_raw.index[-1])[:10], next_earn_date)
+days_to_earn_opt = 2 if sim_mode_opt == "실적 발표 임박 (블랙아웃 D-2)" else days_to_earn_real
 
 # ---------------------------------------------------------------------
 # 4대 트랙 + 종합 결론(Synthesis v1.1) 단방향 파이프라인 실행[cite: 1, 2, 4, 5, 6]
@@ -370,7 +379,7 @@ account_cfg = {
     "is_krx": is_krx_ticker,
     "fx_to_krw": 1.0 if is_krx_ticker else fetch_usdkrw(),
     "hard_block_evt": evt_block_opt or is_halted_opt,
-    "earnings_blackout": days_to_earn_opt <= 3,
+    "earnings_blackout": engine.is_earnings_blackout(days_to_earn_opt),
     "mktcap_krw": 1_000_000_000_000,
     "loss_streak": 0,
     "existing_v_weight": 0.0,

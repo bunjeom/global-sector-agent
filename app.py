@@ -103,6 +103,12 @@ def load_radar_signals(universe_key: tuple, total_equity: float, t_sleeve_ratio:
     syms = list(dict.fromkeys([u["ticker"] for u in universe]
                               + [cfg["FX_TICKER"], cfg["BENCH"]["US"], cfg["BENCH"]["KR"], "^VIX"]))
     pm = download_ohlc_map(syms, period=cfg["PRICE_PERIOD"])
+    # 다음 실적 발표일 (실적 발표 D-3 ~ 당일 신규 진입 보류용). 여러 종목을 동시에 조회한다.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        earn_dates = list(ex.map(engine.fetch_next_earnings_date, [u["ticker"] for u in universe]))
+    for u, d in zip(universe, earn_dates):
+        u["next_earnings"] = d
     fx_df = pm.get(cfg["FX_TICKER"])
     fx_close = fx_df["Close"].dropna() if fx_df is not None else None
     fx = float(fx_close.iloc[-1]) if fx_close is not None and len(fx_close) > 0 else None
@@ -514,6 +520,13 @@ if baskets_eval and all_signals:
 buckets = {"실행": [], "관찰": [], "방어": [], "동결": [], "예외": []}
 for sig in all_signals:
     g = kr_gate if str(sig.get("market", "US")).upper() == "KR" else us_gate
+    if sig.get("earnings_blackout"):
+        # 실적 발표 임박: 게이트와 무관하게 신규 진입 보류 (종합 결론과 같은 규칙)
+        a = {**sig, "gate_applied": False, "orig_action": sig.get("action_text"), "orig_weight": 100,
+             "effective_action": sig.get("action_text"), "effective_weight": 0, "status": "EARNINGS_BLACKOUT",
+             "reason": f"실적 발표 D-{engine.TECH_PARAMS['EARNINGS_BLACKOUT_DAYS']} ~ 당일은 전 셋업 신규 진입 제한", "_gate": g}
+        buckets["동결"].append(a)
+        continue
     a = engine.apply_gate_action_matrix(sig, g["level"])
     a["_gate"] = g
     if a["status"] == "DEFENSE_PRIORITY":
@@ -549,11 +562,14 @@ def render_signal(a: dict, key_prefix: str):
         st.markdown(f"<span style='color:#94a3b8;'>원신호: <s>{a['orig_action']} (계획 비중의 {a['orig_weight']}%)</s></span>",
                     unsafe_allow_html=True)
     is_def = a.get("status") == "DEFENSE_PRIORITY"
-    st.markdown(f"**{a['effective_action']}**" + ("" if is_def else f" · 계획 비중의 {a.get('effective_weight', 0)}%"))
+    hide_w = is_def or a.get("status") == "EARNINGS_BLACKOUT"
+    st.markdown(f"**{a['effective_action']}**" + ("" if hide_w else f" · 계획 비중의 {a.get('effective_weight', 0)}%"))
     if a.get("entry") is not None and not is_def:
         r_txt = f" · 예상 {a['expected_r']}R" if a.get("expected_r") is not None else ""
         st.caption(f"진입 {fmt_px(a['entry'], a.get('currency'))} · 손절 {fmt_px(a.get('stop'), a.get('currency'))}"
                    f" · 1차 목표 {fmt_px(a.get('target_1'), a.get('currency'))}{r_txt}")
+    st.caption(f"다음 실적 발표: {a['next_earnings']} (D-{a['days_to_earnings']})" if a.get("days_to_earnings") is not None
+               else "다음 실적 발표: 일정 미확인")
     st.caption(f"근거: {a.get('headline', '')} · 상태: {a.get('state_label', '')}")
     if a.get("next_cond"):
         st.caption(a["next_cond"])
@@ -577,7 +593,7 @@ def render_radar():
                 render_signal(a, f"{name}{i}")
                 st.markdown("<hr style='margin:6px 0;'>", unsafe_allow_html=True)
     if buckets["동결"]:
-        with st.expander(f"게이트로 동결·보류된 신호 {len(buckets['동결'])}건", expanded=False):
+        with st.expander(f"게이트·실적 발표로 보류된 신호 {len(buckets['동결'])}건", expanded=False):
             for i, a in enumerate(buckets["동결"]):
                 render_signal(a, f"frz{i}")
                 st.markdown("<hr style='margin:6px 0;'>", unsafe_allow_html=True)
@@ -587,7 +603,9 @@ def render_radar():
         with st.expander(f"지금 신호 없는 종목 {len(radar_res['no_signal'])}개", expanded=False):
             st.dataframe(pd.DataFrame([
                 {"종목": r["ticker"], "섹터": r.get("basket"), "구분": r.get("basket_role"),
-                 "상태": r.get("state_label", ""), "사유": r.get("reason", "")}
+                 "상태": r.get("state_label", ""),
+                 "실적 발표": f"{r['next_earnings']} (D-{r['days_to_earnings']})" if r.get("days_to_earnings") is not None else "미확인",
+                 "사유": r.get("reason", "")}
                 for r in radar_res["no_signal"]
             ]), width="stretch", hide_index=True)
 
