@@ -1,0 +1,15 @@
+hypothesis_id: 005930.KS_v0_auto
+ticker: 005930.KS
+industry_category: 메모리 (한국 상장)
+created_at: 2026-11-05T23:13:03.436912
+variables:
+  - var_id: ICSA
+    expected_sign: '-'
+    strength: '●●●'
+  - var_id: DEXKOUS
+    expected_sign: '±'
+    strength: '●●'
+  - var_id: KR10Y
+    expected_sign: '-'
+    strength: '●'
+sha256_lock: dd52b7fdf3c7428d

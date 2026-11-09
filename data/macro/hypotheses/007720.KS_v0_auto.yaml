@@ -1,0 +1,15 @@
+hypothesis_id: 007720.KS_v0_auto
+ticker: 007720.KS
+industry_category: 메모리 (한국 상장)
+created_at: 2026-11-06T09:14:38.081279
+variables:
+  - var_id: ICSA
+    expected_sign: '-'
+    strength: '●●●'
+  - var_id: DEXKOUS
+    expected_sign: '±'
+    strength: '●●'
+  - var_id: KR10Y
+    expected_sign: '-'
+    strength: '●'
+sha256_lock: 4f28b2528f940a6d

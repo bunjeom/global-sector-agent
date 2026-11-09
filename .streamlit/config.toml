@@ -1,0 +1,4 @@
+[client]
+# 사이드바의 Streamlit 기본 페이지 메뉴(app / 종목 딥다이브)를 숨긴다.
+# 페이지 이동은 utils.init_session()의 st.page_link 메뉴를 쓴다.
+showSidebarNavigation = false
