@@ -397,7 +397,12 @@ else:
         if ign:
             st.markdown("".join(basket_card(x, "#2563eb") for x in ign), unsafe_allow_html=True)
         else:
-            st.caption("지금 개선 사분면에 있는 섹터가 없습니다.")
+            st.caption("조건을 통과한 개선 사분면 섹터가 없습니다." if ev.get("igniting_excluded")
+                       else "지금 개선 사분면에 있는 섹터가 없습니다.")
+        ign_ex = ev.get("igniting_excluded", [])
+        if ign_ex:
+            st.caption("제외: " + " · ".join(f"{x['basket']}({', '.join(x['reasons'])})" for x in ign_ex))
+        st.caption("다음 후보 조건: 개선 사분면 + 최근 4주 상대강도 상승 + 주봉 큰 흐름이 '소외'가 아님")
         st.caption(f"판정 기준: 일봉 · SPY 대비 · 기준일 {rb['as_of']}")
 
 # =====================================================================
