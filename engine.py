@@ -1722,6 +1722,17 @@ def evaluate_v_tranche_timings(
 # =====================================================================
 # 10. 조건부 백테스트 및 검증 지표 (R 배수 기대값 E 산출)[cite: 1]
 # =====================================================================
+def _bt_summary(rs: List[float]) -> Dict[str, Any]:
+    """R 배수 목록 → 표본 수·승률·기대값과 기대값의 표준오차(표본이 작을수록 커짐)."""
+    n = len(rs)
+    if n == 0:
+        return {"sample_n": 0, "win_rate": None, "expectancy_r": None, "se_r": None}
+    arr = np.asarray(rs, dtype=float)
+    se = float(arr.std(ddof=1) / np.sqrt(n)) if n >= 2 else None
+    return {"sample_n": n, "win_rate": round(float((arr > 0).mean() * 100.0), 1),
+            "expectancy_r": round(float(arr.mean()), 2), "se_r": None if se is None else round(se, 2)}
+
+
 def run_setup_backtest_validation(df: pd.DataFrame) -> Dict[str, Any]:
     """
     10장. 과거 일봉 데이터에서 ST-1(이격도 반전) 및 돌파/눌림 신호의 R 배수 성과를 검증[cite: 1]:
@@ -1731,6 +1742,7 @@ def run_setup_backtest_validation(df: pd.DataFrame) -> Dict[str, Any]:
         return {"sample_n": 0, "win_rate": 0.0, "avg_win_r": 0.0, "avg_loss_r": 0.0, "expectancy_r": 0.0, "max_loss_streak": 0, "trades": []}
 
     r_list: List[float] = []
+    tag_list: List[str] = []
     trades: List[Dict[str, Any]] = []
     cost = TECH_PARAMS["ROUND_TRIP_COST"]
 
@@ -1771,6 +1783,7 @@ def run_setup_backtest_validation(df: pd.DataFrame) -> Dict[str, Any]:
 
             r_val = round(float(outcome_r), 2)
             r_list.append(r_val)
+            tag_list.append(setup_tag)
             trades.append({
                 "date": str(df.index[i])[:10],
                 "setup": setup_tag,
@@ -1809,6 +1822,8 @@ def run_setup_backtest_validation(df: pd.DataFrame) -> Dict[str, Any]:
         "max_loss_streak": max_streak,
         "trades": trades[-15:],
         "r_distribution": r_list,
+        "by_setup": {tag: _bt_summary([r for r, t in zip(r_list, tag_list) if t == tag]) for tag in ("ST-1", "ST-2")},
+        "r_by_setup": {tag: [r for r, t in zip(r_list, tag_list) if t == tag] for tag in ("ST-1", "ST-2")},
     }
 
 
@@ -6550,7 +6565,10 @@ RADAR_CONFIG = {
     "FX_TICKER": "KRW=X",          # 미국 종목을 원화 기준 엔진에 넣기 위한 USD/KRW 환율
     "BENCH": {"US": "SPY", "KR": "^KS11"},
     "MARKET_CLOSE": {"US": ("America/New_York", 16, 15), "KR": ("Asia/Seoul", 15, 45)},  # 장 마감 + 여유 15분
-    "DEFENSE_STATES": ["K", "D"],  # 붕괴 경계·하락 진행 → 보유자 방어 신호 (방어가 공격보다 우선)
+    "DEFENSE_STATES": ["K", "D"],
+    "BT_MIN_SAMPLE": 5,            # 과거 검증 표본이 이보다 적으면 숫자 대신 '표본 부족'
+    # 엔진 셋업 → 과거 검증(run_setup_backtest_validation) 항목. 없는 셋업은 검증 대상 아님
+    "BT_SETUP_FAMILY": {"ST-1": "ST-1", "ST-2a": "ST-2", "ST-2b": "ST-2"},  # 붕괴 경계·하락 진행 → 보유자 방어 신호 (방어가 공격보다 우선)
 }
 
 
@@ -6750,6 +6768,11 @@ def build_radar_signal(item: Dict[str, Any], df: Optional[pd.DataFrame], bench_d
         "days_to_earnings": days_to_earn,
         "earnings_blackout": False,
     }
+    fam = RADAR_CONFIG["BT_SETUP_FAMILY"].get(sb.get("setup_id") or "")
+    detail["bt_family"] = fam
+    bt_all = out.get("backtest_validation") or {}
+    detail["bt"] = (bt_all.get("by_setup") or {}).get(fam) if fam else None
+    detail["bt_r_by_setup"] = bt_all.get("r_by_setup") or {}   # 레이더 전체 합산용 (build_radar_signals에서 제거)
     if isinstance(tkt.get("entry_price"), (int, float)) and isinstance(tkt.get("stop_price"), (int, float)):
         detail["entry"] = to_px(tkt["entry_price"])
         detail["stop"] = to_px(tkt["stop_price"])
@@ -6786,4 +6809,14 @@ def build_radar_signals(universe: List[Dict[str, Any]], price_map: Dict[str, pd.
         r = build_radar_signal(item, (price_map or {}).get(item["ticker"]),
                                (bench_map or {}).get(item.get("market", "US")), vix_series, account_cfg, fx_usdkrw)
         {"signal": res["signals"], "none": res["no_signal"]}.get(r["kind"], res["errors"]).append(r)
+    # 과거 검증 합산: 레이더 대상 종목 전체의 같은 셋업 결과를 모은다(종목당 표본이 작아서).
+    evaluated = res["signals"] + res["no_signal"]
+    pooled: Dict[str, Any] = {}
+    for fam in ("ST-1", "ST-2"):
+        rs = [v for x in evaluated for v in (x.get("bt_r_by_setup") or {}).get(fam, [])]
+        pooled[fam] = {**_bt_summary(rs), "n_tickers": len(evaluated)}
+    for x in evaluated:
+        x.pop("bt_r_by_setup", None)
+        x["bt_pooled"] = pooled.get(x.get("bt_family")) if x.get("bt_family") else None
+    res["bt_pooled"] = pooled
     return res

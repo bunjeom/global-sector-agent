@@ -572,6 +572,26 @@ def fmt_px(v, currency) -> str:
     return f"${float(v):,.2f}" if currency == "USD" else f"{int(v):,}원"
 
 
+def bt_text(a: dict) -> str:
+    """과거 검증(참고): 지금 신호와 같은 종류 셋업의 이 종목 과거 성적. 표본 수와 오차를 함께 표시."""
+    fam, bt = a.get("bt_family"), a.get("bt") or {}
+    if not fam:
+        return f"과거 검증(참고): {a.get('setup_id')} 셋업은 엔진 검증 대상이 아님"
+    label = "이격 반등" if fam == "ST-1" else "돌파"
+    min_n = engine.RADAR_CONFIG["BT_MIN_SAMPLE"]
+
+    def _one(d: dict) -> str:
+        n = (d or {}).get("sample_n", 0) or 0
+        if n < min_n:
+            return f"표본 부족({n}건)"
+        se = f" ±{d['se_r']:.2f}" if d.get("se_r") is not None else ""
+        return f"{n}건 · 승률 {d['win_rate']:.0f}% · 평균 {d['expectancy_r']:+.2f}R{se}"
+
+    pooled = a.get("bt_pooled") or {}
+    return (f"과거 검증(참고, 최근 2년 {label}) — 이 종목: {_one(bt)} / "
+            f"레이더 {pooled.get('n_tickers', 0)}종목 합산: {_one(pooled)}")
+
+
 def render_signal(a: dict, key_prefix: str):
     g = a["_gate"]
     color = GATE_COLOR.get(g["level"], "#64748b")
@@ -597,6 +617,8 @@ def render_signal(a: dict, key_prefix: str):
     st.caption(f"다음 실적 발표: {a['next_earnings']} (D-{a['days_to_earnings']})" if a.get("days_to_earnings") is not None
                else "다음 실적 발표: 일정 미확인")
     st.caption(f"근거: {a.get('headline', '')} · 상태: {a.get('state_label', '')}")
+    if not is_def and a.get("setup_id"):
+        st.caption(bt_text(a))
     if a.get("next_cond"):
         st.caption(a["next_cond"])
     st.caption(f"게이트: {a.get('reason', '')}")
@@ -639,6 +661,8 @@ def render_radar():
 
 st.caption(f"대상: '지금 강한 곳'·'다음 후보' 섹터 ETF의 상위 구성 종목 중 추세(50일선 위)·3개월 상대강도 상위 {len(radar_universe)}개 · "
            "T(추세매매) 신호만 표시 — V(가치 분할매수)는 종목 딥다이브에서 확인하세요.")
+st.caption("과거 검증은 엔진의 단순화된 검증(이격 반등·돌파만, 다음 날 시가 진입, 왕복 비용 0.3% 반영)입니다. "
+           "합산 대상은 '지금 강한 종목'만 모은 것이라 과거 성적이 실제보다 좋게 나올 수 있습니다. ± 는 평균의 오차(1 표준오차).")
 if radar_res.get("selection_log"):
     with st.expander("종목 선정 과정 보기", expanded=False):
         st.dataframe(pd.DataFrame(radar_res["selection_log"]), width="stretch", hide_index=True)
