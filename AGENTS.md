@@ -62,6 +62,7 @@
 ## 7. 확인 방법
 - 문법: `python -c "import ast; ast.parse(open('app.py', encoding='utf-8').read())"`
 - 실행: `streamlit run app.py` 후 화면 맨 아래 "데이터 점검" 펼쳐서 확인
+- GitHub에 push하면 Actions(회귀 테스트 워크플로)가 같은 테스트를 자동 실행한다. 실패(❌)하면 Actions 탭에서 원인을 확인하고 고친다.
 - 회귀 테스트: `python tests/run_all.py` (Windows: `.venv\Scripts\python tests\run_all.py`, 약 1~2분, `--fast`는 화면 검사 제외). engine.py·딥다이브를 고친 뒤 반드시 실행하고, 실패하면 커밋하지 않는다. 테스트는 tests/_offline.py로 외부 연결을 막고 가짜 데이터만 쓴다.
 - 버그를 고치면 그 버그를 재현하는 검사를 tests/에 추가하고 run_all.py 목록에 등록한다. 기대값을 바꿔야 하면 왜 바뀌는지 변경 기록에 적는다.
 
@@ -95,3 +96,4 @@
 - 2026-11-11 (Claude): 딥다이브 NaN 현재가 오류 수정 — 야후가 장 마감 후 종가가 빈 마지막 행을 붙여 보내 현재가가 NaN이 되어 종합 판정에서 `cannot convert float NaN to integer` 발생. 페이지 fetch_ohlcv_and_benchmark에서 _clean_ohlcv로 종가 없는 행 제거(시가·고가·저가 빈칸은 종가로), synthesize_4tracks는 NaN·0 현재가면 명확한 오류 메시지, 종합 출력 current_price는 미국 센트 유지. 화면 테스트에 빈 마지막 행(NANROW) 재현 추가. 백업: *.bak_before_nanfix.
 - 2026-11-11 (Claude): 가치 판정 표시 일관성 — 종합(synthesize_4tracks) 가격 자격이 가치 트랙의 '조건부'(자기 밴드 없음 등)를 '매수 자격 충족'으로 올리던 불일치 수정(가치 트랙 판정을 넘지 않음). 실적 국면 판정 보류(NA)면 목표 배수 규칙 문구를 'G3 성숙/현금회수' 대신 '실적 국면 판정 보류 → 중립 규칙'으로 표시. 백업: *.bak_before_consist.
 - 2026-11-11 (Claude): 회귀 테스트를 저장소에 추가 — tests/ (실적·V 입력층, G3·금리, 거시 실데이터, T 실행 카드, 종합 라벨, 피어, 로그 PER 밴드·G3 조건, 딥다이브 화면 7가지 데이터 상태) + tests/run_all.py 일괄 실행기 + tests/_offline.py 네트워크 차단(localhost만 허용). 실제 네트워크·API 키 없이 15개 통과 확인, 이전 엔진(라벨 수정 전)으로는 6개 실패해 회귀를 잡는 것도 확인. 실제 네트워크에 의존하던 옛 체인 테스트는 제외. 변경 기록의 중복 줄 정리.
+- 2026-11-11 (Claude): 회귀 테스트 CI 연결 — .github/workflows/tests.yml. main에 push(리포트 JSON·.md만 바뀐 경우 제외)·PR·수동 실행 시 Python 3.13 + requirements.txt로 tests/run_all.py 실행. API 키 불필요, 자동 리포트 커밋은 [skip ci]로 제외. 깨끗한 가상환경 재현에서 15개 통과 확인.

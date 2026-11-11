@@ -1,0 +1,38 @@
+name: 회귀 테스트
+
+# 코드를 GitHub에 올릴 때마다 tests/run_all.py를 자동으로 실행한다.
+# 테스트는 가짜 데이터·오프라인(tests/_offline.py)이라 API 키(Secrets)가 필요 없다.
+# 매일 리포트 자동 커밋은 메시지에 [skip ci]가 있어 여기서 실행되지 않는다.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "latest_global_report.json"
+      - "**/*.md"
+  pull_request:
+  workflow_dispatch:   # Actions 탭에서 수동 실행 버튼
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 저장소 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Python 3.13 설정
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: 필수 라이브러리 설치
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 회귀 테스트 실행
+        env:
+          TZ: Asia/Seoul
+        run: python tests/run_all.py
