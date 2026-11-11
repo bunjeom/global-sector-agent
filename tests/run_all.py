@@ -29,6 +29,7 @@ ENGINE_TESTS = [
     ("종합 라벨 (하드 킬·가치 함정·고평가)", "test_label.py", [], {}),
     ("피어 통계·내재 성장률", "test_peer.py", [], {}),
     ("이익 급변 종목 로그 PER 밴드·G3 조건", "test_regime_band.py", [], {}),
+    ("판정 규칙 백테스트 (미래 데이터 미사용·앱 게이트와 일치)", "test_backtest.py", [], {}),
 ]
 
 PAGE_TESTS = [

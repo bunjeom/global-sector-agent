@@ -10,6 +10,7 @@
 - `utils.py` — 공통 CSS, 사이드바 메뉴(`init_session`)
 - `pages/1_🔎_종목_딥다이브.py` — 종목 딥다이브
 - `check_earnings_data.py` — 실적 트랙 실제 데이터 점검(PC에서 `python check_earnings_data.py AAPL 005930.KS`)
+- `run_backtest.py` — 판정 규칙 백테스트(PC에서 실제 야후 데이터로 실행, 결과 `data/backtest/REPORT.md`·`summary.json`)
 - `tests/` — 회귀 테스트(가짜 데이터·오프라인). `python tests/run_all.py`로 한 번에 실행
 - `.streamlit/config.toml` — Streamlit 기본 페이지 메뉴 숨김(사이드바 메뉴는 utils.py의 st.page_link)
 
@@ -37,10 +38,11 @@
 | `gate.py` | 국면 게이트(GATE_CONFIG, 히스테리시스) |
 | `rrg.py` | 4분면(RRG_CONFIG, `build_real_rrg_bundle`) |
 | `radar.py` | 실행 레이더(RADAR_CONFIG, 종목 선정·T 신호) |
+| `rule_backtest.py` | 판정 규칙 백테스트(BACKTEST_CONFIG): 국면 게이트 재현·선행 성과·노출 전략, T 셋업 × 게이트 |
 
 ### 패키지 규칙
 - 새 함수는 기능이 맞는 모듈에 넣는다. `engine.py` 파일을 다시 만들지 않는다(폴더 `engine/`이 우선 로드되어 새 파일은 무시됨).
-- 다른 모듈 이름을 쓰면 파일 위쪽에 `from .모듈 import 이름`을 추가한다. 의존 방향은 아래 순서의 **앞쪽 모듈만** 가져다 쓴다(거꾸로 가져오면 순환 import 오류): common → technical_signals → backtest → technical → earnings → macro → fundamental → synthesis → home → gate → rrg → radar.
+- 다른 모듈 이름을 쓰면 파일 위쪽에 `from .모듈 import 이름`을 추가한다. 의존 방향은 아래 순서의 **앞쪽 모듈만** 가져다 쓴다(거꾸로 가져오면 순환 import 오류): common → technical_signals → backtest → technical → earnings → macro → fundamental → synthesis → home → gate → rrg → radar → rule_backtest.
 - 바깥(app.py·페이지·테스트)은 `engine.이름`으로만 쓴다. 새 이름도 `engine/__init__.py`가 자동으로 내보낸다(따로 등록할 필요 없음).
 - 테스트에서 `engine.이름 = 가짜함수`로 바꿔 끼우면 그 이름을 쓰는 모든 모듈에 같이 적용되고, `importlib.reload(engine)`은 모든 모듈을 처음부터 다시 읽는다(한 파일이던 시절과 같은 동작, `engine/__init__.py`의 _EngineModule).
 - 같은 이름을 두 모듈에서 따로 정의하면 import 시 오류로 멈춘다(단일 출처 보호).
@@ -50,6 +52,8 @@
 - 게이트 관련 함수·설정(GATE_CONFIG 등)은 한 번씩만 정의되어 있다. 새로 같은 이름을 또 정의하지 않는다.
 - `_build_default_rrg_sample_dataset()`은 합성 데이터 생성 함수다. **테스트 전용**이며 화면에서 호출하지 않는다.
 - 실제 4분면은 `build_real_rrg_bundle(etf_map, baskets)`(engine/rrg.py)로 만든다.
+- 백테스트(engine/rule_backtest.py)는 게이트를 따로 계산하지 않고 앱과 같은 함수(build_regime_vix_header → build_gate_inputs_from_header → evaluate_market_gate)를 날짜마다 그날 이전 3년 데이터로 호출한다(앱 period="3y"와 같게). 한국 게이트는 미국 당일 데이터(QQQ·VIX)를 쓰지 않는다. 게이트 함수를 고치면 백테스트도 자동으로 따라간다.
+- 백테스트 결과를 보고 같은 데이터로 임계값(GATE_CONFIG 등)을 다시 맞추지 않는다(과최적화). 바꿀 때는 기간을 나눠 앞 기간으로 정하고 뒤 기간으로 확인한다. 노출 비중(EXPOSURE_BY_GATE)은 모델 가정이다.
 - 국면 게이트 입력은 `build_gate_inputs_from_header(macro_header, "US"|"KR")`로 홈 헤더의 실제 데이터에서 만든다.
 - 실적 트랙(analyze_earnings_track) 입력은 `fetch_real_earnings_inputs` 한 곳에서만 만든다(미국 yfinance, 한국 DART + yfinance 추정치). 못 받은 값은 None이고 화면에는 '데이터 없음'. 삼성전자식 기본값을 다시 넣지 않는다.
 - 실적 트랙은 판정 가능한 축만 점수에 반영한다(`verdict.coverage`). 근거가 부족하면 국면은 `NA`(판정 불가)이며, 계산에서만 G3로 중립 처리하고 화면에는 '판정 불가'로 표시한다.
@@ -123,3 +127,4 @@
 - 2026-11-11 (Claude): 회귀 테스트를 저장소에 추가 — tests/ (실적·V 입력층, G3·금리, 거시 실데이터, T 실행 카드, 종합 라벨, 피어, 로그 PER 밴드·G3 조건, 딥다이브 화면 7가지 데이터 상태) + tests/run_all.py 일괄 실행기 + tests/_offline.py 네트워크 차단(localhost만 허용). 실제 네트워크·API 키 없이 15개 통과 확인, 이전 엔진(라벨 수정 전)으로는 6개 실패해 회귀를 잡는 것도 확인. 실제 네트워크에 의존하던 옛 체인 테스트는 제외. 변경 기록의 중복 줄 정리.
 - 2026-11-11 (Claude): 회귀 테스트 CI 연결 — .github/workflows/tests.yml. main에 push(리포트 JSON·.md만 바뀐 경우 제외)·PR·수동 실행 시 Python 3.13 + requirements.txt로 tests/run_all.py 실행. API 키 불필요, 자동 리포트 커밋은 [skip ci]로 제외. 깨끗한 가상환경 재현에서 15개 통과 확인.
 - 2026-11-11 (Claude): engine.py(8,410줄)를 engine/ 패키지 12개 모듈로 분리(모듈 지도는 3번). 코드 줄은 그대로 옮기고 import만 자동 생성; 순환 참조를 끊으려고 NO_DATA는 common, 10년 국채 금리(RF_SERIES·_rf_fields·fetch_risk_free_10y)는 macro로 이동. 함수 본문 변경은 `.env` 경로 1곳(__file__ → PROJECT_ROOT). `engine.이름` 바꿔 끼우기·`importlib.reload(engine)`은 한 파일 때와 같게 동작(engine/__init__.py). 검증: 함수·클래스 119개 AST 동일(_read_env_value 제외), 상수 26개 값 동일, 회귀 테스트 15개 통과, 홈 화면(app.py) 오프라인 렌더 요소 39개 분리 전후 동일. test_macro 10번은 파일 원문 대신 inspect.getsource로 검사. 이전 engine.py는 git 이력(커밋 b8dfe6b)에 있음.
+- 2026-11-11 (Claude): 판정 규칙 백테스트 추가 — engine/rule_backtest.py(BACKTEST_CONFIG)와 PC 실행 스크립트 run_backtest.py. (1) 국면 게이트: 날짜마다 앱과 같은 함수로 그날 이전 3년 데이터만 써서 재현(지표는 병렬, 히스테리시스는 순서대로), 단계별 이후 5·20·60일 수익률·최대 낙폭·변동성, 노출 전략(G0 100%·G1 50%·G2 25%·G3 0%, 1일 늦게 집행, 편도 0.15%)을 매수 후 보유·같은 평균 노출 고정·완화 확인 없는 게이트와 비교. (2) T 셋업: ETF 19개·대표 종목 69개의 ST-1·ST-2 거래를 신호일 게이트별로 집계, 게이트 규칙(G1 50%·G2/G3 0%) 적용 전후 비교. run_setup_backtest_validation에 all_trades(날짜 포함 전체 거래) 키 추가(기존 키 불변). 결과 data/backtest/REPORT.md·summary.json(CSV는 .gitignore). 테스트 test_backtest.py: 미래 데이터 미사용, 홈 화면 히스테리시스 함수와 최근 10일 일치, 한국 게이트의 미국 당일 데이터 미사용, 병렬=순차, 손 계산 검증.

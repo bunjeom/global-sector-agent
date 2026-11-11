@@ -33,6 +33,7 @@ def run_setup_backtest_validation(df: pd.DataFrame) -> Dict[str, Any]:
     r_list: List[float] = []
     tag_list: List[str] = []
     trades: List[Dict[str, Any]] = []
+    all_trades: List[Dict[str, Any]] = []   # 날짜가 붙은 전체 거래 (rule_backtest의 게이트별 집계용)
     cost = TECH_PARAMS["ROUND_TRIP_COST"]
 
     i = 120
@@ -80,6 +81,7 @@ def run_setup_backtest_validation(df: pd.DataFrame) -> Dict[str, Any]:
                 "exit": round(exit_p, 0),
                 "r_multiple": r_val
             })
+            all_trades.append({"date": str(df.index[i])[:10], "setup": setup_tag, "r_multiple": r_val})
             i += hold_limit
         else:
             i += 1
@@ -113,4 +115,5 @@ def run_setup_backtest_validation(df: pd.DataFrame) -> Dict[str, Any]:
         "r_distribution": r_list,
         "by_setup": {tag: _bt_summary([r for r, t in zip(r_list, tag_list) if t == tag]) for tag in ("ST-1", "ST-2")},
         "r_by_setup": {tag: [r for r, t in zip(r_list, tag_list) if t == tag] for tag in ("ST-1", "ST-2")},
+        "all_trades": all_trades,
     }
