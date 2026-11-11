@@ -1,6 +1,6 @@
 """G3 목표 배수(이론 PER 참고용) · 무위험수익률 실데이터/None 처리 검사."""
 import os as _os, sys as _sys
-_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))   # 프로젝트 폴더의 engine.py를 불러오기 위해
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))   # 프로젝트 폴더의 engine 패키지를 불러오기 위해
 import _offline  # noqa: F401  외부 네트워크 차단 (tests/_offline.py)
 import sys, time
 from test_chain_helpers import engine, fake_earn

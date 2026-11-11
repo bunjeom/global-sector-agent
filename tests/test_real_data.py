@@ -1,6 +1,6 @@
 """가짜(mock) yfinance·DART로 실적 트랙 입력층과 분석 함수를 검증한다. (실제 네트워크 호출 없음)"""
 import os as _os, sys as _sys
-_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))   # 프로젝트 폴더의 engine.py를 불러오기 위해
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))   # 프로젝트 폴더의 engine 패키지를 불러오기 위해
 import _offline  # noqa: F401  외부 네트워크 차단 (tests/_offline.py)
 import sys, types, math
 import os

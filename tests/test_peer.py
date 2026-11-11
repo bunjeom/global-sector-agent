@@ -1,6 +1,6 @@
 """피어 통계(같은 유효 집합·이상치 제외·섹터 대체 없음)와 내재 성장률 종착 배수 검사. 애플 실측 점검값으로 재현."""
 import os as _os, sys as _sys
-_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))   # 프로젝트 폴더의 engine.py를 불러오기 위해
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))   # 프로젝트 폴더의 engine 패키지를 불러오기 위해
 import _offline  # noqa: F401  외부 네트워크 차단 (tests/_offline.py)
 import sys, types
 import pandas as pd

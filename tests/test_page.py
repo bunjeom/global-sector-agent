@@ -1,6 +1,6 @@
 """딥다이브 화면(Streamlit)을 AppTest로 실제 실행해, 실적·V 트랙 탭이 '데이터 없음'/'참고용' 상태에서 예외 없이 그려지는지 본다."""
 import os as _os, sys as _sys
-_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))   # 프로젝트 폴더의 engine.py를 불러오기 위해
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))   # 프로젝트 폴더의 engine 패키지를 불러오기 위해
 import _offline  # noqa: F401  외부 네트워크 차단 (tests/_offline.py)
 import sys, os, types, importlib
 import numpy as np

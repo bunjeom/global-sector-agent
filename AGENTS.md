@@ -6,7 +6,7 @@
 ## 1. 프로젝트 한눈에
 - Streamlit 앱. 실행: `streamlit run app.py`
 - `app.py` — 홈 화면(결론 → 시장 상태 → 섹터 흐름 → 자금 흐름 → 실행 레이더 → 데이터 점검)
-- `engine.py` — 계산 엔진(약 7,300줄). 홈 화면 계산, 4분면(RRG), 국면 게이트, 종목 분석
+- `engine/` — 계산 엔진 패키지(원래 engine.py 한 파일, 2026-11-11 기능별 12개 모듈로 분리). 바깥에서는 지금처럼 `import engine` → `engine.이름`으로 쓴다. 모듈 지도는 3번 맨 위
 - `utils.py` — 공통 CSS, 사이드바 메뉴(`init_session`)
 - `pages/1_🔎_종목_딥다이브.py` — 종목 딥다이브
 - `check_earnings_data.py` — 실적 트랙 실제 데이터 점검(PC에서 `python check_earnings_data.py AAPL 005930.KS`)
@@ -21,10 +21,35 @@
 5. 같은 지표는 한 함수에서만 계산하고 모든 화면이 그 결과를 쓴다(단일 출처).
 6. 임계값은 설정 딕셔너리 한 곳에만 둔다: `GATE_CONFIG`(국면 게이트), `RRG_CONFIG`(4분면), `DATA_FRESHNESS`(신선도).
 
-## 3. engine.py 주의사항
+## 3. engine/ 주의사항
+### 모듈 지도 (고칠 함수가 어느 파일에 있는지)
+| 파일 | 내용 |
+|---|---|
+| `common.py` | TECH_PARAMS·레짐 허용 매트릭스, 가격 표기(fmt_price·with_paren)·호가, 실적 발표일, NO_DATA, PROJECT_ROOT |
+| `technical_signals.py` | T 트랙 기초 지표, 환경·상대강도·추세 신호, 생애주기 신호 |
+| `technical.py` | T 트랙 7상태 기계, 셋업·리스크·사이징, V 타이밍, `analyze_technical_track` |
+| `backtest.py` | T 셋업 과거 검증(`run_setup_backtest_validation`, `_bt_summary`) |
+| `earnings.py` | 실적 트랙, DART, `.env` 읽기(`_read_env_value`) |
+| `macro.py` | 거시 트랙, FRED·ECOS(`fetch_macro_levels`), 10년 국채 금리(`fetch_risk_free_10y`) |
+| `fundamental.py` | 가치(V) 트랙, 피어·PER 밴드 |
+| `synthesis.py` | 4트랙 종합 판정(`synthesize_4tracks`), PRICE_QUAL_LABELS |
+| `home.py` | 홈 대시보드, DATA_FRESHNESS·SAMPLE_DATA, 시장 헤더(`build_regime_vix_header`) |
+| `gate.py` | 국면 게이트(GATE_CONFIG, 히스테리시스) |
+| `rrg.py` | 4분면(RRG_CONFIG, `build_real_rrg_bundle`) |
+| `radar.py` | 실행 레이더(RADAR_CONFIG, 종목 선정·T 신호) |
+
+### 패키지 규칙
+- 새 함수는 기능이 맞는 모듈에 넣는다. `engine.py` 파일을 다시 만들지 않는다(폴더 `engine/`이 우선 로드되어 새 파일은 무시됨).
+- 다른 모듈 이름을 쓰면 파일 위쪽에 `from .모듈 import 이름`을 추가한다. 의존 방향은 아래 순서의 **앞쪽 모듈만** 가져다 쓴다(거꾸로 가져오면 순환 import 오류): common → technical_signals → backtest → technical → earnings → macro → fundamental → synthesis → home → gate → rrg → radar.
+- 바깥(app.py·페이지·테스트)은 `engine.이름`으로만 쓴다. 새 이름도 `engine/__init__.py`가 자동으로 내보낸다(따로 등록할 필요 없음).
+- 테스트에서 `engine.이름 = 가짜함수`로 바꿔 끼우면 그 이름을 쓰는 모든 모듈에 같이 적용되고, `importlib.reload(engine)`은 모든 모듈을 처음부터 다시 읽는다(한 파일이던 시절과 같은 동작, `engine/__init__.py`의 _EngineModule).
+- 같은 이름을 두 모듈에서 따로 정의하면 import 시 오류로 멈춘다(단일 출처 보호).
+- 파일 경로는 실행 폴더 기준 상대경로(`data/`, `logs/`)이고, `.env`만 `PROJECT_ROOT` 기준이다.
+
+### 계산 규칙
 - 게이트 관련 함수·설정(GATE_CONFIG 등)은 한 번씩만 정의되어 있다. 새로 같은 이름을 또 정의하지 않는다.
 - `_build_default_rrg_sample_dataset()`은 합성 데이터 생성 함수다. **테스트 전용**이며 화면에서 호출하지 않는다.
-- 실제 4분면은 `build_real_rrg_bundle(etf_map, baskets)`(파일 맨 끝)로 만든다.
+- 실제 4분면은 `build_real_rrg_bundle(etf_map, baskets)`(engine/rrg.py)로 만든다.
 - 국면 게이트 입력은 `build_gate_inputs_from_header(macro_header, "US"|"KR")`로 홈 헤더의 실제 데이터에서 만든다.
 - 실적 트랙(analyze_earnings_track) 입력은 `fetch_real_earnings_inputs` 한 곳에서만 만든다(미국 yfinance, 한국 DART + yfinance 추정치). 못 받은 값은 None이고 화면에는 '데이터 없음'. 삼성전자식 기본값을 다시 넣지 않는다.
 - 실적 트랙은 판정 가능한 축만 점수에 반영한다(`verdict.coverage`). 근거가 부족하면 국면은 `NA`(판정 불가)이며, 계산에서만 G3로 중립 처리하고 화면에는 '판정 불가'로 표시한다.
@@ -63,7 +88,7 @@
 - 문법: `python -c "import ast; ast.parse(open('app.py', encoding='utf-8').read())"`
 - 실행: `streamlit run app.py` 후 화면 맨 아래 "데이터 점검" 펼쳐서 확인
 - GitHub에 push하면 Actions(회귀 테스트 워크플로)가 같은 테스트를 자동 실행한다. 실패(❌)하면 Actions 탭에서 원인을 확인하고 고친다.
-- 회귀 테스트: `python tests/run_all.py` (Windows: `.venv\Scripts\python tests\run_all.py`, 약 1~2분, `--fast`는 화면 검사 제외). engine.py·딥다이브를 고친 뒤 반드시 실행하고, 실패하면 커밋하지 않는다. 테스트는 tests/_offline.py로 외부 연결을 막고 가짜 데이터만 쓴다.
+- 회귀 테스트: `python tests/run_all.py` (Windows: `.venv\Scripts\python tests\run_all.py`, 약 1~2분, `--fast`는 화면 검사 제외). engine/·딥다이브를 고친 뒤 반드시 실행하고, 실패하면 커밋하지 않는다. 테스트는 tests/_offline.py로 외부 연결을 막고 가짜 데이터만 쓴다.
 - 버그를 고치면 그 버그를 재현하는 검사를 tests/에 추가하고 run_all.py 목록에 등록한다. 기대값을 바꿔야 하면 왜 바뀌는지 변경 기록에 적는다.
 
 ## 변경 기록
@@ -97,3 +122,4 @@
 - 2026-11-11 (Claude): 가치 판정 표시 일관성 — 종합(synthesize_4tracks) 가격 자격이 가치 트랙의 '조건부'(자기 밴드 없음 등)를 '매수 자격 충족'으로 올리던 불일치 수정(가치 트랙 판정을 넘지 않음). 실적 국면 판정 보류(NA)면 목표 배수 규칙 문구를 'G3 성숙/현금회수' 대신 '실적 국면 판정 보류 → 중립 규칙'으로 표시. 백업: *.bak_before_consist.
 - 2026-11-11 (Claude): 회귀 테스트를 저장소에 추가 — tests/ (실적·V 입력층, G3·금리, 거시 실데이터, T 실행 카드, 종합 라벨, 피어, 로그 PER 밴드·G3 조건, 딥다이브 화면 7가지 데이터 상태) + tests/run_all.py 일괄 실행기 + tests/_offline.py 네트워크 차단(localhost만 허용). 실제 네트워크·API 키 없이 15개 통과 확인, 이전 엔진(라벨 수정 전)으로는 6개 실패해 회귀를 잡는 것도 확인. 실제 네트워크에 의존하던 옛 체인 테스트는 제외. 변경 기록의 중복 줄 정리.
 - 2026-11-11 (Claude): 회귀 테스트 CI 연결 — .github/workflows/tests.yml. main에 push(리포트 JSON·.md만 바뀐 경우 제외)·PR·수동 실행 시 Python 3.13 + requirements.txt로 tests/run_all.py 실행. API 키 불필요, 자동 리포트 커밋은 [skip ci]로 제외. 깨끗한 가상환경 재현에서 15개 통과 확인.
+- 2026-11-11 (Claude): engine.py(8,410줄)를 engine/ 패키지 12개 모듈로 분리(모듈 지도는 3번). 코드 줄은 그대로 옮기고 import만 자동 생성; 순환 참조를 끊으려고 NO_DATA는 common, 10년 국채 금리(RF_SERIES·_rf_fields·fetch_risk_free_10y)는 macro로 이동. 함수 본문 변경은 `.env` 경로 1곳(__file__ → PROJECT_ROOT). `engine.이름` 바꿔 끼우기·`importlib.reload(engine)`은 한 파일 때와 같게 동작(engine/__init__.py). 검증: 함수·클래스 119개 AST 동일(_read_env_value 제외), 상수 26개 값 동일, 회귀 테스트 15개 통과, 홈 화면(app.py) 오프라인 렌더 요소 39개 분리 전후 동일. test_macro 10번은 파일 원문 대신 inspect.getsource로 검사. 이전 engine.py는 git 이력(커밋 b8dfe6b)에 있음.

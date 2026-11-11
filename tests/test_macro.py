@@ -1,6 +1,6 @@
 """거시 트랙 실데이터화 검사: 난수 시계열 제거, 실제 수준값 사용, 못 받은 변수·보류 처리, 종합 연동."""
 import os as _os, sys as _sys
-_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))   # 프로젝트 폴더의 engine.py를 불러오기 위해
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))   # 프로젝트 폴더의 engine 패키지를 불러오기 위해
 import _offline  # noqa: F401  외부 네트워크 차단 (tests/_offline.py)
 import sys, copy, os
 import numpy as np, pandas as pd
@@ -111,9 +111,9 @@ urllib.request.urlopen = lambda *a, **k: _Resp(b"observation_date,DFII10\n2026-1
 s9 = eng2._fred_series("DFII10", "2026-11-01")
 chk("9 CSV 파싱 ('.' 제외)", s9 is not None and list(s9.values) == [1.95, 1.98])
 # 10) 엔진 소스에 거시 난수 생성 코드가 남아 있지 않음
-src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "engine.py"), encoding="utf-8").read()
-a = src.index("def analyze_macro_track("); b = src.index("\ndef ", a + 10)
-chk("10 analyze_macro_track에 난수 없음", "random" not in src[a:b] and "rng" not in src[a:b])
+import inspect
+_macro_src = inspect.getsource(eng2.macro.analyze_macro_track)   # engine/macro.py의 함수 원문
+chk("10 analyze_macro_track에 난수 없음", "random" not in _macro_src and "rng" not in _macro_src)
 
 # 11) 야후 주가처럼 시간대가 붙은 주가(뉴욕·서울)여도 오류 없이 계산
 inject_tz = importlib.reload(engine)
