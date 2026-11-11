@@ -4,7 +4,16 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import math
 import streamlit as st
+
+def html_md(s):
+    """HTML 블록 전용 렌더러. 마크다운은 공백만 있는 줄을 '빈 줄'로 보고 HTML 블록을 끝내
+    이후 들여쓴 태그가 코드블록으로 깨진다(값이 빈 배지 등). 빈 줄·들여쓰기를 제거해 방지."""
+    s = "\n".join(l.strip() for l in str(s).split("\n") if l.strip())
+    s = s.replace("데이터 없음 (데이터 없음)", "데이터 없음")   # 안전망: 같은 말 중복 표기 방지
+    st.markdown(s, unsafe_allow_html=True)
+
 import yfinance as yf
 
 import engine
@@ -209,12 +218,28 @@ def auto_detect_sector_and_macro(ticker: str) -> tuple[str, str]:
 # 데이터 로드 및 캐싱 (@st.cache_data)[cite: 1, 5, 6]
 # =====================================================================
 @st.cache_data(ttl=1800, show_spinner=False)
+def _clean_ohlcv(df):
+    """야후가 장 마감 후·장중에 종가가 비어 있는(NaN) 마지막 행을 붙여 보낼 때가 있다. 종가 없는 행은 버리고
+    시가·고가·저가가 빈 행은 종가로 채운다 (현재가·지표·차트가 NaN으로 깨지지 않게)."""
+    if df is None or len(df) == 0 or "Close" not in df:
+        return df if df is not None else pd.DataFrame()
+    d = df.copy()
+    d["Close"] = pd.to_numeric(d["Close"], errors="coerce")
+    d = d[d["Close"].notna() & (d["Close"] > 0)]
+    for col in ("Open", "High", "Low"):
+        if col in d:
+            d[col] = pd.to_numeric(d[col], errors="coerce").fillna(d["Close"])
+    if "Volume" in d:
+        d["Volume"] = pd.to_numeric(d["Volume"], errors="coerce").fillna(0)
+    return d
+
+
 def fetch_ohlcv_and_benchmark(ticker: str, period: str = "4y"):
     """종목 및 기준지수(KOSPI/KOSDAQ/NASDAQ), VKOSPI/VIX 시계열 로드"""
-    stock_df = yf.Ticker(ticker).history(period=period, auto_adjust=False)
+    stock_df = _clean_ohlcv(yf.Ticker(ticker).history(period=period, auto_adjust=False))
     if (stock_df is None or len(stock_df) == 0) and ticker.endswith(".KS"):
         alt_ticker = ticker.replace(".KS", ".KQ")
-        stock_df = yf.Ticker(alt_ticker).history(period=period, auto_adjust=False)
+        stock_df = _clean_ohlcv(yf.Ticker(alt_ticker).history(period=period, auto_adjust=False))
         if stock_df is not None and len(stock_df) > 0:
             ticker = alt_ticker
 
@@ -228,8 +253,8 @@ def fetch_ohlcv_and_benchmark(ticker: str, period: str = "4y"):
     else:
         bench_sym, vix_sym = "^IXIC", "^VIX"
 
-    bench_df = yf.Ticker(bench_sym).history(period=period, auto_adjust=False)
-    vix_df = yf.Ticker(vix_sym).history(period=period, auto_adjust=False)
+    bench_df = _clean_ohlcv(yf.Ticker(bench_sym).history(period=period, auto_adjust=False))
+    vix_df = _clean_ohlcv(yf.Ticker(vix_sym).history(period=period, auto_adjust=False))
     vix_s = vix_df["Close"] if (vix_df is not None and "Close" in vix_df) else pd.Series(dtype=float)
     return stock_df, bench_df, vix_s
 
@@ -267,6 +292,26 @@ def run_cached_technical_track(ticker: str, value_macro_input: dict, account_cfg
 # 상단 종목 선택 및 컨트롤 바 (티커 변경 시 섹터·거시분류 자동 스위칭)
 # =====================================================================
 st.markdown(f'## {utils.line_icon("target", 22)} 종목 딥다이브 — 4대 트랙 통합 분석 터미널', unsafe_allow_html=True)
+st.caption(
+    "⚠️ 개인 학습·연구용 분석 도구의 결과이며 투자 권유가 아닙니다. 데이터는 공개 출처(yfinance·DART·FRED·한국은행 ECOS)에서 받아 "
+    "지연·누락·오류가 있을 수 있고, 못 받은 값은 추정하지 않고 '데이터 없음'으로 표시합니다. 판정 규칙은 충분한 표본의 백테스트로 성과를 검증하지 않았습니다."
+)
+with st.expander("용어 설명", expanded=False):
+    st.markdown("""
+- **4대 트랙**: 같은 종목을 네 관점에서 따로 본 뒤 종합합니다. **T(기술)** 차트·거래량으로 본 단기 매매 시점, **E(실적)** 이익이 늘고 있는 단계, **V(가치)** 이익 대비 주가 수준과 분할 매수 가격, **거시** 금리·환율·신용 스프레드에 대한 민감도.
+- **실적 국면 G1~G5**: G1 초기 가속 · G2 우량 지속 성장 · G3 성숙/현금 회수 · G4 피크아웃(성장 둔화) · G5 구조적 쇠퇴. 국면마다 적용하는 목표 배수 규칙이 다릅니다.
+- **PER / NTM PER**: 주가 ÷ 주당순이익. NTM은 앞으로 12개월 예상 이익 기준입니다.
+- **σ 밴드·z-score**: 이 종목의 과거 PER 평균(μ)에서 지금이 표준편차(σ) 몇 배만큼 떨어져 있는지. +1σ 이상이면 과거보다 비싼 편입니다.
+- **매수기준선(1~3차)**: (목표 PER × 1년 후 예상 EPS)를 요구수익률로 할인한 가격. 주가가 이 선 아래로 와야 분할 매수 대상이 됩니다.
+- **요구수익률 r · 자기자본비용 k_e**: k_e = 10년 국채 금리 + 베타 × 시장 위험프리미엄. r은 여기에 업종 성격·실적 확실성을 반영한 매수 할인율입니다.
+- **MDD Ratio**: 확률가중 기대수익률 ÷ 최악 시나리오 손실폭. 0.15 미만이면 "위험에 비해 기대수익이 부족"으로 봅니다.
+- **하드 킬**: 기업 고유 악재, 실적 구조적 쇠퇴(G5), 재무 위험, 거래정지 중 하나라도 해당하면 신규 진입을 금지하는 규칙.
+- **아키타입(ARCH_1~8)**: 네 트랙 결과의 조합으로 나눈 종목 유형. 예: ARCH_1 가치·추세 동시 신호, ARCH_7 중립 관망, ARCH_8 진입 금지.
+- **R(리스크 단위)**: 진입가와 손절가 차이(1주당 감수하는 손실). "예상 2R"은 감수한 위험의 2배 수익을 노린다는 뜻입니다.
+- **RVOL · RSI**: 평소 대비 거래량 배수 · 최근 상승/하락 강도(0~100, 70 이상 과열·30 이하 과매도).
+- **거시 R² · OOS**: 거시 변수가 주가 움직임을 설명하는 비율, 그리고 추정에 쓰지 않은 최근 구간(표본 외)으로 다시 확인한 결과.
+- **잔차화**: 거시 변수에서 시장 전체와 같이 움직이는 부분을 빼고, 그 변수만의 영향을 보는 처리.
+""")
 
 col_t1, col_t2, col_t3, col_t4, col_t5 = st.columns([1.7, 1.2, 1.5, 1.3, 1.1])
 with col_t1:
@@ -310,8 +355,45 @@ is_krx_ticker = ticker_input.upper().endswith((".KS", ".KQ"))
 
 
 def px(v) -> str:
-    """가격·금액 표시: 한국 종목은 원, 미국 종목은 달러 (engine.fmt_price)"""
+    """가격·금액 표시: 한국 종목은 원, 미국 종목은 달러 (engine.fmt_price). 값이 없으면 '데이터 없음'"""
+    if v is None:
+        return engine.NO_DATA
     return engine.fmt_price(v, is_krx_ticker)
+
+
+def chart_heading(text: str) -> None:
+    """차트 제목은 plotly 안이 아니라 차트 위에 따로 쓴다 (범례·툴바와 겹침 방지)."""
+    st.markdown(f"**{text}**")
+
+
+_LEGEND_BOTTOM = dict(orientation="h", yanchor="top", y=-0.12, xanchor="left", x=0, font=dict(size=11))
+
+
+def rate_src(v, src, as_of=None) -> str:
+    """금리 표시: 값이 있으면 '4.84% (FRED DGS10 · 2026-11-05)', 없으면 '데이터 없음' 한 번만."""
+    if v is None:
+        return engine.NO_DATA
+    tail = " · ".join(x for x in (src, as_of) if x and x != engine.NO_DATA)
+    return f"{v*100:.2f}%" + (f" ({tail})" if tail else "")
+
+
+def xmul(v) -> str:
+    """배수 표시 '37.1배'. 값이 없으면 '데이터 없음' (단위를 붙이지 않음)."""
+    return engine.NO_DATA if v is None else f"{v:.1f}배"
+
+
+def fx(v, fmt: str = ".2f") -> str:
+    """숫자 표시. 값이 없으면 '데이터 없음'"""
+    if v is None:
+        return engine.NO_DATA
+    return format(v, fmt)
+
+
+def pct(v, signed: bool = False) -> str:
+    """비율(0.12 → 12.0%) 표시. 값이 없으면 '데이터 없음'"""
+    if v is None:
+        return engine.NO_DATA
+    return f"{v*100:+.1f}%" if signed else f"{v*100:.1f}%"
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -354,11 +436,26 @@ macro_out = run_cached_macro_track(ticker_input, macro_ind_opt)
 # 2) Track 2 (실적 분석 v1.0)
 fin_override_cfg = {"thesis": {"hard_block_triggered": evt_block_opt}} if evt_block_opt else {}
 earn_out = run_cached_earnings_track(ticker_input, sector_type_opt, fin_override_cfg)
+if earn_out["projections"]["eps_basis"] == "none":
+    _dq = earn_out["data_quality"]
+    st.warning(
+        "이 종목은 미래 EPS 추정치와 최근 확정 EPS를 모두 받지 못해 실적·펀더멘털(V) 트랙을 계산할 수 없습니다. "
+        "(ETF·신규 상장·데이터 제공처 미지원 종목일 수 있습니다.) 가짜 값으로 채우지 않고 여기서 멈춥니다."
+    )
+    with st.expander("받지 못한 데이터 목록", expanded=True):
+        st.write(f"출처: {_dq.get('source')} · 기준일: {_dq.get('as_of') or engine.NO_DATA}")
+        for _m in _dq["missing"]:
+            st.write(f"- {_m}")
+        for _n in _dq.get("notes", []):
+            st.write(f"- 참고: {_n}")
+    st.stop()
 
 # 3) Track 3 (펀더멘탈 분석 v1.0)
 macro_to_fund_input = {
-    "rf_10y": macro_out["macro_regime"]["rf_10y_current"],
-    "market_erp": 0.055,
+    "rf_10y": macro_out["macro_regime"].get("rf_10y_current"),          # 못 받으면 None → V 매수선 '데이터 없음'
+    "rf_source": macro_out["macro_regime"].get("rf_source", engine.NO_DATA),
+    "rf_as_of": macro_out["macro_regime"].get("rf_as_of"),
+    # 시장 위험프리미엄은 engine.FUND_MODEL_PARAMS(출처 표시)에서 시장별로 정한다
 }
 fund_out = run_cached_fundamental_track(ticker_input, last_close, earn_out, macro_to_fund_input, {})
 
@@ -418,8 +515,9 @@ tab_syn, tab_t1, tab_t2, tab_t3, tab_t4 = st.tabs([
     f"종합 결론 · Synthesis v1.1 ({arch_info['code']})",
     f"Track 1 · 기술적 분석 v1.2 ({tech_out['track_signal']})",
     f"Track 2 · 실적 분석 v1.0 ({earn_out['verdict']['grade']} {earn_out['regime']['earnings_regime']})",
-    f"Track 3 · 펀더멘탈 분석 v1.0 ({pq_info['grade_icon']} {synth_out['v_action_card']['price_qual_code']})",
-    f"Track 4 · 거시적 분석 v1.0 ({m_cls['grade_icon']} 고유 R² {int(m_cls['r2_macro_own']*100)}%)"
+    f"Track 3 · 펀더멘탈 분석 v1.0 ({pq_info['grade_icon']} {synth_out['v_action_card'].get('price_qual_label', synth_out['v_action_card']['price_qual_code'])})",
+    (f"Track 4 · 거시적 분석 v1.0 ({m_cls['grade_icon']} 고유 R² {int(m_cls['r2_macro_own']*100)}%)" if m_cls.get("r2_macro_own") is not None
+     else f"Track 4 · 거시적 분석 v1.0 ({m_cls['grade_icon']} 판정 보류)")
 ])
 
 
@@ -439,7 +537,7 @@ with tab_syn:
 
     # 1. 하드 킬 / 동결 / PEAD 냉각기 경보 바 (발동 시 최상단 강조)[cite: 6]
     if hk["is_killed"]:
-        st.markdown(f"""
+        html_md(f"""
         <div class="term-banner" style="border:2px solid #dc2626;background:#fef2f2;">
             <div class="term-banner-line1" style="color:#dc2626;">
                 {utils.line_icon("alert", 20)}
@@ -450,14 +548,14 @@ with tab_syn:
                 사유: {hk["kill_reason"]}
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """)
     elif hk["pead_lockout_days_left"] > 0:
-        st.markdown(f"""
+        html_md(f"""
         <div class="term-card" style="border-left:4px solid #f97316;background:#fff7ed;">
             <b>{utils.line_icon("alert", 16)}일회성 어닝 쇼크 분리 처리 (PEAD 냉각기 작동 중 — 잔여 {hk["pead_lockout_days_left"]}거래일):</b>
             드라이버 붕괴 없는 단발성 실적 하회이므로 영구 하드 킬(G5)로 차단하지 않고, 발표 후 5거래일 냉각기 경과 뒤 바닥 확인 시 매수를 재개방합니다.
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     # 2. 아키타입 헤더 & 직관적 3줄 결론 템플릿 (3장 명세)[cite: 6]
     hc_badge = (
@@ -468,7 +566,7 @@ with tab_syn:
         f'<span class="term-badge">{k}</span>' for k, val in r_flags.items() if val
     ])
 
-    st.markdown(f"""
+    html_md(f"""
     <div class="term-banner">
         <div style="margin-bottom:8px;">
             {utils.line_icon("target", 18)}
@@ -486,7 +584,7 @@ with tab_syn:
             {utils.line_icon("check", 14)}<b>③ [다음 방아쇠 & 종료 조건 — Trigger]</b> {tl_brief["line_3_trigger"]}
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """)
 
     # 3. 4대 트랙 권한 분리 요약 스트립 (엔진 · 가격표 · 방아쇠 · 계기판)[cite: 6]
     c_l1, c_l2, c_l3, c_l4 = st.columns(4)
@@ -498,7 +596,7 @@ with tab_syn:
     ]
     for col_obj, role_title, l_data in strip_items:
         with col_obj:
-            st.markdown(f"""
+            html_md(f"""
             <div class="term-card">
                 <div style="font-size:0.78rem;color:#64748b;font-weight:600;">{role_title}</div>
                 <div style="font-size:0.98rem;font-weight:700;margin:4px 0;color:#111;">
@@ -506,34 +604,51 @@ with tab_syn:
                 </div>
                 <div style="font-size:0.82rem;color:#475569;">{l_data["state"]}</div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
 
     # 4. V 트랙 (가치 저가매수) & T 트랙 (독립 트레이딩) 듀얼 실행 티켓 (Step 2 & Step 3)[cite: 6]
     col_vt1, col_vt2 = st.columns(2)
 
     with col_vt1:
         ov_tag = "🟢 고신뢰 수평 지지(⭐⭐+) 겹침" if v_card["high_confidence_overlap"] else "일반 구간"
-        st.markdown(f"""
+        html_md(f"""
         <div class="term-card">
             <div style="font-weight:700;font-size:1.02rem;margin-bottom:8px;">
                 {utils.line_icon("layers", 18)}Step 2. V 트랙 (가치 연동 저가매수) 실행 카드
             </div>
             <div style="margin-bottom:10px;">
                 <span class="term-badge-inv">{v_card["badge_text"]}</span>
-                <span class="term-badge">가격 자격: {v_card["price_qual_code"]}</span>
+                <span class="term-badge">가격 자격: {v_card.get("price_qual_label", v_card["price_qual_code"])}</span>
                 <span class="term-badge">상태 코드: {v_card["status_code"]}</span>
             </div>
             <ul class="term-list">
-                <li><b>현재가 vs 1차 매수기준선 괴리율:</b> 현재 <b>{px(last_close)}</b> (1차선 대비 <b>{v_card["distance_to_1st_tranche_pct"]*100:+.1f}%</b>)</li>
-                <li><b>기준 차수 및 매수기준선 가격:</b> <b>{v_card["active_tranche"]}차 매수선 ({px(v_card["tranche_price"])})</b> · {ov_tag}</li>
+                <li><b>현재가 vs 1차 매수기준선 괴리율:</b> 현재 <b>{px(last_close)}</b> (1차선 대비 <b>{pct(v_card["distance_to_1st_tranche_pct"], True)}</b>)</li>
+                <li><b>기준 차수 및 매수기준선 가격:</b> <b>{engine.NO_DATA if v_card["status_code"] == "V_NA" else f'{v_card["active_tranche"]}차 매수선 ({px(v_card["tranche_price"])})'}</b> · {ov_tag}</li>
                 <li><b>당일 집행 비율 (단일 감속 하한 50% 규칙):</b> <b>{int(v_card["execution_ratio"]*100)}%</b> → 권장 매수 비중 <b>총자산의 {v_card["recommended_weight"]*100:.2f}%</b></li>
-                <li><b>1Y 채택 매도목표가 / 기대수익률:</b> <b>{px(v_card["sell_target_1y"])}</b> / 확률가중 <b>{v_card["expected_return_weighted"]*100:+.1f}%</b> (MDD Ratio <b>{v_card["mdd_ratio"]:.2f}</b>)</li>
+                <li><b>1Y 채택 매도목표가 / 기대수익률:</b> <b>{px(v_card["sell_target_1y"])}</b> / 확률가중 <b>{pct(v_card["expected_return_weighted"], True)}</b> (MDD Ratio <b>{fx(v_card["mdd_ratio"])}</b>)</li>
             </ul>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     with col_vt2:
-        st.markdown(f"""
+        if t_card.get("has_ticket"):
+            _sh = t_card["shares"]
+            _er = t_card["expected_r"]
+            t_card_body = f"""
+            <ul class="term-list">
+                <li><b>진입가 / 손절가 (종가 기준):</b> 진입 <b>{px(t_card["entry_price"])}</b> / 손절 <b>{px(t_card["stop_price"])}</b></li>
+                <li><b>산출 주문 수량 / 1차 목표가:</b> <b>{(engine.NO_DATA if _sh is None else (f"0주</b> (진입 차단 상태라 주문 없음 — 참고용 가격만 표시)<b>" if (_sh == 0 and t_card["risk_modifier_applied"] == 0) else f"{_sh:,}주"))}</b> / 목표 <b>{px(t_card["target_price"])}</b> (예상 <b>{(f"{_er}R" if _er is not None else engine.NO_DATA)}</b>)</li>
+                <li><b>시간 손절 및 무효화 규칙:</b> {t_card["time_stop_rule"] or engine.NO_DATA} ｜ {t_card["invalidation_rule"] or engine.NO_DATA}</li>
+                <li><b>실적 발표 보유분 지침 (T_EARNINGS_RULE):</b> {t_card["earnings_hold_guide"]}</li>
+            </ul>"""
+        else:
+            t_card_body = f"""
+            <ul class="term-list">
+                <li><b>거래 티켓:</b> 생성되지 않음 — {t_card["no_ticket_reason"]}</li>
+                <li><b>진입가 · 손절가 · 수량 · 목표가:</b> 해당 없음 (성립한 셋업이 없어 계산하지 않음)</li>
+                <li><b>다음 확인 조건:</b> {t_card.get("next_condition") or engine.NO_DATA}</li>
+            </ul>"""
+        html_md(f"""
         <div class="term-card">
             <div style="font-weight:700;font-size:1.02rem;margin-bottom:8px;">
                 {utils.line_icon("activity", 18)}Step 3. T 트랙 (독립 트레이딩) 실행 카드
@@ -541,16 +656,11 @@ with tab_syn:
             <div style="margin-bottom:10px;">
                 <span class="term-badge-inv">{t_card["badge_text"]}</span>
                 <span class="term-badge">상태 코드: {t_card["status_code"]}</span>
-                <span class="term-badge">고평가 위험계수 조정: ×{t_card["risk_modifier_applied"]:.1f}</span>
+                {(f'<span class="term-badge">고평가 위험계수 조정: ×{t_card["risk_modifier_applied"]:.1f}</span>' if t_card.get("has_ticket") else "")}
             </div>
-            <ul class="term-list">
-                <li><b>진입가 / 손절가 (종가 기준):</b> 진입 <b>{px(t_card["entry_price"])}</b> / 손절 <b>{px(t_card["stop_price"])}</b></li>
-                <li><b>산출 주문 수량 / 1차 목표가:</b> <b>{t_card["shares"]:,}주</b> / 목표 <b>{px(t_card["target_price"])}</b> (예상 <b>{t_card["expected_r"]}R</b>)</li>
-                <li><b>시간 손절 및 무효화 규칙:</b> {t_card["time_stop_rule"]} ｜ {t_card["invalidation_rule"]}</li>
-                <li><b>실적 발표 보유분 지침 (T_EARNINGS_RULE):</b> {t_card["earnings_hold_guide"]}</li>
-            </ul>
+            {t_card_body}
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     # 5. 시장 오판 포인트 매트릭스 + 거시 위험 속성 오버레이 & 통합 D-day 감시 캘린더[cite: 6]
     col_b1, col_b2 = st.columns([1.15, 1.0])
@@ -560,7 +670,7 @@ with tab_syn:
             f"{s['var_name']} 1σ({s['shock_1sd']}) → <b>{s['impact']}</b>"
             for s in m_ov["top_sensitivities"]
         ])
-        st.markdown(f"""
+        html_md(f"""
         <div class="term-card">
             <div style="font-weight:700;margin-bottom:8px;">
                 {utils.line_icon("compass", 16)}Step 4. 시장 오판 2대 축 & 거시 수익률 분해·위험 속성 오버레이 (찬반 투표 미합산)
@@ -572,7 +682,7 @@ with tab_syn:
                 <li><b>⚠️ 거시 1σ 조건부 민감도 (위험 속성):</b> {sens_badges}</li>
             </ul>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     with col_b2:
         st.markdown(f'**{utils.line_icon("shield", 16)} 통합 D-day 감시 캘린더 (우선순위 순 정렬)**', unsafe_allow_html=True)
@@ -610,7 +720,7 @@ with tab_t1:
         if tech_out["overlap_flags"]["high_conf_buy_tranches"] else ""
     )
 
-    st.markdown(f"""
+    html_md(f"""
     <div class="term-banner">
         <div class="term-banner-line1">
             {utils.line_icon("activity", 18)}{verdict_badge}{setup_badge} {banner["headline_reason"]}
@@ -622,7 +732,7 @@ with tab_t1:
             {utils.line_icon("layers", 14)}<b>{banner["v_summary_line"]}</b>{high_conf_badge}
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """)
 
     plot_df = chart_df.iloc[-180:].copy()
     fig = make_subplots(
@@ -652,22 +762,43 @@ with tab_t1:
                 line=dict(color=color, width=width, dash=dash)
             ), row=1, col=1)
 
+    # 로그 축에서 Plotly 주석(annotation)의 y는 log10 값이어야 한다 (가격을 그대로 넣으면 10^가격 위치로 가 축이 폭주).
+    # 그래서 선·구간(shape)은 가격으로 그리고, 라벨은 축 종류에 맞춰 따로 붙인다.
+    def _ann_y(v: float) -> float:
+        return math.log10(v) if (log_scale_opt and v and v > 0) else v
+
+    _labels_r: list = []   # 오른쪽 라벨 (지지·저항)
+    _labels_l: list = []   # 왼쪽 라벨 (측정 목표)
+
+    def _place_labels(items: list, x: float, xanchor: str) -> None:
+        """가격이 서로 1.5% 안쪽인 라벨은 한 줄로 합쳐 겹침을 막는다."""
+        _all = [float(v) for v in plot_df["Low"].tolist() + plot_df["High"].tolist() if v and v > 0] + [pr for pr, _ in _labels_r + _labels_l]
+        _lo_v, _hi_v = min(_all), max(_all)
+        _tf = (lambda v: math.log10(v)) if log_scale_opt else (lambda v: v)
+        _min_gap = (_tf(_hi_v) - _tf(_lo_v)) * 0.045   # 라벨 한 줄 높이 ≈ 화면 가격 범위의 4.5%
+        groups: list = []
+        for pr, tx in sorted(items):
+            if groups and abs(_tf(pr) - _tf(groups[-1][0])) < _min_gap:
+                groups[-1][1].append(tx)
+            else:
+                groups.append([pr, [tx]])
+        for pr, txs in groups:
+            fig.add_annotation(x=x, xref="x domain", y=_ann_y(pr), yref="y", xanchor=xanchor, showarrow=False,
+                               text=" · ".join(txs), font=dict(size=10), bgcolor="rgba(255,255,255,0.7)")
+
     for hz in lvls["horizontal_zones"][:6]:
         opacity = 0.06 * hz["stars"]
         fill_col = "rgba(22, 163, 74, " + str(opacity) + ")" if hz["type"] == "지지" else "rgba(220, 38, 38, " + str(opacity) + ")"
-        fig.add_hrect(
-            y0=hz["low"], y1=hz["high"], fillcolor=fill_col, line_width=0,
-            annotation_text=f"{'⭐'*hz['stars']} {hz['type']} {int(hz['price']):,}",
-            annotation_position="right", row=1, col=1
-        )
+        fig.add_hrect(y0=hz["low"], y1=hz["high"], fillcolor=fill_col, line_width=0, row=1, col=1)
+        _labels_r.append((float(hz["price"]), f"{'⭐'*hz['stars']} {hz['type']} {px(hz['price'])}"))
 
     tgts = lvls.get("targets", {})
     for t_key, t_val in tgts.items():
-        if t_key in ["MB0.25", "MB0.5", "T1"]:
-            fig.add_hline(
-                y=t_val, line_dash="dashdot", line_color="#111111", line_width=1,
-                annotation_text=f"S-TGT {t_key}: {int(t_val):,}", annotation_position="top left", row=1, col=1
-            )
+        if t_key in ["MB0.25", "MB0.5", "T1"] and t_val:
+            fig.add_hline(y=t_val, line_dash="dashdot", line_color="#111111", line_width=1, row=1, col=1)
+            _labels_l.append((float(t_val), f"S-TGT {t_key}: {px(t_val)}"))
+    _place_labels(_labels_r, 1.0, "right")
+    _place_labels(_labels_l, 0.0, "left")
 
     vol_colors = np.where(plot_df["Close"] >= plot_df["Open"], "#16a34a", "#dc2626")
     fig.add_trace(go.Bar(
@@ -684,9 +815,9 @@ with tab_t1:
 
     fig.update_yaxes(type="log" if log_scale_opt else "linear", row=1, col=1)
     fig.update_layout(
-        height=720, margin=dict(l=20, r=20, t=35, b=20),
+        height=760, margin=dict(l=20, r=20, t=35, b=90),
         xaxis_rangeslider_visible=False, template="plotly_white",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
+        legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="left", x=0, font=dict(size=11))   # 범례는 아래로 (첫 패널 제목과 겹침 방지)
     )
     st.plotly_chart(fig, width="stretch")
 
@@ -698,7 +829,7 @@ with tab_t1:
             f'{lc["state_label"] if lc["state"] == code else lbl}</span>'
             for code, lbl in all_states
         ])
-        st.markdown(f"""
+        html_md(f"""
         <div class="term-card">
             <div style="margin-bottom:10px;">{nodes_html}</div>
             <div style="font-size:0.88rem;color:#333;">
@@ -714,7 +845,7 @@ with tab_t1:
                 <span class="term-badge">S-MAT 배열: {ctx["s_mat"]} (SMA120 {ctx["sma120_slope"]})</span>
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
         st.markdown(f'#### {utils.line_icon("layers", 18)} 섹션 B — 6대 판정 모듈 단계 (2-8)', unsafe_allow_html=True)
         m_cols = st.columns(3)
@@ -729,13 +860,13 @@ with tab_t1:
         for idx_m, (m_key, m_title) in enumerate(mod_titles):
             m_data = mods[m_key]
             with m_cols[idx_m % 3]:
-                st.markdown(f"""
+                html_md(f"""
                 <div class="term-card">
                     <div style="font-size:0.82rem;color:#64748b;font-weight:600;">{m_title}</div>
                     <div style="font-size:1.05rem;font-weight:700;margin:4px 0;color:#111;">{m_data["label"]}</div>
                     <div style="font-size:0.82rem;color:#475569;">{m_data["detail"]}</div>
                 </div>
-                """, unsafe_allow_html=True)
+                """)
 
         st.markdown(f'#### {utils.line_icon("shield", 18)} 섹션 C — 단일 수직 가격축 레벨 맵 & T 거래 티켓 / 리스크 명세', unsafe_allow_html=True)
         col_c1, col_c2 = st.columns([1.15, 1.0])
@@ -768,16 +899,16 @@ with tab_t1:
                 f'<span class="term-badge">{it["kind"]}</span> {it["tag"]}</li>'
                 for it in ladder_items
             ])
-            st.markdown(f"""
+            html_md(f"""
             <div class="term-card">
                 <div style="font-weight:700;margin-bottom:8px;">{utils.line_icon("tag", 15)}단일 수직 가격축 레벨 맵 (Track 3 매수·매도선 실시간 연동)</div>
                 <ul class="term-list">{li_html}</ul>
             </div>
-            """, unsafe_allow_html=True)
+            """)
 
         with col_c2:
             if t_ticket.get("setup_id"):
-                st.markdown(f"""
+                html_md(f"""
                 <div class="term-card">
                     <div style="font-weight:700;margin-bottom:8px;">{utils.line_icon("check", 15)}T 거래 티켓 & 5-1 리스크·사이징 명세</div>
                     <ul class="term-list">
@@ -792,17 +923,17 @@ with tab_t1:
                         <li><b>무효화 조건:</b> {t_ticket["invalidation"]}</li>
                     </ul>
                 </div>
-                """, unsafe_allow_html=True)
+                """)
             else:
-                st.markdown(f"""
+                html_md(f"""
                 <div class="term-card">
                     <div style="font-weight:700;margin-bottom:6px;">{utils.line_icon("alert", 15)}T 거래 티켓 미생성</div>
                     <div style="font-size:0.9rem;color:#555;">{t_ticket.get("reason", "성립된 셋업 없음")}</div>
                 </div>
-                """, unsafe_allow_html=True)
+                """)
 
             bt = tech_out["backtest_validation"]
-            st.markdown(f"""
+            html_md(f"""
             <div class="term-card">
                 <div style="font-weight:700;margin-bottom:6px;">{utils.line_icon("activity", 15)}10장. 조건부 백테스트 기대값 검증 (왕복비용 0.30% 차감)</div>
                 <div style="font-size:0.88rem;">
@@ -811,7 +942,7 @@ with tab_t1:
                     기대값(E): <b>{bt["expectancy_r"]}R</b> · 최대 연속 손실: <b>{bt["max_loss_streak"]}회</b>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
+            """)
 
 
 # =====================================================================
@@ -833,12 +964,14 @@ with tab_t2:
         if qual["is_investment_phase_fcf"] else ""
     )
 
-    st.markdown(f"""
+    score_txt = (f'종합 {verd["score"]:.2f}점 / 2.00 · 반영 {verd["axes_scored"]}/5축' if verd["score"] is not None
+                 else "종합 점수 없음 (데이터 부족)")
+    html_md(f"""
     <div class="term-banner">
         <div class="term-banner-line1">
             {utils.line_icon("activity", 18)}
             <span class="term-badge-inv">{reg["earnings_regime"]} · {reg["regime_label"]}</span>
-            <span class="term-badge">{verd["grade"]} 종합 {verd["score"]:.2f}점 / 2.00</span>
+            <span class="term-badge">{verd["grade"]} {score_txt}</span>
             <span class="term-badge">섹터: {reg["sector_type"]}</span>
             <span class="term-badge">2차 미분: 성장 {reg["growth_acceleration"]}</span>
             {cycle_badge}{peak_badge}
@@ -848,54 +981,68 @@ with tab_t2:
         </div>
         <div class="term-banner-line3">
             {utils.line_icon("shield", 14)}<b>Thesis 상태: [{th_drv["status"]}]</b> &nbsp;|&nbsp;
-            <b>무효화 조건:</b> {th_drv["invalidation_condition"]} ({th_drv["current_status"]}) {inv_fcf_badge}
+            <b>무효화 조건:</b> {engine.with_paren(th_drv["invalidation_condition"], th_drv["current_status"])} {inv_fcf_badge}
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """)
+
+    _dq = earn_out["data_quality"]
+    st.caption(f"데이터 출처: {_dq['source']} · 최근 분기 기준: {_dq['as_of'] or engine.NO_DATA} · EPS 기준: {_dq['eps_basis_label']}")
+    if _dq["missing"]:
+        with st.expander(f"받지 못한 데이터 {len(_dq['missing'])}건 (화면에는 '데이터 없음'으로 표시, 판정에서 제외)"):
+            for _m in _dq["missing"]:
+                st.write(f"- {_m}")
+            for _n in _dq.get("notes", []):
+                st.write(f"- 참고: {_n}")
 
     c_m1, c_m2, c_m3 = st.columns(3)
     with c_m1:
-        lev_tag = "🟢 고정비 레버리지 작동" if sus["operating_leverage_active"] else "🔴 한계비용 상승(마진 둔화)"
-        st.markdown(f"""
+        _olv = sus["operating_leverage_active"]
+        lev_tag = ("⚪ 판정 불가 (데이터 없음)" if _olv is None
+                   else ("🟢 고정비 레버리지 작동" if _olv else "🔴 한계비용 상승(마진 둔화)"))
+        html_md(f"""
         <div class="term-card">
             <div style="font-size:0.82rem;color:#64748b;font-weight:600;">① 증분 영업이익률 (Incremental OPM · E7)</div>
             <div style="font-size:1.15rem;font-weight:700;margin:6px 0;font-family:monospace;">
-                증분 {sus["incremental_opm"]*100:.1f}% &nbsp;vs&nbsp; 평균 {sus["average_opm"]*100:.1f}%
+                증분 {pct(sus["incremental_opm"])} &nbsp;vs&nbsp; 평균 {pct(sus["average_opm"])}
             </div>
             <div style="font-size:0.84rem;color:#333;">판정: <b>{lev_tag}</b> (ΔOP / ΔSales)</div>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     with c_m2:
-        rpo_ok = sus["rpo_yoy_growth"] > sus["sales_yoy_growth"]
-        rpo_tag = "🟢 미래 매출 예약 누적 (최우수)" if rpo_ok else "🔴 수주 소진 (성장 저뭄 경고)"
-        st.markdown(f"""
+        if sus["rpo_yoy_growth"] is None or sus["sales_yoy_growth"] is None:
+            rpo_tag = "⚪ 판정 불가 (RPO 데이터 없음)"
+        else:
+            rpo_ok = sus["rpo_yoy_growth"] > sus["sales_yoy_growth"]
+            rpo_tag = "🟢 미래 매출 예약 누적 (최우수)" if rpo_ok else "🔴 수주 소진 (성장 저뭄 경고)"
+        html_md(f"""
         <div class="term-card">
             <div style="font-size:0.82rem;color:#64748b;font-weight:600;">② 수주잔고(RPO) vs 매출 성장률 (E7)</div>
             <div style="font-size:1.15rem;font-weight:700;margin:6px 0;font-family:monospace;">
-                RPO +{sus["rpo_yoy_growth"]*100:.1f}% &nbsp;vs&nbsp; 매출 +{sus["sales_yoy_growth"]*100:.1f}%
+                RPO {pct(sus["rpo_yoy_growth"], True)} &nbsp;vs&nbsp; 매출 {pct(sus["sales_yoy_growth"], True)}
             </div>
             <div style="font-size:0.84rem;color:#333;">판정: <b>{rpo_tag}</b></div>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     with c_m3:
-        st.markdown(f"""
+        html_md(f"""
         <div class="term-card">
             <div style="font-size:0.82rem;color:#64748b;font-weight:600;">③ NTM EPS 리비전 변곡점 추적 (E3)</div>
             <div style="font-size:1.15rem;font-weight:700;margin:6px 0;font-family:monospace;">
-                90일 {rev_d["change_90d"]*100:+.1f}% &nbsp;/&nbsp; 30일 {rev_d["change_30d"]*100:+.1f}%
+                90일 {pct(rev_d["change_90d"], True)} &nbsp;/&nbsp; 30일 {pct(rev_d["change_30d"], True)}
             </div>
             <div style="font-size:0.84rem;color:#333;">판정: <b>{rev_d["status"]}</b> {"(변곡점 포착)" if rev_d["inflection_flag"] else ""}</div>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     col_p1, col_p2 = st.columns([1.15, 1.0])
     with col_p1:
         e1y = proj["eps_1y"]
         e2y = proj["eps_2y"]
         c_bear_str = f"{px(e1y['cycle_bear'])}" if e1y.get("cycle_bear") is not None else "해당 없음 (비사이클)"
-        st.markdown(f"""
+        html_md(f"""
         <div class="term-card">
             <div style="font-weight:700;margin-bottom:8px;">
                 {utils.line_icon("target", 16)}E4·E5. 평가 시점별 미래 시나리오 NTM EPS (펀더멘탈 트랙 분자 전달값)
@@ -905,13 +1052,14 @@ with tab_t2:
                 <span style="color:#475569;">({proj["certainty_label"]})</span>
             </div>
             <ul class="term-list">
+                <li><b>EPS 기준:</b> {proj["eps_basis_label"]}{(" · 최근 확정 EPS(TTM) " + px(proj["ttm_eps"])) if proj["eps_basis"] == "ttm_reference" else ""}</li>
                 <li><b>1Y NTM EPS 혼합식 ({e1y["formula"]}):</b> Base(50%) <b>{px(e1y["base"])}</b> · Bull(25%) <b>{px(e1y["bull"])}</b> · Bear(25%) <b>{px(e1y["bear"])}</b></li>
                 <li><b>1Y CycleBear (사이클형 정점→저점 낙폭 기저율):</b> <b>{c_bear_str}</b></li>
                 <li><b>2Y NTM EPS 혼합식 ({e2y["formula"]}):</b> Base(50%) <b>{px(e2y["base"])}</b> · Bull(25%) <b>{px(e2y["bull"])}</b> · Bear(25%) <b>{px(e2y["bear"])}</b></li>
                 <li><b>1-2. 자본구조(분모) 점검:</b> {th_drv["capital_structure_note"]}</li>
             </ul>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     with col_p2:
         rev_rows_html = "".join([
@@ -919,7 +1067,7 @@ with tab_t2:
             f'NTM <b>{r["ntm_eps"]}</b> · FY+1 <b>{r["fy1_eps"]}</b> · FY+2 <b>{r["fy2_eps"]}</b> ({r["analysts"]})</li>'
             for r in rev_d["table"]
         ])
-        st.markdown(f"""
+        html_md(f"""
         <div class="term-card">
             <div style="font-weight:700;margin-bottom:8px;">
                 {utils.line_icon("activity", 16)}표 2 — E3. NTM EPS 리비전 다이나믹스 (창 이동 착시 보정)
@@ -929,7 +1077,7 @@ with tab_t2:
                 * 분기 롤오버 착시를 배제하기 위해 FY+1과 FY+2 추정치가 동반 상승할 때만 진성 상향으로 인정합니다.
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     with st.expander("상세 실적 진단 펼치기 — 5대 미래 지속성 평가 축 · 표 1 서프라이즈 · 표 3 이익의 질 · 시장 오판 포인트", expanded=True):
         st.markdown(f'#### {utils.line_icon("compass", 18)} 3장. 실적 생애주기 5단계 (Earnings Regime) 위치', unsafe_allow_html=True)
@@ -949,29 +1097,29 @@ with tab_t2:
         col_d1, col_d2 = st.columns(2)
         with col_d1:
             axes_html = "".join([
-                f'<li><span class="term-badge">{"🟢 2점" if ax["score"]==2 else ("🟡 1점" if ax["score"]==1 else "🔴 0점")}</span> '
+                f'<li><span class="term-badge">{"⚪ 판정 불가" if ax["score"] is None else ("🟢 2점" if ax["score"]==2 else ("🟡 1점" if ax["score"]==1 else "🔴 0점"))}</span> '
                 f'<b>{ax["axis"]}</b> ({ax["weight"]}): {ax["status"]}</li>'
                 for ax in earn_out["evaluation_axes"]
             ])
-            st.markdown(f"""
+            html_md(f"""
             <div class="term-card">
                 <div style="font-weight:700;margin-bottom:8px;">{utils.line_icon("layers", 16)}4장. 미래 지속성 5대 평가 축 점수표</div>
                 <ul class="term-list">{axes_html}</ul>
             </div>
-            """, unsafe_allow_html=True)
+            """)
 
         with col_d2:
             qual_html = "".join([
-                f'<li><span class="term-badge">{"🔴 경고" if q["warn"] else "🟢 정상"}</span> '
-                f'<b>{q["name"]}:</b> {q["value"]} — <span style="color:#475569;">{q["desc"]}</span></li>'
+                f'<li><span class="term-badge">{"⚪ 데이터 없음" if not q.get("checked", True) else ("🔴 경고" if q["warn"] else "🟢 정상")}</span> '
+                f'<b>{q["name"]}:</b> {q["value"]}' + (f' — <span style="color:#475569;">{q["desc"]}</span>' if q.get("desc") not in (None, "", engine.NO_DATA) else "") + '</li>'
                 for q in qual["items"]
             ])
-            st.markdown(f"""
+            html_md(f"""
             <div class="term-card">
                 <div style="font-weight:700;margin-bottom:8px;">{utils.line_icon("shield", 16)}표 3 — E6. 이익의 질 및 건전성 5대 체크</div>
                 <ul class="term-list">{qual_html}</ul>
             </div>
-            """, unsafe_allow_html=True)
+            """)
 
         col_e1, col_e2 = st.columns([1.2, 1.0])
         with col_e1:
@@ -979,8 +1127,11 @@ with tab_t2:
             st.dataframe(pd.DataFrame(earn_out["e1_surprise_table"]), width="stretch", hide_index=True)
 
         with col_e2:
-            squeeze_msg = "🔴 매출 상회 + 마진 하회(마진 압착) 감지됨" if qual["margin_squeeze_detected"] else "🟢 매출 상회 + 마진 하회(마진 압착) 없음"
-            st.markdown(f"""
+            if not qual.get("margin_squeeze_known", True):
+                squeeze_msg = "⚪ 매출·마진 컨센서스 없음 — 마진 압착 여부 판정 불가"
+            else:
+                squeeze_msg = "🔴 매출 상회 + 마진 하회(마진 압착) 감지됨" if qual["margin_squeeze_detected"] else "🟢 매출 상회 + 마진 하회(마진 압착) 없음"
+            html_md(f"""
             <div class="term-card">
                 <div style="font-weight:700;margin-bottom:6px;">{utils.line_icon("tag", 16)}E7·E8. 선행 파이프라인 & 시장의 이익 오판 포인트</div>
                 <ul class="term-list">
@@ -989,7 +1140,7 @@ with tab_t2:
                     <li><b>{th_drv["mispricing_type"]} (E8-2):</b> {th_drv["mispricing_detail"]}</li>
                 </ul>
             </div>
-            """, unsafe_allow_html=True)
+            """)
 
 
 # =====================================================================
@@ -1009,81 +1160,125 @@ with tab_t3:
     trap_badge = f'<span class="term-badge-inv">G4/G5 디레이팅 Cap 작동</span>' if pq["is_value_trap_blocked"] else ""
     cycle_trap_badge = f'<span class="term-badge-inv">사이클 정점 착시 방어 작동</span>' if pq["is_cycle_peak_trap"] else ""
     hold_cap_badge = f'<span class="term-badge-inv">보유기한 상한 1Y 경고</span>' if vt["holding_period_cap_warning"] else ""
+    if vt.get("eps_basis") == "ttm_reference":
+        hold_cap_badge += '<span class="term-badge-inv">참고용: 최근 확정 EPS 기준 · 미래 시나리오 없음</span>'
 
-    st.markdown(f"""
+    html_md(f"""
     <div class="term-banner">
         <div class="term-banner-line1">
             {utils.line_icon("layers", 18)}
-            <span class="term-badge-inv">{pq["grade_icon"]} 가격 자격: {synth_out["v_action_card"]["price_qual_code"]}</span>
+            <span class="term-badge-inv">{pq["grade_icon"]} 가격 자격: {synth_out["v_action_card"].get("price_qual_label", synth_out["v_action_card"]["price_qual_code"])}</span>
             <span class="term-badge">주 멀티플: {msel["primary_metric"]} ({msel["current_multiple"]:.1f}배)</span>
             <span class="term-badge">재평가 방향: {rr["direction"]}</span>
             {trap_badge}{cycle_trap_badge}{hold_cap_badge}
         </div>
         <div class="term-banner-line2">
             {pq["headline_reason"]} &nbsp;|&nbsp;
-            확률가중 기대수익률 <b>{vt["expected_return_weighted"]*100:+.1f}%</b> (요구수익률 r={vt["required_return_r"]*100:.1f}%) ·
-            <b>MDD Ratio {vt["mdd_ratio"]:.2f}</b> · Downside Convexity <b>{vt["downside_convexity"]:.2f}</b>
+            확률가중 기대수익률 <b>{pct(vt["expected_return_weighted"], True)}</b> (요구수익률 r={pct(vt["required_return_r"])}) ·
+            <b>MDD Ratio {fx(vt["mdd_ratio"])}</b> · Downside Convexity <b>{fx(vt["downside_convexity"])}</b>
         </div>
         <div class="term-banner-line3">
             {utils.line_icon("target", 14)}<b>채택 매도목표가(1Y): {vt["sell_target_formula"]}</b>
             &nbsp;|&nbsp; <b>F3 3중 위치:</b> {tz["summary_text"]}
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """)
 
     col_ch1, col_ch2 = st.columns(2)
     with col_ch1:
         p_dates = stock_df_raw.index[-250:]
-        eff_eps_now = max(float(vt["effective_eps_1y"]), 1.0)
+        eff_eps_now = max(float(vt["effective_eps_1y"]), 1.0 if is_krx_ticker else 0.01)
         hist_per_series = stock_df_raw["Close"].iloc[-250:] / eff_eps_now
         mu_s = tz["self_5y_mean"]
-        sd_s = tz["self_5y_std"]
+        lv_s = tz.get("self_band_levels") or {}
+        base_t = vt["base_multiple_target"]
+        _bs = fund_out["input_data"].get("band_series") or []
+        _bx = fund_out["input_data"].get("band_excluded")
 
-        fig_band = go.Figure()
-        fig_band.add_trace(go.Scatter(
-            x=p_dates, y=hist_per_series, mode="lines", name="내재 NTM PER 추이",
-            line=dict(color="#111111", width=2.0)
-        ))
-        fig_band.add_hline(y=mu_s + 2*sd_s, line_dash="dot", line_color="#dc2626", annotation_text=f"+2σ ({mu_s+2*sd_s:.1f}x)")
-        fig_band.add_hline(y=mu_s + 1*sd_s, line_dash="dash", line_color="#f97316", annotation_text=f"+1σ ({mu_s+1*sd_s:.1f}x)")
-        fig_band.add_hline(y=mu_s, line_dash="solid", line_color="#475569", annotation_text=f"5Y 평균 μ ({mu_s:.1f}x)")
-        fig_band.add_hline(y=mu_s - 1*sd_s, line_dash="dash", line_color="#16a34a", annotation_text=f"-1σ ({mu_s-1*sd_s:.1f}x)")
-        fig_band.add_hline(
-            y=vt["base_multiple_target"], line_dash="dashdot", line_color="#2563eb",
-            annotation_text=f"F6 Base 목표배수 ({vt['base_multiple_target']:.1f}x)", annotation_position="bottom left"
-        )
-        fig_band.update_layout(
-            title="📈 F3·F6. 역사적 멀티플 σ 밴드 및 Base 목표 배수 위치",
-            height=380, margin=dict(l=20, r=20, t=40, b=20), template="plotly_white",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0)
-        )
-        st.plotly_chart(fig_band, width="stretch")
+        if mu_s is None and base_t is None:
+            st.info(f"F3·F6 σ 밴드: {engine.NO_DATA} (자기 PER 밴드를 만들 확정 EPS·가격 이력이 부족하고, 피어 PER도 없습니다)")
+        else:
+            fig_band = go.Figure()
+            if _bs:   # 밴드 계산에 실제로 쓴 월별 후행 PER (밴드와 같은 기준). 밴드를 제외했으면 참고용으로만 표시
+                fig_band.add_trace(go.Scatter(
+                    x=pd.to_datetime([d for d, _ in _bs]), y=[v for _, v in _bs], mode="lines+markers",
+                    name=("월별 후행 PER (참고 · 밴드 제외)" if _bx else "월별 후행 PER (밴드 계산값)"),
+                    line=dict(color="#111111", width=2.0), marker=dict(size=4)
+                ))
+            else:
+                fig_band.add_trace(go.Scatter(
+                    x=p_dates, y=hist_per_series, mode="lines", name="현재 Base EPS를 과거 주가에 적용한 PER 환산(참고)",
+                    line=dict(color="#111111", width=2.0)
+                ))
+            _yv = [v for _, v in _bs] + [x for x in (mu_s, base_t) if x] + [v for v in (lv_s.values() if isinstance(lv_s, dict) else []) if v]
+            _band_log = bool(_yv and min(_yv) > 0 and max(_yv) / min(_yv) > 4)   # 값 범위가 크면 로그 축 (밴드도 로그 기준)
+
+            def _band_line(y, dash, color, text, pos_left=False):
+                """수평선 + 라벨. 로그 축이면 라벨 y를 log10으로 (Plotly 주석은 로그 축에서 log10 좌표)."""
+                fig_band.add_hline(y=y, line_dash=dash, line_color=color)
+                fig_band.add_annotation(x=0.0 if pos_left else 1.0, xref="x domain", y=math.log10(y) if _band_log else y, yref="y",
+                                        xanchor="left" if pos_left else "right", yanchor="bottom", showarrow=False, text=text,
+                                        font=dict(size=10, color="#334155"), bgcolor="rgba(255,255,255,0.7)")
+
+            _lvl_style = {2: ("dot", "#dc2626"), 1: ("dash", "#f97316"), -1: ("dash", "#16a34a"), -2: ("dot", "#15803d")}
+            for _k, (_dash, _col) in _lvl_style.items():
+                _v = (lv_s.get(_k) if _k in lv_s else lv_s.get(str(_k))) if isinstance(lv_s, dict) else None
+                if _v:
+                    _band_line(_v, _dash, _col, f"{_k:+d}σ ({_v:.1f}x)")
+            if mu_s is not None:
+                _band_line(mu_s, "solid", "#475569", f"자기 기하평균 μ ({mu_s:.1f}x)")
+            if base_t is not None:
+                _band_line(base_t, "dashdot", "#2563eb", f"F6 Base 목표배수 ({base_t:.1f}x)", pos_left=True)
+            if _band_log:
+                fig_band.update_yaxes(type="log", tickformat=",.0f")
+            fig_band.update_layout(
+                height=400, margin=dict(l=20, r=20, t=20, b=60), template="plotly_white", legend=_LEGEND_BOTTOM
+            )
+            chart_heading("📈 F3·F6. 역사적 멀티플 σ 밴드 및 Base 목표 배수 위치")
+            st.plotly_chart(fig_band, width="stretch")
+            if _bx:
+                st.warning(f"{_bx} — 과거 PER이 지금의 이익 규모와 비교할 기준이 못 되어 σ선·자기 평균을 쓰지 않습니다. "
+                           f"목표 배수는 피어 기준, 시나리오 폭은 {fund_out['input_data'].get('scenario_width_source', engine.NO_DATA)}.")
+            st.caption(f"σ 밴드는 {fund_out['input_data'].get('band_basis')} · 관측 {fund_out['input_data'].get('band_points') or engine.NO_DATA}개월 · "
+                       "로그 PER 기준(중심=기하평균, kσ=μ×e^(kσ)이라 위아래 간격이 다름)."
+                       + ("" if _bs else " 검은 선은 참고용 환산이며 밴드 기준과 다릅니다."))
 
     with col_ch2:
-        eps_c = mdec["eps_contribution_12m"] * 100.0
-        mkt_c = mdec["layer_market"] * 100.0
-        ind_c = mdec["layer_industry"] * 100.0
-        cmp_c = mdec["layer_company"] * 100.0
-        tot_c = mdec["price_return_12m"] * 100.0
-
-        fig_wf = go.Figure(go.Waterfall(
-            name="3층 분해",
-            orientation="v",
-            measure=["relative", "relative", "relative", "relative", "total"],
-            x=["① 이익(EPS) 몫", "② 시장층(금리·ERP)", "③ 산업층(업종배수)", "④ 기업층(개별프리미엄)", "12M 로그 주가수익률"],
-            textposition="outside",
-            text=[f"{eps_c:+.1f}%", f"{mkt_c:+.1f}%", f"{ind_c:+.1f}%", f"{cmp_c:+.1f}%", f"{tot_c:+.1f}%"],
-            y=[eps_c, mkt_c, ind_c, cmp_c, tot_c],
-            connector={"line": {"color": "#64748b"}},
-            increasing={"marker": {"color": "#16a34a"}},
-            decreasing={"marker": {"color": "#dc2626"}},
-            totals={"marker": {"color": "#111111"}}
-        ))
-        fig_wf.update_layout(
-            title=f"📊 F4. 최근 12M 주가 수익률 3층 로그 분해 ({mdec['dominant_driver'][:22]}...)",
-            height=380, margin=dict(l=20, r=20, t=40, b=20), template="plotly_white"
-        )
-        st.plotly_chart(fig_wf, width="stretch")
+        if mdec["price_return_12m"] is None:
+            st.info(f"F4 12개월 주가 분해: {engine.NO_DATA} (12개월 전 가격 이력 없음)")
+        elif mdec["eps_contribution_12m"] is None:
+            st.info(f"F4 12개월 주가 분해: 12M 로그 주가수익률 {mdec['price_return_12m']*100:+.1f}% — 이익·배수 분해는 {engine.NO_DATA} (확정 EPS 이력 부족)")
+        else:
+            tot_c = mdec["price_return_12m"] * 100.0
+            eps_c = mdec["eps_contribution_12m"] * 100.0
+            if mdec["layer_market"] is None:
+                xs = ["① 이익(EPS) 몫", "② 배수(PER) 몫", "12M 로그 주가수익률"]
+                ys = [eps_c, mdec["multiple_contribution_12m"] * 100.0, tot_c]
+                meas = ["relative", "relative", "total"]
+                wf_title = "📊 F4. 최근 12M 주가 수익률 분해 (후행 EPS 기준 · 시장/산업층 데이터 없음)"
+            else:
+                xs = ["① 이익(EPS) 몫", "② 시장층(금리·ERP)", "③ 산업층(업종배수)", "④ 기업층(개별프리미엄)", "12M 로그 주가수익률"]
+                ys = [eps_c, mdec["layer_market"] * 100.0, mdec["layer_industry"] * 100.0, mdec["layer_company"] * 100.0, tot_c]
+                meas = ["relative"] * 4 + ["total"]
+                wf_title = f"📊 F4. 최근 12M 주가 수익률 3층 로그 분해 ({mdec['dominant_driver'][:22]}...)"
+            fig_wf = go.Figure(go.Waterfall(
+                name="분해", orientation="v", measure=meas, x=xs, textposition="outside",
+                text=[f"{y:+.1f}%" for y in ys], y=ys,
+                connector={"line": {"color": "#64748b"}},
+                increasing={"marker": {"color": "#16a34a"}},
+                decreasing={"marker": {"color": "#dc2626"}},
+                totals={"marker": {"color": "#111111"}}
+            ))
+            _cum, _lo, _hi = 0.0, 0.0, 0.0
+            for _y, _m in zip(ys, meas):
+                _cum = _y if _m == "total" else _cum + _y
+                _lo, _hi = min(_lo, _cum, _y if _m == "total" else _lo), max(_hi, _cum)
+            _pad = max(2.0, (_hi - _lo) * 0.15)
+            fig_wf.update_traces(cliponaxis=False)
+            fig_wf.update_yaxes(range=[_lo - (_pad if _lo < 0 else 0), _hi + _pad])
+            fig_wf.update_layout(height=400, margin=dict(l=20, r=20, t=20, b=20), template="plotly_white", showlegend=False)
+            chart_heading(wf_title)
+            st.plotly_chart(fig_wf, width="stretch")
 
     col_tr1, col_tr2 = st.columns([1.2, 1.0])
     with col_tr1:
@@ -1094,8 +1289,8 @@ with tab_t3:
             f'<b>{tr["label"]}</b> — 목표비중 <b>{tr["weight"]*100:.2f}%</b>'
             f'</li>'
             for tr in vt["buy_tranches"]
-        ])
-        st.markdown(f"""
+        ]) or f'<li>{engine.NO_DATA} — 목표 배수를 만들 근거(자기 PER 밴드·피어 PER)가 없어 매수기준선을 계산하지 않았습니다</li>'
+        html_md(f"""
         <div class="term-card">
             <div style="font-weight:700;margin-bottom:8px;">
                 {utils.line_icon("check", 16)}F7-3. 기술 트랙(V 라우터) 직결 0~3차 분할 매수기준선 (유효 1Y EPS: {px(vt["effective_eps_1y"])})
@@ -1105,20 +1300,21 @@ with tab_t3:
                 * 적용 규칙: {msel["rule_description"]}
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     with col_tr2:
         fa = rr["four_axes"]
-        st.markdown(f"""
+        html_md(f"""
         <div class="term-card">
             <div style="font-weight:700;margin-bottom:8px;">
                 {utils.line_icon("activity", 16)}F5. 5년 성숙기 수렴 내재 성장률(g_내재) 역산 & 재평가 4축 진단
             </div>
             <div style="font-size:1.05rem;font-weight:700;font-family:monospace;margin:6px 0;">
-                현재가 내재 5Y CAGR: {rr["implied_5y_cagr"]*100:.1f}% &nbsp;vs&nbsp; 컨센서스 2Y CAGR: {rr["consensus_2y_cagr"]*100:.1f}%
+                현재가 내재 5Y CAGR: {pct(rr["implied_5y_cagr"])} &nbsp;vs&nbsp; 컨센서스 2Y CAGR: {pct(rr["consensus_2y_cagr"])}
             </div>
             <div style="font-size:0.84rem;color:#333;margin-bottom:8px;">
-                종착점 성숙 배수(PER_종착): <b>{rr["terminal_per_used"]:.1f}배</b> (이론 성숙 PER {ind_p["theoretical_mature_per"]:.1f}배, 시장 k_e={ind_p["market_ke"]*100:.1f}%)
+                종착 배수(PER_종착): <b>{xmul(rr["terminal_per_used"])}</b>{(" (" + rr["terminal_per_basis"] + ")") if rr.get("terminal_per_basis") not in (None, "", engine.NO_DATA) else ""} · 이론 성숙 PER {xmul(ind_p["theoretical_mature_per"])}는 참고값 (시장 k_e={pct(ind_p["market_ke"])})<br>
+                <span style="color:#64748b;">k_e = 10Y 국채 {rate_src(ind_p.get("rf_10y"), ind_p.get("rf_source"), ind_p.get("rf_as_of"))} + 베타 × 시장 위험프리미엄 {rate_src(ind_p.get("market_erp"), ind_p.get("market_erp_source"))}</span>
             </div>
             <div style="font-size:0.85rem;">
                 <span class="term-badge">축1 지속기간: {fa["duration"]}</span>
@@ -1127,7 +1323,7 @@ with tab_t3:
                 <span class="term-badge">축4 선반영도: {fa["priced_in"]}</span>
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     with st.expander("상세 펀더멘탈 밸류에이션 펼치기 — F8 매도 4대 앵커 · F2 피어 8대 요인 · F9 재무 생존성 · F10 멀티플 오판 포인트", expanded=True):
         col_f1, col_f2 = st.columns(2)
@@ -1137,17 +1333,20 @@ with tab_t3:
 
             sr = vt["scenario_returns"]
             cb_str = f" · CycleBear {sr['cycle_bear']*100:+.1f}%" if sr.get("cycle_bear") is not None else ""
-            st.markdown(f"""
+            _dm, _dl = fsurv["debt_maturity_1y_ratio"], fsurv["share_dilution_yoy"]
+            _dm_s = engine.NO_DATA if _dm is None else f"{_dm*100:.0f}% {'(🔴 차환 경고)' if _dm > 1.0 else '(🟢 안정)'}"
+            _dl_s = engine.NO_DATA if _dl is None else f"{_dl*100:.1f}% {'(🔴 희석 경고)' if _dl > 0.05 else '(🟢 적정)'}"
+            html_md(f"""
             <div class="term-card">
                 <div style="font-weight:700;margin-bottom:6px;">{utils.line_icon("layers", 15)}F7-4 & F9. 시나리오 기대수익률 및 재무 생존성 3지표</div>
                 <ul class="term-list">
-                    <li><b>1Y 시나리오 수익률 (배당 포함):</b> Bull <b>{sr["bull"]*100:+.1f}%</b> · Base <b>{sr["base"]*100:+.1f}%</b> · Bear <b>{sr["bear"]*100:+.1f}%</b>{cb_str}</li>
+                    <li><b>1Y 시나리오 수익률 (배당 포함):</b> Bull <b>{pct(sr["bull"], True)}</b> · Base <b>{pct(sr["base"], True)}</b> · Bear <b>{pct(sr["bear"], True)}</b>{cb_str}</li>
                     <li><b>① FCF 소진 런웨이:</b> {fsurv["fcf_runway_years"]}</li>
-                    <li><b>② 1년 내 차입 만기 부담 (현금 대비):</b> {fsurv["debt_maturity_1y_ratio"]*100:.0f}% {"(🔴 차환 경고)" if fsurv["debt_maturity_1y_ratio"]>1.0 else "(🟢 안정)"}</li>
-                    <li><b>③ 연간 주식 희석률 (YoY):</b> {fsurv["share_dilution_yoy"]*100:.1f}% {"(🔴 희석 경고)" if fsurv["share_dilution_yoy"]>0.05 else "(🟢 적정)"}</li>
+                    <li><b>② 1년 내 차입 만기 부담 (현금 대비):</b> {_dm_s}</li>
+                    <li><b>③ 연간 주식 희석률 (YoY):</b> {_dl_s}</li>
                 </ul>
             </div>
-            """, unsafe_allow_html=True)
+            """)
 
         with col_f2:
             st.markdown(
@@ -1156,7 +1355,7 @@ with tab_t3:
             )
             st.dataframe(pd.DataFrame(ind_p["peer_factors_table"]), width="stretch", hide_index=True)
 
-            st.markdown(f"""
+            html_md(f"""
             <div class="term-card">
                 <div style="font-weight:700;margin-bottom:6px;">{utils.line_icon("tag", 15)}F10. 멀티플 측면 시장 오판 포인트 & F4 원인 분류</div>
                 <ul class="term-list">
@@ -1165,7 +1364,31 @@ with tab_t3:
                     <li><b>📉 멀티플 과대평가 포인트:</b> {mpts["overvalued_point"]}</li>
                 </ul>
             </div>
-            """, unsafe_allow_html=True)
+            """)
+
+    idata = fund_out.get("input_data", {})
+    with st.expander("V 트랙 입력 데이터 출처 · 못 받은 항목 (데이터 없음)", expanded=False):
+        st.write(f"출처: {idata.get('source') or engine.NO_DATA} · 자기 밴드 기준: {idata.get('band_basis') or engine.NO_DATA} "
+                 f"(관측 {idata.get('band_points') or engine.NO_DATA}개월) · 피어 {idata.get('peer_count') or 0}개 "
+                 f"({idata.get('peer_group') or engine.NO_DATA})")
+        for _n in idata.get("notes", []):
+            st.caption(f"· {_n}")
+        _lab = {
+            "industry_beta": "베타", "sustainable_roe": "ROE(지속가능)", "dividend_yield": "배당수익률", "is_financial_sector": "금융업 여부",
+            "listing_years": "상장 연수", "self_5y_mean": "자기 PER 평균", "self_5y_std": "자기 PER 표준편차", "self_5y_min": "자기 PER 최솟값",
+            "ind_5y_mean": "업종 PER 평균", "ind_5y_std": "업종 PER 표준편차", "ind_rel_5y_mean": "업종 상대 PER 평균", "ind_rel_5y_std": "업종 상대 PER 표준편차",
+            "ind_rel_current": "업종 상대 PER 현재", "peer_median_per": "피어 PER 중앙값", "peer_top25_per": "피어 PER 상위25%", "peer_std_per": "피어 PER 표준편차",
+            "peer_rel_5y_mean": "피어 상대 PER 평균", "peer_rel_5y_std": "피어 상대 PER 표준편차", "ind_rerate_evidences": "산업 상향 증거",
+            "ind_derate_evidences": "산업 하향 증거", "ind_evidence_2q_confirmed": "산업 증거 2분기 확인", "current_pb": "현재 P/B", "pb_5y_mean": "P/B 평균",
+            "pb_5y_std": "P/B 표준편차", "company_roe": "기업 ROE", "peer_median_roe": "피어 ROE 중앙값", "company_fwd_growth": "기업 선행 EPS 성장",
+            "peer_median_fwd_growth": "피어 선행 EPS 성장 중앙값", "shareholder_return_advantage": "주주환원 우위", "price_12m_ago": "12개월 전 주가",
+            "eps_lag_12m_ago": "12개월 전 후행 EPS", "eps_lag_now": "현재 후행 EPS", "mkt_per_12m_ago": "시장 PER(12개월 전)", "mkt_per_now": "시장 PER(현재)",
+            "ind_per_12m_ago": "업종 PER(12개월 전)", "ind_per_now": "업종 PER(현재)", "historical_max_5y_cagr": "역대 최고 5Y CAGR",
+            "consensus_target_price": "컨센서스 목표가", "rf_10y": "무위험수익률(10년 국채)", "net_cash_krw": "순현금", "fcf_ttm_krw": "FCF", "short_term_debt_ratio": "단기차입 비율",
+            "share_dilution_yoy": "주식 희석률",
+        }
+        _miss = [_lab.get(k, k) for k in idata.get("missing", [])]
+        st.write("못 받은 입력: " + (", ".join(_miss) if _miss else "없음"))
 
 
 # =====================================================================
@@ -1184,15 +1407,15 @@ with tab_t4:
     warn_badges = "".join([f'<span class="term-badge-inv">{w}</span>' for w in m_cls.get("warnings", [])])
 
     # HTML 태그 노출 방지를 위해 st.markdown에 unsafe_allow_html=True 명시
-    st.markdown(f"""
+    html_md(f"""
     <div class="term-banner">
         <div class="term-banner-line1">
             {utils.line_icon("compass", 18)}
             <span class="term-badge-inv">{m_cls["grade_icon"]} {m_cls["label"]}</span>
-            <span class="term-badge">모형 B 고유 R² {m_cls["r2_macro_own"]*100:.1f}% (원시 R² {m_cls["r2_raw"]*100:.1f}%)</span>
-            <span class="term-badge">OOS ΔR² {m_cls["oos_delta_r2_mean"]*100:+.1f}%p</span>
-            <span class="term-badge">시장 β_m {m_cls["market_beta"]:.2f}</span>
-            <span class="term-badge">국면: {m_reg["current_regime"]} (인플레 주 {int(m_reg["inflation_week_ratio_13w"]*100)}%)</span>
+            <span class="term-badge">모형 B 고유 R² {pct(m_cls.get("r2_macro_own"))} (원시 R² {pct(m_cls.get("r2_raw"))})</span>
+            <span class="term-badge">OOS ΔR² {(f'{m_cls["oos_delta_r2_mean"]*100:+.1f}%p') if m_cls.get("oos_delta_r2_mean") is not None else engine.NO_DATA}</span>
+            <span class="term-badge">시장 β_m {fx(m_cls.get("market_beta"))}</span>
+            <span class="term-badge">국면: {m_reg["current_regime"]} (인플레 주 {(str(int(m_reg["inflation_week_ratio_13w"]*100)) + "%") if m_reg.get("inflation_week_ratio_13w") is not None else engine.NO_DATA})</span>
             {warn_badges}
         </div>
         <div class="term-banner-line2" style="margin-top:8px;">
@@ -1201,11 +1424,24 @@ with tab_t4:
         <div class="term-banner-line3" style="margin-top:6px;">
             {utils.line_icon("shield", 14)}<b>데이터 품질: {m_meta["data_quality"]} ({m_meta["sample_weeks"]}주 W-FRI)</b> &nbsp;|&nbsp;
             <b>사전 등록 가설 ID:</b> {m_meta["hypothesis_id"]} ({m_meta.get("industry_category", "")}) &nbsp;|&nbsp;
-            <b>OOS 잔차 점검:</b> {m_res.get("status", "-")} (z_oos = {m_res.get("z_oos", 0.0):+.2f}) &nbsp;|&nbsp;
-            <b>Track 3 전달 10Y 금리(R_f):</b> {m_reg["rf_10y_current"]*100:.2f}%
+            <b>OOS 잔차 점검:</b> {m_res.get("status", engine.NO_DATA)} (z_oos = {fx(m_res.get("z_oos"), "+.2f")}) &nbsp;|&nbsp;
+            <b>Track 3 전달 10Y 금리(R_f):</b> {rate_src(m_reg.get("rf_10y_current"), m_reg.get("rf_source"), m_reg.get("rf_as_of"))}
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """)
+
+    _msrc = m_meta.get("sources") or {}
+    st.caption("거시 데이터 출처: " + (", ".join(sorted(set(_msrc.values()))) if _msrc else engine.NO_DATA)
+               + (f" · 거시 데이터 기준일 {m_meta['macro_as_of']}" if m_meta.get("macro_as_of") else ""))
+    _mmiss = list(m_meta.get("missing_vars") or [])
+    if m_meta.get("regime_missing"):
+        _mmiss.append("국면 판정용 금리(" + ", ".join(m_meta["regime_missing"]) + ") — 인플레/성장 국면 '데이터 없음'")
+    if m_meta.get("hold_reason"):
+        st.warning(f"거시 트랙 판정 보류: {m_meta['hold_reason']}")
+    if _mmiss:
+        with st.expander(f"받지 못한 거시 변수 {len(_mmiss)}건 (회귀·화면에서 제외)"):
+            for _m in _mmiss:
+                st.write(f"- {_m}")
 
     col_mc1, col_mc2 = st.columns(2)
     with col_mc1:
@@ -1213,29 +1449,31 @@ with tab_t4:
             w4 = m_attr["4w"]
             w13 = m_attr["13w"]
             fig_attr = go.Figure()
+            _xcat = [f"최근 4주<br>(실제 {w4['actual']*100:+.1f}%)", f"최근 13주<br>(실제 {w13['actual']*100:+.1f}%)"]
             fig_attr.add_trace(go.Bar(
-                name="① 시장 몫", x=["최근 4주", "최근 13주"], y=[w4["market"]*100, w13["market"]*100], marker_color="#64748b",
+                name="① 시장 몫", x=_xcat, y=[w4["market"]*100, w13["market"]*100], marker_color="#64748b",
                 text=[f"{w4['market']*100:+.1f}%p", f"{w13['market']*100:+.1f}%p"], textposition="auto"
             ))
             fig_attr.add_trace(go.Bar(
-                name="② 거시 추가 몫", x=["최근 4주", "최근 13주"], y=[w4["macro_extra"]*100, w13["macro_extra"]*100], marker_color="#2563eb",
+                name="② 거시 추가 몫", x=_xcat, y=[w4["macro_extra"]*100, w13["macro_extra"]*100], marker_color="#2563eb",
                 text=[f"{w4['macro_extra']*100:+.1f}%p", f"{w13['macro_extra']*100:+.1f}%p"], textposition="auto"
             ))
             fig_attr.add_trace(go.Bar(
-                name="③ 기업 고유 몫", x=["최근 4주", "최근 13주"], y=[w4["idiosyncratic"]*100, w13["idiosyncratic"]*100], marker_color="#111111",
+                name="③ 기업 고유 몫", x=_xcat, y=[w4["idiosyncratic"]*100, w13["idiosyncratic"]*100], marker_color="#111111",
                 text=[f"{w4['idiosyncratic']*100:+.1f}%p", f"{w13['idiosyncratic']*100:+.1f}%p"], textposition="auto"
             ))
             fig_attr.add_trace(go.Scatter(
-                name="실제 합계", x=["최근 4주", "최근 13주"], y=[w4["actual"]*100, w13["actual"]*100],
-                mode="markers+text", marker=dict(color="#dc2626", size=10, symbol="diamond"),
-                text=[f"실제 {w4['actual']*100:+.1f}%", f"실제 {w13['actual']*100:+.1f}%"], textposition="top center"
+                name="실제 합계", x=_xcat, y=[w4["actual"]*100, w13["actual"]*100],
+                mode="markers", marker=dict(color="#dc2626", size=11, symbol="diamond"),
             ))
+            fig_attr.update_traces(selector=dict(type="bar"), textposition="inside", insidetextanchor="middle")
             # 차트 타이틀과 범례 겹침 방지를 위해 상단 여백(t=65) 및 범례 위치 조정
             fig_attr.update_layout(
-                barmode="relative", title="<b>6-1. 최근 4주·13주 수익률 기여 분해</b>",
-                height=420, margin=dict(l=20, r=20, t=65, b=20), template="plotly_white",
-                legend=dict(orientation="h", yanchor="bottom", y=1.04, xanchor="left", x=0, font=dict(size=11))
+                barmode="relative", height=440, margin=dict(l=20, r=20, t=20, b=70), template="plotly_white",
+                legend=_LEGEND_BOTTOM, uniformtext=dict(minsize=10, mode="hide"),   # 막대가 작아 글자가 안 들어가면 숨김(겹침 방지)
+                yaxis_title="수익률 기여 (%p)"
             )
+            chart_heading("6-1. 최근 4주·13주 수익률 기여 분해 (◆ 실제 수익률)")
             st.plotly_chart(fig_attr, width="stretch")
 
     with col_mc2:
@@ -1246,14 +1484,18 @@ with tab_t4:
             v_texts = [f"{s['price_response_1sd']} (t={s['t_stat_hac']:+.2f})" for s in m_sens]
 
             fig_sens = go.Figure(go.Bar(
-                orientation="h", y=v_names, x=v_resps, marker_color=v_colors, text=v_texts, textposition="outside"
+                orientation="h", y=v_names, x=v_resps, marker_color=v_colors, text=v_texts, textposition="outside",
+                cliponaxis=False
             ))
+            _xm = max([abs(v) for v in v_resps] + [0.1])
+            fig_sens.update_xaxes(range=[-_xm * 2.2, _xm * 2.2])   # 막대 밖 글자(값·t)가 잘리지 않게 좌우 여백
             fig_sens.add_vline(x=0, line_color="#111111", line_width=1.2)
             # 차트 타이틀 글자 겹침 방지 여백(t=65) 확보
             fig_sens.update_layout(
-                title="<b>4-2·6-1. 가설 변수 1σ 변동 시 조건부 주가 반응</b>",
-                xaxis_title="예상 주가 반응 (%)", height=420, margin=dict(l=20, r=60, t=65, b=20), template="plotly_white"
+                xaxis_title="예상 주가 반응 (%)", height=420, margin=dict(l=20, r=20, t=20, b=40), template="plotly_white",
+                yaxis=dict(automargin=True)
             )
+            chart_heading("4-2·6-1. 가설 변수 1σ 변동 시 조건부 주가 반응")
             st.plotly_chart(fig_sens, width="stretch")
 
     col_ms1, col_ms2 = st.columns([1.25, 1.0])
@@ -1268,14 +1510,14 @@ with tab_t4:
             f'</li>'
             for s in m_sens
         ])
-        st.markdown(f"""
+        html_md(f"""
         <div class="term-card">
             <div style="font-weight:700;margin-bottom:8px;">
                 {utils.line_icon("activity", 16)}4-2 & 6-0. 사전 등록 가설 변수 조건부 민감도 (위험 속성)
             </div>
             <ul class="term-list">{sens_li}</ul>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     with col_ms2:
         cal_li = "".join([
@@ -1286,20 +1528,29 @@ with tab_t4:
             f'</li>'
             for c in m_cal
         ])
-        st.markdown(f"""
+        html_md(f"""
         <div class="term-card">
             <div style="font-weight:700;margin-bottom:8px;">
                 {utils.line_icon("compass", 16)}6-4. 거시 감시 캘린더 (중복 계상 방지 태그 병기)
             </div>
             <ul class="term-list">{cal_li}</ul>
         </div>
-        """, unsafe_allow_html=True)
+        """)
 
     with st.expander("상세 거시 진단 펼치기 — 5-1 가설 변수 13주 경로 · 6-2 표본 외(OOS) 잔차 점검", expanded=True):
         col_md1, col_md2 = st.columns([1.2, 1.0])
         with col_md1:
             st.markdown(f'**{utils.line_icon("layers", 16)} 5-1. 가설 변수 최근 13주 동일 구간 변화 및 4주 쏠림 몫**', unsafe_allow_html=True)
-            st.dataframe(pd.DataFrame(m_state), width="stretch", hide_index=True)
+            st.dataframe(
+                pd.DataFrame(m_state), width="stretch", hide_index=True,
+                column_config={
+                    "var_name": st.column_config.TextColumn("변수", width="medium"),
+                    "change_13w": st.column_config.TextColumn("13주 변화", width="small"),
+                    "high_low_13w": st.column_config.TextColumn("13주 저~고 (최근)", width="large"),
+                    "share_4w": st.column_config.NumberColumn("4주 몫", format="%.2f", width="small"),
+                    "path_label": st.column_config.TextColumn("경로", width="medium"),
+                },
+            )
 
         with col_md2:
             ev_weeks = m_res.get("event_weeks", [])
@@ -1308,16 +1559,16 @@ with tab_t4:
                 for ev in ev_weeks
             ]) or "<li>최근 13주 내 분리된 기업 고유 이벤트 충격 주간 없음</li>"
 
-            st.markdown(f"""
+            html_md(f"""
             <div class="term-card">
                 <div style="font-weight:700;margin-bottom:6px;">
                     {utils.line_icon("shield", 16)}6-2. 최근 13주 표본 외(OOS) 잔차 점검 (Look-Ahead 차단)
                 </div>
                 <ul class="term-list">
-                    <li><b>판정 결과:</b> <b>{m_res.get("status", "-")}</b> (누적 표준화 점수 z_oos = <b>{m_res.get("z_oos", 0.0):+.2f}</b>)</li>
-                    <li><b>점검에 사용된 평범한 주:</b> {m_res.get("normal_weeks_count", 0)}주</li>
+                    <li><b>판정 결과:</b> <b>{m_res.get("status", "-")}</b> (누적 표준화 점수 z_oos = <b>{fx(m_res.get("z_oos"), "+.2f")}</b>)</li>
+                    <li><b>점검에 사용된 평범한 주:</b> {(str(m_res["normal_weeks_count"]) + "주") if m_res.get("normal_weeks_count") is not None else engine.NO_DATA}</li>
                     <li><b>분리된 기업 고유 이벤트 주간:</b></li>
                     {ev_html}
                 </ul>
             </div>
-            """, unsafe_allow_html=True)
+            """)

@@ -1,0 +1,15 @@
+hypothesis_id: AAPL_v0_auto
+ticker: AAPL
+industry_category: 고멀티플 SW·플랫폼
+created_at: 2026-11-10T17:20:46.860540
+variables:
+  - var_id: DFII10
+    expected_sign: '-'
+    strength: '●●●'
+  - var_id: BAMLH0A0HYM2
+    expected_sign: '-'
+    strength: '●●'
+  - var_id: NETLIQ
+    expected_sign: '+'
+    strength: '●●'
+sha256_lock: 8e95d78bcdb5383c

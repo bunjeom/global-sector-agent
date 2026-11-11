@@ -1,5 +1,6 @@
 # C:\Users\hanju\global-sector-agent\engine.py
 import math
+import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
@@ -89,6 +90,13 @@ def adjust_krx_price(price: float, direction: str = "nearest", is_krx: bool = Tr
     elif direction == "down":
         return float(math.floor(price / tick) * tick)
     return float(round(price / tick) * tick)
+
+def with_paren(main: Any, extra: Any) -> str:
+    """'본문 (보충)' 표기. 보충이 없거나 '데이터 없음'이면 괄호를 붙이지 않는다 ('데이터 없음 (데이터 없음)' 중복 방지)."""
+    m = NO_DATA if main in (None, "") else str(main)
+    e = None if extra in (None, "", NO_DATA) else str(extra)
+    return m if e is None or e == m else f"{m} ({e})"
+
 
 def fmt_price(v: Any, is_krx: bool = True) -> str:
     """가격·금액 문구: 한국 종목 '232,500원', 미국 종목 '$172.50' (T 엔진·딥다이브 공통)"""
@@ -1624,7 +1632,7 @@ def evaluate_v_tranche_timings(
         if thesis_status == "붕괴" or len(kill_flags) > 0 or not is_fresh:
             codes.append("THESIS_KILL" if (thesis_status == "붕괴" or kill_flags) else "STALE_VALUE")
             results.append({
-                "tranche": t_num, "price": int(t_price), "weight": t_weight,
+                "tranche": t_num, "price": (int(t_price) if is_krx else round(float(t_price), 2)), "weight": t_weight,
                 "price_reached": bool(c_t <= t_price),
                 "verdict": "이월", "ratio": 0.0, "codes": codes, "high_confidence": high_conf
             })
@@ -1633,7 +1641,7 @@ def evaluate_v_tranche_timings(
         # 1. 0차: 기술 게이트 미적용 (V자 반등 보험 -> 무조건 즉시)[cite: 1]
         if t_num == 0:
             results.append({
-                "tranche": 0, "price": int(t_price), "weight": t_weight,
+                "tranche": 0, "price": (int(t_price) if is_krx else round(float(t_price), 2)), "weight": t_weight,
                 "price_reached": bool(c_t <= t_price),
                 "verdict": "즉시", "ratio": 1.0, "codes": ["TR0_INSURANCE"], "high_confidence": high_conf
             })
@@ -1702,7 +1710,7 @@ def evaluate_v_tranche_timings(
 
         ratio = 1.0 if verdict == "즉시" else (0.5 if verdict == "절반" else 0.0)
         results.append({
-            "tranche": t_num, "price": int(t_price), "weight": t_weight,
+            "tranche": t_num, "price": (int(t_price) if is_krx else round(float(t_price), 2)), "weight": t_weight,
             "price_reached": bool(c_t <= t_price),
             "verdict": verdict, "ratio": ratio, "codes": codes, "high_confidence": high_conf
         })
@@ -1969,104 +1977,613 @@ def analyze_technical_track(
 
 
 # =====================================================================
-# [Track 2] 실적 분석 트랙 v1.0 (미래 예측·지속성·G1~G5 생애주기 엔진)
+# [Track 2] 실적 분석 트랙 v1.1 — 실제 데이터 입력층 (미국: yfinance / 한국: DART)
+#  * 못 받은 값은 None. 화면에는 "데이터 없음"으로 표시한다 (AGENTS.md 데이터 무결성 규칙 3번).
+#  * 삼성전자 기준으로 손으로 적어 둔 기본값(rev_base 320 등)은 더 이상 없다.
 # =====================================================================
-def _fetch_yf_earnings_seed(ticker: str, is_krx: bool) -> Dict[str, Any]:
-    """yfinance에서 종목별 실제 EPS 추정치(eps_trend)와 기본 재무 지표를 읽어 시드 데이터를 보정한다."""
-    out: Dict[str, Any] = {}
+NO_DATA = "데이터 없음"
+
+# 사이클형 '정점→저점 EPS 낙폭 기저율'은 종목 데이터가 아니라 모델 정책값이다. (종목 고유값 아님)
+CYCLE_PEAK_TO_TROUGH_DROP = 0.45
+
+
+def _num(v: Any) -> Optional[float]:
+    """숫자로 바꿀 수 있고 유한하면 float, 아니면 None."""
+    try:
+        if v is None or isinstance(v, bool):
+            return None
+        x = float(v)
+        if math.isnan(x) or math.isinf(x):
+            return None
+        return x
+    except (TypeError, ValueError):
+        return None
+
+
+def _ratio_change(cur: Any, base: Any) -> Optional[float]:
+    """(cur-base)/|base|. 값이 없거나 base가 0이면 None."""
+    c, b = _num(cur), _num(base)
+    if c is None or b is None or abs(b) < 1e-12:
+        return None
+    return (c - b) / abs(b)
+
+
+def _diff(a: Any, b: Any) -> Optional[float]:
+    x, y = _num(a), _num(b)
+    return None if (x is None or y is None) else x - y
+
+
+def _div(a: Any, b: Any) -> Optional[float]:
+    x, y = _num(a), _num(b)
+    if x is None or y is None or abs(y) < 1e-12:
+        return None
+    return x / y
+
+
+def _s_pct(v: Any, digits: int = 1, signed: bool = True) -> str:
+    x = _num(v)
+    if x is None:
+        return NO_DATA
+    return f"{x * 100:+.{digits}f}%" if signed else f"{x * 100:.{digits}f}%"
+
+
+def _s_pp(v: Any, digits: int = 1) -> str:
+    x = _num(v)
+    return NO_DATA if x is None else f"{x * 100:+.{digits}f}%p"
+
+
+def _s_price(v: Any, is_krx: bool) -> str:
+    x = _num(v)
+    return NO_DATA if x is None else fmt_price(x, is_krx)
+
+
+def _s_big(v: Any, is_krx: bool) -> str:
+    """매출 같은 큰 금액: 한국 '조원', 미국 '십억 달러' 단위로 표시."""
+    x = _num(v)
+    if x is None:
+        return NO_DATA
+    return f"{x / 1e12:,.2f}조원" if is_krx else f"${x / 1e9:,.2f}B"
+
+
+def _round_eps(v: Any, is_krx: bool) -> Optional[float]:
+    x = _num(v)
+    if x is None:
+        return None
+    return float(round(x, 0)) if is_krx else float(round(x, 2))
+
+
+def _stmt_series(df: Any, names: List[str]) -> List[Optional[float]]:
+    """yfinance 재무제표(행=항목, 열=날짜 최신순)에서 첫 번째로 맞는 행을 최신순 리스트로."""
+    try:
+        if df is None or len(df) == 0:
+            return []
+        idx = {str(i).strip().lower(): i for i in df.index}
+        for nm in names:
+            key = nm.strip().lower()
+            if key in idx:
+                row = df.loc[idx[key]]
+                return [_num(x) for x in list(row.values)]
+    except Exception:
+        pass
+    return []
+
+
+def _quarters_from_series(sales, gp, op, ni, eps, labels) -> List[Dict[str, Any]]:
+    """분기 시계열(최신순)에서 최신 3개 분기를 '분기별 dict(+전년 동기값)'으로 만든다."""
+    n = max(len(sales), len(op), len(ni), len(eps), len(gp), 0)
+    def g(lst, i):
+        return lst[i] if 0 <= i < len(lst) else None
+    out = []
+    for i in range(min(n, 3)):
+        out.append({
+            "label": labels[i] if i < len(labels) else f"q{i}",
+            "sales": g(sales, i), "gp": g(gp, i), "op": g(op, i), "ni": g(ni, i), "eps": g(eps, i),
+            "sales_py": g(sales, i + 4), "gp_py": g(gp, i + 4), "op_py": g(op, i + 4),
+            "ni_py": g(ni, i + 4), "eps_py": g(eps, i + 4),
+        })
+    return out
+
+
+# ---------------------------------------------------------------------
+# 미국(및 yfinance가 주는 모든 종목): yfinance
+# ---------------------------------------------------------------------
+def _yf_estimates(tk: Any, raw: Dict[str, Any]) -> None:
+    """컨센서스: 연간 EPS 평균/최고/최저(earnings_estimate)와 30·90일 전 값(eps_trend)."""
+    try:
+        ee = tk.earnings_estimate
+        if ee is not None and len(ee) > 0:
+            for key, row_name in (("fy1", "0y"), ("fy2", "+1y")):
+                if row_name in ee.index:
+                    r = ee.loc[row_name]
+                    raw["estimates"][key] = {
+                        "avg": _num(r.get("avg")), "low": _num(r.get("low")),
+                        "high": _num(r.get("high")), "n": _num(r.get("numberOfAnalysts")),
+                    }
+    except Exception:
+        pass
+    try:
+        et = tk.eps_trend
+        if et is not None and len(et) > 0:
+            for key, row_name in (("fy1", "0y"), ("fy2", "+1y")):
+                if row_name in et.index:
+                    r = et.loc[row_name]
+                    raw["eps_trend"][key] = {
+                        "t": _num(r.get("current")), "d30": _num(r.get("30daysAgo")),
+                        "d90": _num(r.get("90daysAgo")),
+                    }
+    except Exception:
+        pass
+
+
+def _fetch_us_raw(ticker: str) -> Dict[str, Any]:
+    raw: Dict[str, Any] = {
+        "source": "yfinance", "as_of": None, "quarters": [], "ar": [], "inv": [],
+        "ocf_q": [], "capex_q": [], "ni_q": [], "estimates": {}, "eps_trend": {},
+        "eps_hist": None, "ttm_eps": None, "next_fye": None, "last_fye": None,
+        "shares": None, "notes": [],
+    }
+    try:
+        import yfinance as yf
+    except Exception:
+        raw["notes"].append("yfinance 없음")
+        return raw
+    try:
+        tk = yf.Ticker(ticker)
+    except Exception:
+        raw["notes"].append("yfinance 접속 실패")
+        return raw
+
+    try:
+        inc = tk.quarterly_income_stmt
+        sales = _stmt_series(inc, ["Total Revenue", "Operating Revenue"])
+        gp = _stmt_series(inc, ["Gross Profit"])
+        op = _stmt_series(inc, ["Operating Income", "Total Operating Income As Reported"])
+        ni = _stmt_series(inc, ["Net Income", "Net Income Common Stockholders"])
+        eps = _stmt_series(inc, ["Diluted EPS", "Basic EPS"])
+        labels = []
+        try:
+            labels = [pd.Timestamp(c).strftime("%Y-%m-%d") for c in inc.columns]
+            raw["as_of"] = labels[0] if labels else None
+        except Exception:
+            pass
+        raw["quarters"] = _quarters_from_series(sales, gp, op, ni, eps, labels)
+        raw["ni_q"] = ni
+        if len(eps) >= 4 and all(e is not None for e in eps[:4]):
+            raw["ttm_eps"] = float(sum(eps[:4]))
+    except Exception:
+        raw["notes"].append("분기 손익계산서 없음")
+    try:
+        bs = tk.quarterly_balance_sheet
+        raw["ar"] = _stmt_series(bs, ["Accounts Receivable", "Receivables", "Gross Accounts Receivable"])
+        raw["inv"] = _stmt_series(bs, ["Inventory"])
+    except Exception:
+        raw["notes"].append("분기 재무상태표 없음")
+    try:
+        cf = tk.quarterly_cashflow
+        raw["ocf_q"] = _stmt_series(cf, ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"])
+        raw["capex_q"] = _stmt_series(cf, ["Capital Expenditure", "Purchase Of PPE"])
+    except Exception:
+        raw["notes"].append("분기 현금흐름표 없음")
+
+    _yf_estimates(tk, raw)
+    try:
+        eh = tk.earnings_history
+        if eh is not None and len(eh) > 0:
+            last = eh.sort_index().iloc[-1]
+            raw["eps_hist"] = {"actual": _num(last.get("epsActual")), "est": _num(last.get("epsEstimate"))}
+    except Exception:
+        pass
+    try:
+        info = tk.info or {}
+        t_eps = _num(info.get("trailingEps"))
+        if t_eps is not None:
+            raw["ttm_eps"] = t_eps
+        raw["shares"] = _num(info.get("sharesOutstanding"))
+        for k_src, k_dst in (("nextFiscalYearEnd", "next_fye"), ("lastFiscalYearEnd", "last_fye")):
+            ts = _num(info.get(k_src))
+            if ts:
+                raw[k_dst] = pd.Timestamp(ts, unit="s").strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    return raw
+
+
+# ---------------------------------------------------------------------
+# 한국: DART (확정 실적) + yfinance(추정치가 있으면)
+# ---------------------------------------------------------------------
+_DART_ACCOUNTS = {
+    "sales": {"ids": ["ifrs-full_Revenue", "ifrs_Revenue"],
+              "names": ["매출액", "수익(매출액)", "영업수익", "매출"], "sj": ["IS", "CIS"]},
+    "gp": {"ids": ["ifrs-full_GrossProfit", "ifrs_GrossProfit"],
+           "names": ["매출총이익", "매출총이익(손실)"], "sj": ["IS", "CIS"]},
+    "op": {"ids": ["dart_OperatingIncomeLoss"],
+           "names": ["영업이익", "영업이익(손실)"], "sj": ["IS", "CIS"]},
+    "ni": {"ids": ["ifrs-full_ProfitLoss", "ifrs_ProfitLoss"],
+           "names": ["당기순이익", "당기순이익(손실)", "분기순이익", "분기순이익(손실)", "반기순이익", "반기순이익(손실)"],
+           "sj": ["IS", "CIS"]},
+    "eps": {"ids": ["ifrs-full_BasicEarningsLossPerShare", "ifrs_BasicEarningsLossPerShare"],
+            "names": ["기본주당이익", "기본주당이익(손실)", "기본주당순이익", "보통주기본주당이익", "보통주기본주당이익(손실)",
+                      "기본주당순이익(손실)"], "sj": ["IS", "CIS"]},
+    "ar": {"ids": ["ifrs-full_TradeAndOtherCurrentReceivables", "dart_ShortTermTradeReceivable"],
+           "names": ["매출채권", "매출채권 및 기타채권", "매출채권및기타채권", "매출채권및기타유동채권"], "sj": ["BS"]},
+    "inv": {"ids": ["ifrs-full_Inventories", "ifrs_Inventories"], "names": ["재고자산"], "sj": ["BS"]},
+    "ocf": {"ids": ["ifrs-full_CashFlowsFromUsedInOperatingActivities"],
+            "names": ["영업활동현금흐름", "영업활동 현금흐름", "영업활동으로인한현금흐름"], "sj": ["CF"]},
+    "capex": {"ids": ["ifrs-full_PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
+                      "ifrs-full_PurchaseOfPropertyPlantAndEquipment"],
+              "names": ["유형자산의취득", "유형자산의 취득", "유형자산 취득"], "sj": ["CF"]},
+}
+
+
+def _dart_to_num(v: Any) -> Optional[float]:
+    try:
+        if v is None:
+            return None
+        s = str(v).replace(",", "").strip()
+        if s in ("", "-", "nan", "None"):
+            return None
+        return float(s)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dart_pick(df: Any, key: str, col: str) -> Optional[float]:
+    """DART 재무제표 표(df)에서 계정(key)의 col 열 값을 찾는다. 없으면 None."""
+    try:
+        if df is None or len(df) == 0 or col not in df.columns:
+            return None
+        spec = _DART_ACCOUNTS[key]
+        sub = df[df["sj_div"].isin(spec["sj"])] if "sj_div" in df.columns else df
+        if "account_id" in sub.columns:
+            for aid in spec["ids"]:
+                hit = sub[sub["account_id"] == aid]
+                if len(hit):
+                    val = _dart_to_num(hit.iloc[0][col])
+                    if val is not None:
+                        return val
+        if "account_nm" in sub.columns:
+            norm = sub["account_nm"].astype(str).str.replace(" ", "", regex=False)
+            for nm in spec["names"]:
+                hit = sub[norm == nm.replace(" ", "")]
+                if len(hit):
+                    val = _dart_to_num(hit.iloc[0][col])
+                    if val is not None:
+                        return val
+    except Exception:
+        pass
+    return None
+
+
+def _read_env_value(name: str) -> str:
+    """환경변수에 없으면 프로젝트 폴더의 .env 파일에서 읽는다 (Streamlit 실행 시 .env가 자동 로드되지 않음)."""
+    val = os.getenv(name, "")
+    if val:
+        return val
+    try:
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        with open(env_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip() == name:
+                    return v.strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return ""
+
+
+def _get_dart_client() -> Any:
+    key = _read_env_value("DART_API_KEY")
+    if not key:
+        return None
+    try:
+        import importlib
+        mod = None
+        for name in ("OpenDartReader", "opendartreader"):
+            try:
+                mod = importlib.import_module(name)
+                break
+            except Exception:
+                continue
+        if mod is None:
+            return None
+        cls = getattr(mod, "OpenDartReader", mod)
+        return cls(key)
+    except Exception:
+        return None
+
+
+_DART_SEQ = [("11011", "FY"), ("11014", "Q3"), ("11012", "H1"), ("11013", "Q1")]  # 최신 → 과거 (한 해 안에서)
+
+
+def _dart_fetch(dart: Any, code6: str, year: int, reprt: str, cache: Dict[Tuple[int, str], Any]) -> Any:
+    k = (year, reprt)
+    if k in cache:
+        return cache[k]
+    df = None
+    for fs_div in ("CFS", "OFS"):  # 연결 우선, 없으면 별도
+        try:
+            cand = dart.finstate_all(code6, year, reprt_code=reprt, fs_div=fs_div)
+            if cand is not None and len(cand) > 0:
+                df = cand
+                break
+        except Exception:
+            continue
+    cache[k] = df
+    return df
+
+
+def _dart_quarter_value(cache, dart, code6, year, reprt, key) -> Optional[float]:
+    """한 분기(3개월) 값. 사업보고서(FY)는 '연간 − 3분기 누적'으로 4분기를 계산한다."""
+    df = _dart_fetch(dart, code6, year, reprt, cache)
+    if df is None:
+        return None
+    if reprt == "11011":
+        fy = _dart_pick(df, key, "thstrm_amount")
+        q3 = _dart_fetch(dart, code6, year, "11014", cache)
+        q3_cum = _dart_pick(q3, key, "thstrm_add_amount") if q3 is not None else None
+        if key == "eps":  # 주당이익은 연간−누적이 성립하지 않으므로 4분기 값은 만들지 않는다
+            return None
+        return None if (fy is None or q3_cum is None) else fy - q3_cum
+    return _dart_pick(df, key, "thstrm_amount")
+
+
+def _fetch_kr_raw(ticker: str) -> Dict[str, Any]:
+    raw: Dict[str, Any] = {
+        "source": "DART", "as_of": None, "quarters": [], "ar": [], "inv": [],
+        "ocf_q": [], "capex_q": [], "ni_q": [], "estimates": {}, "eps_trend": {},
+        "eps_hist": None, "ttm_eps": None, "next_fye": None, "last_fye": None,
+        "shares": None, "notes": [], "annual": {},
+    }
+    code6 = str(ticker).split(".")[0]
+    dart = _get_dart_client()
+    if dart is None:
+        raw["notes"].append("DART 사용 불가(API 키 또는 라이브러리 없음)")
+    else:
+        cache: Dict[Tuple[int, str], Any] = {}
+        this_year = datetime.now().year
+        seq: List[Tuple[int, str]] = []
+        for y in (this_year, this_year - 1, this_year - 2):
+            for rc, _ in _DART_SEQ:
+                seq.append((y, rc))
+        start = None
+        for i, (y, rc) in enumerate(seq[:6]):
+            if _dart_fetch(dart, code6, y, rc, cache) is not None:
+                start = i
+                break
+        if start is not None:
+            periods = seq[start:start + 3]
+            qlist: List[Dict[str, Any]] = []
+            for (y, rc) in periods:
+                q: Dict[str, Any] = {"label": f"{y}-{dict(_DART_SEQ)[rc]}"}
+                for key in ("sales", "gp", "op", "ni", "eps"):
+                    q[key] = _dart_quarter_value(cache, dart, code6, y, rc, key)
+                    q[key + "_py"] = _dart_quarter_value(cache, dart, code6, y - 1, rc, key)
+                qlist.append(q)
+            raw["quarters"] = qlist
+            raw["as_of"] = qlist[0]["label"] if qlist else None
+            # 재무상태표: 최신 보고서 vs 전년 같은 시점 보고서
+            y0, rc0 = periods[0]
+            d0 = _dart_fetch(dart, code6, y0, rc0, cache)
+            d1 = _dart_fetch(dart, code6, y0 - 1, rc0, cache)
+            for key in ("ar", "inv"):
+                raw[key] = [_dart_pick(d0, key, "thstrm_amount"), None, None, None,
+                            _dart_pick(d1, key, "thstrm_amount")]
+            # 현금흐름: 가장 최근 사업보고서(연간) 기준 (분기 보고서의 현금흐름은 누적이라 연간만 사용)
+            fy_year = None
+            for y in (this_year - 1, this_year - 2):
+                dfy = _dart_fetch(dart, code6, y, "11011", cache)
+                if dfy is not None:
+                    fy_year = y
+                    break
+            if fy_year is not None:
+                dfy = _dart_fetch(dart, code6, fy_year, "11011", cache)
+                raw["annual"] = {
+                    "year": fy_year,
+                    "ocf": _dart_pick(dfy, "ocf", "thstrm_amount"),
+                    "ocf_prev": _dart_pick(dfy, "ocf", "frmtrm_amount"),
+                    "ni": _dart_pick(dfy, "ni", "thstrm_amount"),
+                    "capex": _dart_pick(dfy, "capex", "thstrm_amount"),
+                    "eps": _dart_pick(dfy, "eps", "thstrm_amount"),
+                }
+                if raw["annual"].get("eps") is not None:
+                    raw["ttm_eps"] = raw["annual"]["eps"]  # 최근 사업연도 기본 EPS (yfinance TTM이 있으면 아래서 대체)
+        else:
+            raw["notes"].append("DART 재무제표 없음")
+
+    # 추정치(컨센서스)와 TTM EPS: yfinance가 한국 종목에도 주는 경우에만 사용
     try:
         import yfinance as yf
         tk = yf.Ticker(ticker)
-        info = tk.info or {}
-        fwd_eps = info.get("forwardEps")
-        trl_eps = info.get("trailingEps")
-        cur_p = info.get("currentPrice") or info.get("regularMarketPrice")
-
-        # 기준 EPS 산정 (1순위: forwardEps, 2순위: trailingEps, 3순위: 주가/15 역산)
-        base_eps = None
-        for cand in (fwd_eps, trl_eps):
-            if cand is not None and not np.isnan(float(cand)) and float(cand) > 0:
-                base_eps = float(cand)
-                break
-        if base_eps is None and cur_p and float(cur_p) > 0:
-            base_eps = float(cur_p) / 15.0
-        if base_eps is None:
-            base_eps = 4200.0 if is_krx else 6.50
-
-        # eps_trend에서 0y(FY1), +1y(FY2) 및 30일/90일 전 추정치 추출
-        fy1_t, fy1_30, fy1_90 = base_eps * 0.92, base_eps * 0.91, base_eps * 0.88
-        fy2_t, fy2_30, fy2_90 = base_eps * 1.15, base_eps * 1.13, base_eps * 1.08
+        _yf_estimates(tk, raw)
         try:
-            et = tk.eps_trend
-            if et is not None and len(et) > 0:
-                if "0y" in et.index:
-                    r0 = et.loc["0y"]
-                    c0 = float(pd.to_numeric(r0.get("current"), errors="coerce"))
-                    if not np.isnan(c0) and c0 > 0:
-                        fy1_t = c0
-                        d30 = float(pd.to_numeric(r0.get("30daysAgo"), errors="coerce"))
-                        d90 = float(pd.to_numeric(r0.get("90daysAgo"), errors="coerce"))
-                        fy1_30 = d30 if (not np.isnan(d30) and d30 > 0) else fy1_t * 0.99
-                        fy1_90 = d90 if (not np.isnan(d90) and d90 > 0) else fy1_t * 0.96
-                if "+1y" in et.index:
-                    r1 = et.loc["+1y"]
-                    c1 = float(pd.to_numeric(r1.get("current"), errors="coerce"))
-                    if not np.isnan(c1) and c1 > 0:
-                        fy2_t = c1
-                        d30_1 = float(pd.to_numeric(r1.get("30daysAgo"), errors="coerce"))
-                        d90_1 = float(pd.to_numeric(r1.get("90daysAgo"), errors="coerce"))
-                        fy2_30 = d30_1 if (not np.isnan(d30_1) and d30_1 > 0) else fy2_t * 0.99
-                        fy2_90 = d90_1 if (not np.isnan(d90_1) and d90_1 > 0) else fy2_t * 0.95
+            info = tk.info or {}
+            t_eps = _num(info.get("trailingEps"))
+            if t_eps is not None:
+                raw["ttm_eps"] = t_eps
+            raw["shares"] = _num(info.get("sharesOutstanding"))
         except Exception:
             pass
+    except Exception:
+        raw["notes"].append("yfinance 추정치 없음")
+    return raw
 
-        ntm_t = 0.25 * fy1_t + 0.75 * fy2_t
-        ntm_30 = 0.25 * fy1_30 + 0.75 * fy2_30
-        ntm_90 = 0.25 * fy1_90 + 0.75 * fy2_90
-        analysts_cnt = int(info.get("numberOfAnalystOpinions") or 18)
 
-        _r = (lambda v: round(float(v), 0)) if is_krx else (lambda v: round(float(v), 2))
-        out["revision"] = {
-            "ntm_t": _r(ntm_t), "ntm_30d": _r(ntm_30), "ntm_90d": _r(ntm_90),
-            "fy1_t": _r(fy1_t), "fy1_30d": _r(fy1_30), "fy1_90d": _r(fy1_90),
-            "fy2_t": _r(fy2_t), "fy2_30d": _r(fy2_30), "fy2_90d": _r(fy2_90),
-            "analysts_t": analysts_cnt, "analysts_30d": analysts_cnt, "analysts_90d": max(1, analysts_cnt - 1),
-        }
-
-        opm_now = float(info.get("operatingMargins") or 0.22)
-        gpm_now = float(info.get("grossMargins") or max(opm_now + 0.15, 0.38))
-        rev_g = float(info.get("revenueGrowth") or 0.18)
-        eps_g = float(info.get("earningsGrowth") or max(rev_g * 1.2, 0.20))
-        q_eps = _r(fy1_t / 4.0)
-
-        out["actual_vs_cons"] = {
-            "sales_actual": 79.1, "sales_cons": 77.5, "sales_qoq": round(rev_g / 3.5, 3),
-            "sales_yoy": round(rev_g, 3), "sales_prev_yoy": round(rev_g * 0.85, 3),
-            "gpm_actual": round(gpm_now, 3), "gpm_cons": round(gpm_now - 0.004, 3),
-            "gpm_qoq": 0.008, "gpm_yoy": 0.018, "gpm_prev_yoy": 0.012,
-            "opm_actual": round(opm_now, 3), "opm_cons": round(opm_now - 0.005, 3),
-            "opm_qoq": 0.012, "opm_yoy": 0.024, "opm_prev_yoy": 0.016,
-            "eps_actual": q_eps, "eps_cons": _r(q_eps * 0.94),
-            "eps_qoq": 0.08, "eps_yoy": round(eps_g, 3), "eps_prev_yoy": round(eps_g * 0.8, 3),
-        }
-        out["quality"] = {
-            "ar_yoy": round(rev_g * 0.85, 3),
-            "inv_yoy": round(rev_g * 0.80, 3),
-            "non_gaap_eps": _r(q_eps * 1.03),
-            "gaap_eps": q_eps,
-            "ocf_ttm": 52.0, "ocf_prev_ttm": 41.0, "net_income_ttm": 44.0, "capex_ttm": 38.0,
-            "reinvest_per_dollar_rising": False,
-        }
-        fy2_mult = float(np.clip(fy2_t / max(fy1_t, 1e-4), 1.05, 1.60))
-        out["drivers_eps_direct"] = {
-            "fy1_base": fy1_t,
-            "fy1_bull": fy1_t * 1.15,
-            "fy1_bear": fy1_t * 0.82,
-            "fy2_growth_mult": round(fy2_mult, 3),
-        }
+# ---------------------------------------------------------------------
+# 입력 조립: raw → 실적 트랙 입력(d). 값이 없으면 None.
+# ---------------------------------------------------------------------
+def _months_remaining(raw: Dict[str, Any], is_krx: bool) -> Optional[int]:
+    """현재 회계연도(FY1) 끝까지 남은 개월 수. 한국은 12월 결산을 기본 가정."""
+    now = datetime.now()
+    fye = raw.get("next_fye")
+    try:
+        if fye:
+            dt = pd.Timestamp(fye).to_pydatetime()
+            m = int(round((dt - now).days / 30.4))
+            return int(min(max(m, 0), 12))
     except Exception:
         pass
-    return out
+    if is_krx:  # 한국 상장사 대부분 12월 결산
+        m = int(round((datetime(now.year, 12, 31) - now).days / 30.4))
+        return int(min(max(m, 0), 12))
+    return None
+
+
+def _fy_labels(raw: Dict[str, Any], is_krx: bool) -> Tuple[str, str, str]:
+    try:
+        if raw.get("next_fye"):
+            y = pd.Timestamp(raw["next_fye"]).year
+        elif is_krx:
+            y = datetime.now().year
+        else:
+            return ("FY+1", "FY+2", "FY+3")
+        return (f"FY{y % 100:02d}E", f"FY{(y + 1) % 100:02d}E", f"FY{(y + 2) % 100:02d}E")
+    except Exception:
+        return ("FY+1", "FY+2", "FY+3")
+
+
+def _assemble_earnings_inputs(raw: Dict[str, Any], is_krx: bool) -> Dict[str, Any]:
+    quarters = raw.get("quarters") or []
+    q0 = quarters[0] if len(quarters) > 0 else {}
+    q1 = quarters[1] if len(quarters) > 1 else {}
+    q2 = quarters[2] if len(quarters) > 2 else {}
+
+    def yoy(q, k):
+        return _ratio_change(q.get(k), q.get(k + "_py")) if q else None
+
+    def margin(q, num, den="sales", py=False):
+        if not q:
+            return None
+        return _div(q.get(num + ("_py" if py else "")), q.get(den + ("_py" if py else "")))
+
+    def eps_g(a, b):  # EPS 증감률: 기준값이 0 이하이면 의미가 없어 None
+        x, y = _num(a), _num(b)
+        if x is None or y is None or y <= 0:
+            return None
+        return (x - y) / y
+
+    g_traj = [yoy(q2, "sales"), yoy(q1, "sales"), yoy(q0, "sales")]
+    sales_traj = g_traj if any(g is not None for g in g_traj) else None
+
+    gpm0, gpm1 = margin(q0, "gp"), margin(q1, "gp")
+    opm0, opm1 = margin(q0, "op"), margin(q1, "op")
+    eh = raw.get("eps_hist") or {}
+    eps_actual = _num(q0.get("eps")) if q0 else None
+    ac = {
+        "sales_actual": _num(q0.get("sales")), "sales_cons": None,
+        "sales_qoq": _ratio_change(q0.get("sales"), q1.get("sales")) if q1 else None,
+        "sales_yoy": yoy(q0, "sales"), "sales_prev_yoy": yoy(q1, "sales"),
+        "gpm_actual": gpm0, "gpm_cons": None,
+        "gpm_qoq": _diff(gpm0, gpm1), "gpm_yoy": _diff(gpm0, margin(q0, "gp", py=True)),
+        "gpm_prev_yoy": _diff(gpm1, margin(q1, "gp", py=True)) if q1 else None,
+        "opm_actual": opm0, "opm_cons": None,
+        "opm_qoq": _diff(opm0, opm1), "opm_yoy": _diff(opm0, margin(q0, "op", py=True)),
+        "opm_prev_yoy": _diff(opm1, margin(q1, "op", py=True)) if q1 else None,
+        "eps_actual": eps_actual, "eps_cons": None,
+        "eps_qoq": eps_g(q0.get("eps"), q1.get("eps")) if q1 else None,
+        "eps_yoy": eps_g(q0.get("eps"), q0.get("eps_py")) if q0 else None,
+        "eps_prev_yoy": eps_g(q1.get("eps"), q1.get("eps_py")) if q1 else None,
+    }
+    # EPS 서프라이즈: yfinance earnings_history(직전 분기 발표값·추정치)를 같은 기준(조정 EPS)으로 비교
+    adj_eps = None
+    if eh.get("est") is not None and eh.get("actual") is not None:
+        ac["eps_actual"], ac["eps_cons"] = eh["actual"], eh["est"]
+        adj_eps = eh["actual"]
+
+    # 컨센서스·리비전·시나리오 EPS
+    est, trend = raw.get("estimates") or {}, raw.get("eps_trend") or {}
+    m_rem = _months_remaining(raw, is_krx)
+    f1, f2 = est.get("fy1") or {}, est.get("fy2") or {}
+    t1, t2 = trend.get("fy1") or {}, trend.get("fy2") or {}
+    fy1_base = f1.get("avg") if f1.get("avg") is not None else t1.get("t")
+    fy2_base = f2.get("avg") if f2.get("avg") is not None else t2.get("t")
+
+    def blend(a, b):
+        if a is None or b is None or m_rem is None:
+            return None
+        return (m_rem / 12.0) * float(a) + ((12 - m_rem) / 12.0) * float(b)
+
+    revision = {
+        "ntm_t": blend(t1.get("t"), t2.get("t")), "ntm_30d": blend(t1.get("d30"), t2.get("d30")),
+        "ntm_90d": blend(t1.get("d90"), t2.get("d90")),
+        "fy1_t": t1.get("t"), "fy1_30d": t1.get("d30"), "fy1_90d": t1.get("d90"),
+        "fy2_t": t2.get("t"), "fy2_30d": t2.get("d30"), "fy2_90d": t2.get("d90"),
+        "analysts_t": _num(f1.get("n")), "analysts_30d": None, "analysts_90d": None,
+    }
+
+    # 분기 데이터가 있는 최신 값들로 '분기→TTM' 계산 (현금흐름·순이익)
+    def ttm(lst):
+        return float(sum(lst[:4])) if len(lst) >= 4 and all(x is not None for x in lst[:4]) else None
+
+    def prev_ttm(lst):
+        return float(sum(lst[4:8])) if len(lst) >= 8 and all(x is not None for x in lst[4:8]) else None
+
+    ann = raw.get("annual") or {}
+    if raw.get("source") == "DART":
+        quality = {
+            "ar_yoy": _ratio_change((raw.get("ar") or [None])[0], (raw.get("ar") or [None] * 5)[4]),
+            "inv_yoy": _ratio_change((raw.get("inv") or [None])[0], (raw.get("inv") or [None] * 5)[4]),
+            "non_gaap_eps": None, "gaap_eps": _num(q0.get("eps")) if q0 else None,
+            "ocf_ttm": ann.get("ocf"), "ocf_prev_ttm": ann.get("ocf_prev"),
+            "net_income_ttm": ann.get("ni"),
+            "capex_ttm": abs(ann["capex"]) if ann.get("capex") is not None else None,
+            "reinvest_per_dollar_rising": None, "basis": f"연간(FY{ann.get('year')}) 기준" if ann else None,
+        }
+    else:
+        ar, inv = raw.get("ar") or [], raw.get("inv") or []
+        capex_q = [abs(x) if x is not None else None for x in (raw.get("capex_q") or [])]
+        quality = {
+            "ar_yoy": _ratio_change(ar[0] if ar else None, ar[4] if len(ar) > 4 else None),
+            "inv_yoy": _ratio_change(inv[0] if inv else None, inv[4] if len(inv) > 4 else None),
+            "non_gaap_eps": adj_eps, "gaap_eps": _num(q0.get("eps")) if q0 else None,
+            "ocf_ttm": ttm(raw.get("ocf_q") or []), "ocf_prev_ttm": prev_ttm(raw.get("ocf_q") or []),
+            "net_income_ttm": ttm(raw.get("ni_q") or []), "capex_ttm": ttm(capex_q),
+            "reinvest_per_dollar_rising": None, "basis": "최근 4분기 합산(TTM)",
+        }
+
+    sus = {
+        "rpo_yoy_growth": None,  # 수주잔고(RPO)는 yfinance·DART 표준 항목에 없다
+        "op_t": _num(q0.get("op")) if q0 else None, "op_t_minus_4": _num(q0.get("op_py")) if q0 else None,
+        "sales_t": _num(q0.get("sales")) if q0 else None, "sales_t_minus_4": _num(q0.get("sales_py")) if q0 else None,
+        "design_wins_note": None,
+    }
+
+    return {
+        "sales_yoy_trajectory": sales_traj,
+        "actual_vs_cons": ac,
+        "guidance_history": None,  # 가이던스 이행 이력은 표준 데이터 출처 없음
+        "revision": revision,
+        "forward": {
+            "fy1": {"base": fy1_base, "bull": f1.get("high"), "bear": f1.get("low")},
+            "fy2": {"base": fy2_base, "bull": f2.get("high"), "bear": f2.get("low")},
+            "months_remaining": m_rem, "labels": _fy_labels(raw, is_krx),
+        },
+        "ttm_eps": _num(raw.get("ttm_eps")),
+        "quality": quality,
+        "sustainability": sus,
+        "thesis": {
+            "hard_block_triggered": False,
+            "invalidation_condition": None, "current_status": None,   # 종목별 가설 문구는 사용자 입력 영역
+            "p_trend": None, "q_trend": None,                          # 가격(P)·수량(Q) 추세는 산업 데이터 필요
+            "capital_structure_note": (
+                f"발행주식수 {raw['shares']:,.0f}주 (희석 전 · {raw.get('source')})" if _num(raw.get("shares")) else None
+            ),
+        },
+        "meta": {"source": raw.get("source"), "as_of": raw.get("as_of"), "notes": list(raw.get("notes") or [])},
+    }
+
+
+def fetch_real_earnings_inputs(ticker: str) -> Dict[str, Any]:
+    """실적 트랙 입력을 실제 데이터로 만든다. 미국/기타: yfinance, 한국(.KS/.KQ): DART(+yfinance 추정치).
+    못 받은 값은 None이며 가짜 값으로 채우지 않는다."""
+    is_krx = str(ticker).upper().endswith((".KS", ".KQ"))
+    try:
+        raw = _fetch_kr_raw(ticker) if is_krx else _fetch_us_raw(ticker)
+    except Exception as e:  # 어떤 이유로든 실패하면 전부 '데이터 없음'
+        raw = {"source": "DART" if is_krx else "yfinance", "as_of": None, "quarters": [], "notes": [f"수집 실패: {type(e).__name__}"]}
+    return _assemble_earnings_inputs(raw, is_krx)
 
 
 def analyze_earnings_track(
@@ -2075,497 +2592,999 @@ def analyze_earnings_track(
     fin_override: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    실적 분석 트랙 v1.0 메인 파이프라인 (E1 ~ E8 연산, G1~G5 생애주기 분류, 5대 축 점수 산출).
-    * 순환논리 원천 차단: 주가나 PER을 입력으로 받지 않으며 오직 실물/재무/리비전 데이터만 사용함.
+    실적 분석 트랙 v1.1 메인 파이프라인 (E1 ~ E8 연산, G1~G5 생애주기 분류, 5대 축 점수 산출).
+    * 순환논리 차단: 주가·PER을 입력으로 받지 않고 실물/재무/리비전 데이터만 사용한다.
+    * 입력은 실제 데이터(미국 yfinance · 한국 DART)에서만 만든다. 못 받은 값은 '데이터 없음'(None)이며
+      해당 항목은 판정에서 빠진다(점수는 판정 가능한 축의 가중치로만 정규화).
     """
-    is_krx = str(ticker).upper().endswith((".KS", ".KQ"))  # EPS 문구 통화 표기용
-    # 1. 기본 시드 데이터 및 yfinance 실시간 컨센서스/재무 병합
-    default_data = {
-        # E1. 최근 3개 분기 YoY 성장률 궤적 (t-2 -> t-1 -> t) 및 서프라이즈[cite: 2]
-        "sales_yoy_trajectory": [0.14, 0.18, 0.22],   # g_{t-2}, g_{t-1}, g_t[cite: 2]
-        "eps_yoy_trajectory": [0.18, 0.25, 0.34],
-        "actual_vs_cons": {
-            "sales_actual": 79.1, "sales_cons": 77.5, "sales_qoq": 0.068, "sales_yoy": 0.220, "sales_prev_yoy": 0.180,
-            "gpm_actual": 0.385, "gpm_cons": 0.380, "gpm_qoq": 0.012, "gpm_yoy": 0.025, "gpm_prev_yoy": 0.018,
-            "opm_actual": 0.240, "opm_cons": 0.232, "opm_qoq": 0.018, "opm_yoy": 0.035, "opm_prev_yoy": 0.022,
-            "eps_actual": 1050.0, "eps_cons": 980.0, "eps_qoq": 0.110, "eps_yoy": 0.340, "eps_prev_yoy": 0.250,
-        },
-        # E2. 최근 4분기 가이던스 이행 이력: "beat_4q" | "miss_2q" | "neutral"[cite: 2]
-        "guidance_history": "beat_4q",
-        # E3. NTM EPS 및 FY+1, FY+2 리비전 (현재 t, 30일 전 t-30, 90일 전 t-90)[cite: 2]
-        "revision": {
-            "ntm_t": 4200.0, "ntm_30d": 4150.0, "ntm_90d": 3985.0,
-            "fy1_t": 4050.0, "fy1_30d": 4000.0, "fy1_90d": 3850.0,
-            "fy2_t": 5300.0, "fy2_30d": 5220.0, "fy2_90d": 4980.0,
-            "analysts_t": 28, "analysts_30d": 28, "analysts_90d": 26,
-        },
-        # E4 & E5. 핵심 드라이버 및 시나리오 EPS 입력[cite: 2]
-        "drivers": {
-            "rev_base": 320.0, "opm_base": 0.24,
-            "rev_bull": 355.0, "opm_bull": 0.275,
-            "rev_bear": 285.0, "opm_bear": 0.195,
-            "tax_rate": 0.21,
-            "diluted_shares": 14.4,  # 1-2. CB/BW·스톡옵션 반영 완전희석 주식수 (억 주)[cite: 2]
-            "cycle_peak_to_trough_drop": 0.45,  # 사이클형 과거 정점->저점 EPS 낙폭 기저율[cite: 2]
-            "fy_Order_labels": ("FY27E", "FY28E", "FY29E"),
-            "remaining_months_in_fy": 3,        # m: 평가 시점 T 이후 FY_a 남은 개월 수 (3/12 = 0.25)[cite: 2]
-            "fy2_growth_mult": 1.26,
-        },
-        # E6. 이익의 질 및 현금흐름 데이터[cite: 2]
-        "quality": {
-            "ar_yoy": 0.16,          # 매출채권 YoY 증가율[cite: 2]
-            "inv_yoy": 0.14,         # 재고자산 YoY 증가율[cite: 2]
-            "non_gaap_eps": 1080.0,
-            "gaap_eps": 1050.0,
-            "ocf_ttm": 52.0,         # 영업현금흐름[cite: 2]
-            "ocf_prev_ttm": 41.0,    # 전년 영업현금흐름[cite: 2]
-            "net_income_ttm": 44.0,  # 당기순이익[cite: 2]
-            "capex_ttm": 58.0,       # 설비투자 (성장 CAPEX 집중 시 FCF < 0 가능)[cite: 2]
-            "reinvest_per_dollar_rising": False,
-        },
-        # E7. 미래 먹거리 (RPO / 수주잔고 및 증분 영업이익률)[cite: 2]
-        "sustainability": {
-            "rpo_yoy_growth": 0.45,  # 수주잔고/RPO YoY 증가율[cite: 2]
-            "op_t": 18.98,           # 당기 영업이익 (OP_t)[cite: 2]
-            "op_t_minus_4": 12.96,   # 전년 동기 영업이익 (OP_{t-4})[cite: 2]
-            "sales_t": 79.10,        # 당기 매출 (Sales_t)[cite: 2]
-            "sales_t_minus_4": 64.80,# 전년 동기 매출 (Sales_{t-4})[cite: 2]
-            "design_wins_note": "차세대 선단 공정/주력 라인업 신규 고객사 3곳 채택 확정 (양산 리드타임 18개월)",
-        },
-        # E8 & 1-1. 드라이버 붕괴 조건 및 P/Q 사이클 상태[cite: 2]
-        "thesis": {
-            "hard_block_triggered": False,
-            "invalidation_condition": "주력 고객사향 분기 발주량 2분기 연속 YoY -15% 하회 시 이익 가설 파기",
-            "current_status": "현재 고객사 발주량 YoY +28% 및 가동률 92% 유지 중",
-            "p_trend": "상승",       # "상승" | "하락"[cite: 2]
-            "q_trend": "상승",       # "상승" | "하락"[cite: 2]
-            "capital_structure_note": "전환사채(CB) 잔량 완전희석 주식수(14.4억 주) 반영 완료 · 자사주 소각분 차감 적용",
-        }
-    }
+    is_krx = str(ticker).upper().endswith((".KS", ".KQ"))
+    d = fetch_real_earnings_inputs(ticker)
 
     if fin_override:
         for k, v in fin_override.items():
-            if isinstance(v, dict) and k in default_data and isinstance(default_data[k], dict):
-                default_data[k].update(v)
+            if isinstance(v, dict) and k in d and isinstance(d[k], dict):
+                d[k].update(v)
             else:
-                default_data[k] = v
+                d[k] = v
 
-    d = default_data
     ac = d["actual_vs_cons"]
+    missing: List[str] = []
+
+    def need(label: str, *vals: Any) -> bool:
+        """모든 값이 있으면 True. 하나라도 없으면 '데이터 없음 목록'에 라벨을 남기고 False."""
+        ok = all(_num(v) is not None for v in vals)
+        if not ok and label not in missing:
+            missing.append(label)
+        return ok
 
     # -----------------------------------------------------------------
-    # E1. 실적 액추얼 괴리율 및 성장 가속도 (2차 미분) 판정[cite: 2]
+    # E1. 실적 액추얼 괴리율 및 성장 가속도 (2차 미분) 판정
     # -----------------------------------------------------------------
-    sales_beat_pct = (ac["sales_actual"] - ac["sales_cons"]) / max(abs(ac["sales_cons"]), 1e-6)
-    gpm_beat_diff = ac["gpm_actual"] - ac["gpm_cons"]
-    opm_beat_diff = ac["opm_actual"] - ac["opm_cons"]
-    eps_beat_pct = (ac["eps_actual"] - ac["eps_cons"]) / max(abs(ac["eps_cons"]), 1e-6)
+    sales_beat_pct = _ratio_change(ac["sales_actual"], ac["sales_cons"])
+    gpm_beat_diff = _diff(ac["gpm_actual"], ac["gpm_cons"])
+    opm_beat_diff = _diff(ac["opm_actual"], ac["opm_cons"])
+    eps_beat_pct = _ratio_change(ac["eps_actual"], ac["eps_cons"])
+    if sales_beat_pct is None:
+        missing.append("매출 컨센서스(직전 분기)")
+    if opm_beat_diff is None and gpm_beat_diff is None:
+        missing.append("마진 컨센서스(직전 분기)")
 
-    # 미래 예측 핵심 규칙: "매출 상회 + 마진(OPM 또는 GPM) 하회" = 마진 압착 경고[cite: 2]
-    margin_squeeze_detected = bool(sales_beat_pct > 0.0 and (opm_beat_diff < -0.002 or gpm_beat_diff < -0.003))
+    margin_squeeze_known = bool(sales_beat_pct is not None and (opm_beat_diff is not None or gpm_beat_diff is not None))
+    margin_squeeze_detected = bool(
+        margin_squeeze_known and sales_beat_pct > 0.0 and
+        ((opm_beat_diff is not None and opm_beat_diff < -0.002) or (gpm_beat_diff is not None and gpm_beat_diff < -0.003))
+    )
 
-    g_traj = d["sales_yoy_trajectory"]  # [g_{t-2}, g_{t-1}, g_t][cite: 2]
-    g_t2, g_t1, g_t = float(g_traj[0]), float(g_traj[1]), float(g_traj[2])
-    if g_t2 < g_t1 < g_t and (g_t - g_t1) > 0.005:
-        growth_accel = "가속"
-        axis1_score = 2
-    elif abs(g_t - g_t1) <= 0.02 and g_t >= g_t2:
-        growth_accel = "유지"
-        axis1_score = 1
-    elif g_t2 > g_t1 > g_t or (g_t - g_t1) < -0.02:
-        growth_accel = "감속"
-        axis1_score = 0
+    g_traj = d.get("sales_yoy_trajectory") or [None, None, None]
+    g_t2, g_t1, g_t = [_num(x) for x in (list(g_traj) + [None, None, None])[:3]]
+    growth_accel: Optional[str] = None
+    axis1_score: Optional[int] = None
+    if g_t is not None and g_t1 is not None and g_t2 is not None:
+        if g_t2 < g_t1 < g_t and (g_t - g_t1) > 0.005:
+            growth_accel, axis1_score = "가속", 2
+        elif abs(g_t - g_t1) <= 0.02 and g_t >= g_t2:
+            growth_accel, axis1_score = "유지", 1
+        elif g_t2 > g_t1 > g_t or (g_t - g_t1) < -0.02:
+            growth_accel, axis1_score = "감속", 0
+        else:
+            growth_accel, axis1_score = "유지", 1
+        traj_text = f"{g_t2*100:.0f}%→{g_t1*100:.0f}%→{g_t*100:.0f}%"
+    elif g_t is not None and g_t1 is not None:      # 2점만 있으면 2점 판정(±2%p)
+        delta = g_t - g_t1
+        growth_accel, axis1_score = (("가속", 2) if delta > 0.02 else (("감속", 0) if delta < -0.02 else ("유지", 1)))
+        traj_text = f"{g_t1*100:.0f}%→{g_t*100:.0f}% (2개 분기만 확인)"
+        missing.append("매출 성장률 3개 분기 궤적(2개만 확인)")
     else:
-        growth_accel = "유지"
-        axis1_score = 1
+        traj_text = NO_DATA
+        missing.append("매출 성장률 궤적")
 
     e1_table = [
-        {
-            "metric": "매출액",
-            "actual": f"{ac['sales_actual']:,.1f}",
-            "consensus": f"{ac['sales_cons']:,.1f}",
-            "surprise": f"{sales_beat_pct*100:+.1f}%",
-            "qoq": f"{ac['sales_qoq']*100:+.1f}%",
-            "yoy": f"{ac['sales_yoy']*100:+.1f}%",
-            "prev_yoy": f"{ac['sales_prev_yoy']*100:+.1f}%"
-        },
-        {
-            "metric": "매출총이익률(GPM)",
-            "actual": f"{ac['gpm_actual']*100:.1f}%",
-            "consensus": f"{ac['gpm_cons']*100:.1f}%",
-            "surprise": f"{gpm_beat_diff*100:+.1f}%p",
-            "qoq": f"{ac['gpm_qoq']*100:+.1f}%p",
-            "yoy": f"{ac['gpm_yoy']*100:+.1f}%p",
-            "prev_yoy": f"{ac['gpm_prev_yoy']*100:+.1f}%p"
-        },
-        {
-            "metric": "영업이익률(OPM)",
-            "actual": f"{ac['opm_actual']*100:.1f}%",
-            "consensus": f"{ac['opm_cons']*100:.1f}%",
-            "surprise": f"{opm_beat_diff*100:+.1f}%p",
-            "qoq": f"{ac['opm_qoq']*100:+.1f}%p",
-            "yoy": f"{ac['opm_yoy']*100:+.1f}%p",
-            "prev_yoy": f"{ac['opm_prev_yoy']*100:+.1f}%p"
-        },
-        {
-            "metric": "EPS (완전희석)",
-            "actual": f"{fmt_price(ac['eps_actual'], is_krx)}",
-            "consensus": f"{fmt_price(ac['eps_cons'], is_krx)}",
-            "surprise": f"{eps_beat_pct*100:+.1f}%",
-            "qoq": f"{ac['eps_qoq']*100:+.1f}%",
-            "yoy": f"{ac['eps_yoy']*100:+.1f}%",
-            "prev_yoy": f"{ac['eps_prev_yoy']*100:+.1f}%"
-        },
+        {"metric": "매출액", "actual": _s_big(ac["sales_actual"], is_krx), "consensus": _s_big(ac["sales_cons"], is_krx),
+         "surprise": _s_pct(sales_beat_pct), "qoq": _s_pct(ac["sales_qoq"]), "yoy": _s_pct(ac["sales_yoy"]),
+         "prev_yoy": _s_pct(ac["sales_prev_yoy"])},
+        {"metric": "매출총이익률(GPM)", "actual": _s_pct(ac["gpm_actual"], signed=False), "consensus": _s_pct(ac["gpm_cons"], signed=False),
+         "surprise": _s_pp(gpm_beat_diff), "qoq": _s_pp(ac["gpm_qoq"]), "yoy": _s_pp(ac["gpm_yoy"]),
+         "prev_yoy": _s_pp(ac["gpm_prev_yoy"])},
+        {"metric": "영업이익률(OPM)", "actual": _s_pct(ac["opm_actual"], signed=False), "consensus": _s_pct(ac["opm_cons"], signed=False),
+         "surprise": _s_pp(opm_beat_diff), "qoq": _s_pp(ac["opm_qoq"]), "yoy": _s_pp(ac["opm_yoy"]),
+         "prev_yoy": _s_pp(ac["opm_prev_yoy"])},
+        {"metric": "EPS (컨센서스 대비는 조정 EPS 기준)", "actual": _s_price(ac["eps_actual"], is_krx),
+         "consensus": _s_price(ac["eps_cons"], is_krx), "surprise": _s_pct(eps_beat_pct),
+         "qoq": _s_pct(ac["eps_qoq"]), "yoy": _s_pct(ac["eps_yoy"]), "prev_yoy": _s_pct(ac["eps_prev_yoy"])},
     ]
 
     # -----------------------------------------------------------------
-    # E2. 가이던스 이행 이력 -> 확실성 판정 (펀더멘탈 할인율 r 조정값)[cite: 2]
+    # E2. 가이던스 이행 이력 -> 확실성 판정 (표준 데이터 출처가 없어 입력이 없으면 '데이터 없음')
     # -----------------------------------------------------------------
-    g_hist = d["guidance_history"]
+    g_hist = d.get("guidance_history")
+    axis5_score: Optional[int] = None
     if g_hist == "beat_4q":
-        certainty_label = "확실성 높음 (4분기 연속 Beat & Raise)"
-        certainty_adj = -0.02  # -2%p 할인율 인하[cite: 2]
-        axis5_score = 2
+        certainty_label, certainty_adj, axis5_score = "확실성 높음 (4분기 연속 Beat & Raise)", -0.02, 2
     elif g_hist == "miss_2q":
-        certainty_label = "확실성 낮음 (2분기 연속 가이던스 미스)"
-        certainty_adj = 0.02   # +2%p 할인율 할증[cite: 2]
-        axis5_score = 0
+        certainty_label, certainty_adj, axis5_score = "확실성 낮음 (2분기 연속 가이던스 미스)", 0.02, 0
+    elif g_hist == "neutral":
+        certainty_label, certainty_adj, axis5_score = "중립 (부합 또는 가이던스 미제시)", 0.0, 1
     else:
-        certainty_label = "중립 (부합 또는 가이던스 미제시)"
-        certainty_adj = 0.00   # 0%p[cite: 2]
-        axis5_score = 1
+        certainty_label, certainty_adj = f"{NO_DATA} (가이던스 이행 이력 미확인 · 할인율 조정 없음)", 0.0
+        missing.append("가이던스 이행 이력")
 
     # -----------------------------------------------------------------
-    # E3. NTM EPS 리비전의 변곡점 추적 (90일 vs 30일 괴리 및 롤오버 검증)[cite: 2]
+    # E3. NTM EPS 리비전의 변곡점 추적 (90일 vs 30일 괴리 및 롤오버 검증)
     # -----------------------------------------------------------------
     rev = d["revision"]
-    delta_90 = (rev["ntm_t"] - rev["ntm_90d"]) / max(abs(rev["ntm_90d"]), 1e-6)
-    delta_30 = (rev["ntm_t"] - rev["ntm_30d"]) / max(abs(rev["ntm_30d"]), 1e-6)
-    fy1_chg = (rev["fy1_t"] - rev["fy1_90d"]) / max(abs(rev["fy1_90d"]), 1e-6)
-    fy2_chg = (rev["fy2_t"] - rev["fy2_90d"]) / max(abs(rev["fy2_90d"]), 1e-6)
-    # NTM 창 이동(Roll-over) 착시 제거: FY+1과 FY+2가 동반 상승할 때만 진성 상향 인정[cite: 2]
-    true_fy_up = (fy1_chg > 0.0) and (fy2_chg > 0.0)
+    delta_90 = _ratio_change(rev["ntm_t"], rev["ntm_90d"])
+    delta_30 = _ratio_change(rev["ntm_t"], rev["ntm_30d"])
+    fy1_chg = _ratio_change(rev["fy1_t"], rev["fy1_90d"])
+    fy2_chg = _ratio_change(rev["fy2_t"], rev["fy2_90d"])
+    true_fy_up = bool(fy1_chg is not None and fy2_chg is not None and fy1_chg > 0.0 and fy2_chg > 0.0)
 
     inflection_flag = False
-    if delta_90 > 0.01 and delta_30 < -0.005:
-        rev_status = "피크아웃 경고"
-        inflection_flag = True
-        axis2_score = 0
+    axis2_score: Optional[int] = None
+    if delta_90 is None or delta_30 is None:
+        rev_status = NO_DATA
+        missing.append("EPS 컨센서스 리비전(30·90일 전 추정치)")
+    elif delta_90 > 0.01 and delta_30 < -0.005:
+        rev_status, inflection_flag, axis2_score = "피크아웃 경고", True, 0
     elif delta_90 < -0.01 and delta_30 > 0.005:
-        rev_status = "턴어라운드 조짐"
-        inflection_flag = True
-        axis2_score = 1
+        rev_status, inflection_flag, axis2_score = "턴어라운드 조짐", True, 1
     elif delta_90 > 0.01 and delta_30 > 0.0 and true_fy_up:
-        rev_status = "상향 지속"
-        axis2_score = 2
+        rev_status, axis2_score = "상향 지속", 2
     elif delta_90 < -0.01 and delta_30 < 0.0:
-        rev_status = "하향 지속"
-        axis2_score = 0
+        rev_status, axis2_score = "하향 지속", 0
     else:
-        rev_status = "보합"
-        axis2_score = 1
+        rev_status, axis2_score = "보합", 1
 
     # -----------------------------------------------------------------
-    # E4 & E5. 핵심 드라이버 시나리오 EPS 및 1Y/2Y NTM 혼합식 산출[cite: 2]
+    # E4 & E5. 시나리오 EPS (컨센서스 평균=Base, 최고=Bull, 최저=Bear) 및 1Y/2Y NTM 혼합식
     # -----------------------------------------------------------------
-    drv = d["drivers"]
-    shares = max(drv["diluted_shares"], 1e-4)
-    tax = drv["tax_rate"]
+    fw = d["forward"]
+    m_rem = fw.get("months_remaining")
+    lbl_1, lbl_2, lbl_3 = fw.get("labels", ("FY+1", "FY+2", "FY+3"))
+    w_a = round(m_rem / 12.0, 2) if m_rem is not None else None
+    w_b = round((12 - m_rem) / 12.0, 2) if m_rem is not None else None
 
-    # FY+1 (FY27E) 및 FY+2 (FY28E), FY+3 (FY29E) 시나리오별 EPS 역산[cite: 2]
-    fy1_base = (drv["rev_base"] * drv["opm_base"] * (1.0 - tax)) / shares * 1000.0
-    fy1_bull = (drv["rev_bull"] * drv["opm_bull"] * (1.0 - tax)) / shares * 1000.0
-    fy1_bear = (drv["rev_bear"] * drv["opm_bear"] * (1.0 - tax)) / shares * 1000.0
+    def _blend(a, b):
+        if w_a is None or _num(a) is None or _num(b) is None:
+            return None
+        return _round_eps(w_a * float(a) + w_b * float(b), is_krx)
 
-    mult_y2 = drv.get("fy2_growth_mult", 1.25)
-    fy2_base = fy1_base * mult_y2
-    fy2_bull = fy1_bull * (mult_y2 * 1.04)
-    fy2_bear = fy1_bear * (mult_y2 * 0.94)
+    f1, f2 = fw["fy1"], fw["fy2"]
+    eps_1y = {k: _blend(f1.get(k), f2.get(k)) for k in ("base", "bull", "bear")}
+    # 2Y: FY+3 추정치가 없어 NTM 혼합이 불가능 → FY+2 컨센서스 값을 그대로 사용(표기에 명시)
+    eps_2y = {k: _round_eps(f2.get(k), is_krx) for k in ("base", "bull", "bear")}
+    cycle_bear_1y = (
+        _round_eps(eps_1y["bull"] * (1.0 - CYCLE_PEAK_TO_TROUGH_DROP), is_krx)
+        if (sector_type == "사이클형" and eps_1y["bull"] is not None) else None
+    )
+    ttm_eps = _num(d.get("ttm_eps"))
+    if eps_1y["base"] is not None and eps_1y["bull"] is not None and eps_1y["bear"] is not None:
+        eps_basis, eps_basis_label = "forward", "컨센서스 기준"
+    elif eps_1y["base"] is not None:
+        eps_basis, eps_basis_label = "forward_base_only", "컨센서스 평균만 있음(최고·최저 없음)"
+    elif ttm_eps is not None:
+        eps_basis, eps_basis_label = "ttm_reference", "참고용: 최근 확정 EPS(TTM) · 미래 시나리오 없음"
+    else:
+        eps_basis, eps_basis_label = "none", NO_DATA
+    if eps_1y["base"] is None:
+        missing.append("미래 EPS 컨센서스(FY1·FY2)")
+    elif eps_1y["bull"] is None or eps_1y["bear"] is None:
+        missing.append("EPS 최고·최저 추정(Bull·Bear)")
+    if ttm_eps is None:
+        missing.append("최근 확정 EPS(TTM)")
 
-    fy3_base = fy2_base * (1.0 + (mult_y2 - 1.0) * 0.85)
-    fy3_bull = fy2_bull * (1.0 + (mult_y2 - 1.0) * 0.95)
-    fy3_bear = fy2_bear * (1.0 + (mult_y2 - 1.0) * 0.70)
-
-    # E5. EPS_NTM(T) = (m/12)*FY_a + ((12-m)/12)*FY_{a+1}[cite: 2]
-    m_rem = int(drv.get("remaining_months_in_fy", 3))
-    w_a = round(m_rem / 12.0, 2)
-    w_b = round((12 - m_rem) / 12.0, 2)
-    lbl_1, lbl_2, lbl_3 = drv.get("fy_Order_labels", ("FY27E", "FY28E", "FY29E"))
-
-    eps_1y_base = int(round(w_a * fy1_base + w_b * fy2_base, 0))
-    eps_1y_bull = int(round(w_a * fy1_bull + w_b * fy2_bull, 0))
-    eps_1y_bear = int(round(w_a * fy1_bear + w_b * fy2_bear, 0))
-    cycle_bear_1y = int(round(eps_1y_bull * (1.0 - drv["cycle_peak_to_trough_drop"]), 0)) if sector_type == "사이클형" else None
-
-    eps_2y_base = int(round(w_a * fy2_base + w_b * fy3_base, 0))
-    eps_2y_bull = int(round(w_a * fy2_bull + w_b * fy3_bull, 0))
-    eps_2y_bear = int(round(w_a * fy2_bear + w_b * fy3_bear, 0))
+    f_1y = f"{w_a:.2f}*{lbl_1} + {w_b:.2f}*{lbl_2}" if w_a is not None else NO_DATA
+    f_2y = f"{lbl_2} 컨센서스 (FY+3 추정치 없음 → NTM 혼합 불가)"
 
     # -----------------------------------------------------------------
-    # E6. 이익의 질 5대 체크 및 '투자 단계 현금흐름' 예외 규정[cite: 2]
+    # E6. 이익의 질 5대 체크 — 데이터가 있는 항목만 판정
     # -----------------------------------------------------------------
     q_data = d["quality"]
-    sales_yoy = float(ac["sales_yoy"])
-    quality_items = []
-    warn_cnt = 0
+    sales_yoy = _num(ac["sales_yoy"])
+    quality_items: List[Dict[str, Any]] = []
+    warn_cnt, n_checked = 0, 0
 
-    # 1) 매출채권 vs 매출[cite: 2]
-    ar_diff = q_data["ar_yoy"] - sales_yoy
-    ar_warn = ar_diff > 0.05
-    if ar_warn:
-        warn_cnt += 1
-    quality_items.append({
-        "name": "매출채권 vs 매출",
-        "value": f"{ar_diff*100:+.1f}%p",
-        "warn": ar_warn,
-        "desc": "밀어내기 매출·회수 지연 경고" if ar_warn else "정상 회수 범위"
-    })
+    def add_item(name, value, warn, desc):
+        nonlocal warn_cnt, n_checked
+        if warn is not None:
+            n_checked += 1
+            warn_cnt += 1 if warn else 0
+        quality_items.append({"name": name, "value": value, "warn": bool(warn) if warn is not None else False,
+                              "checked": warn is not None, "desc": desc})
 
-    # 2) 재고 vs 매출[cite: 2]
-    inv_diff = q_data["inv_yoy"] - sales_yoy
-    inv_warn = inv_diff > 0.05
-    if inv_warn:
-        warn_cnt += 1
-    quality_items.append({
-        "name": "재고자산 vs 매출",
-        "value": f"{inv_diff*100:+.1f}%p",
-        "warn": inv_warn,
-        "desc": "전방 수요 둔화·재고 누적 경고" if inv_warn else "재고 건전성 양호"
-    })
+    # 1) 매출채권 vs 매출
+    if need("매출채권 증가율", q_data["ar_yoy"]) and need("매출 증가율(YoY)", sales_yoy):
+        ar_diff = q_data["ar_yoy"] - sales_yoy
+        add_item("매출채권 vs 매출", f"{ar_diff*100:+.1f}%p", ar_diff > 0.05,
+                 "밀어내기 매출·회수 지연 경고" if ar_diff > 0.05 else "정상 회수 범위")
+    else:
+        add_item("매출채권 vs 매출", NO_DATA, None, NO_DATA)
+    # 2) 재고 vs 매출
+    if need("재고자산 증가율", q_data["inv_yoy"]) and need("매출 증가율(YoY)", sales_yoy):
+        inv_diff = q_data["inv_yoy"] - sales_yoy
+        add_item("재고자산 vs 매출", f"{inv_diff*100:+.1f}%p", inv_diff > 0.05,
+                 "전방 수요 둔화·재고 누적 경고" if inv_diff > 0.05 else "재고 건전성 양호")
+    else:
+        inv_diff = None
+        add_item("재고자산 vs 매출", NO_DATA, None, NO_DATA)
+    # 3) GAAP vs Non-GAAP 격차
+    if need("조정(Non-GAAP) EPS", q_data["non_gaap_eps"]) and need("GAAP EPS", q_data["gaap_eps"]) and float(q_data["non_gaap_eps"]) > 0:
+        ng_gap = (q_data["non_gaap_eps"] - q_data["gaap_eps"]) / abs(q_data["non_gaap_eps"])
+        add_item("GAAP vs Non-GAAP 격차", f"{ng_gap*100:.1f}%", ng_gap > 0.20,
+                 "SBC 과다·일회성 비용 만성화" if ng_gap > 0.20 else "회계 이익 괴리 낮음 (<20%)")
+    else:
+        add_item("GAAP vs Non-GAAP 격차", NO_DATA, None, NO_DATA)
+    # 4) 현금 전환율 (OCF / Net Income) 및 투자기 현금흐름 예외
+    is_investment_phase_fcf = False
+    if need("영업현금흐름", q_data["ocf_ttm"]) and need("순이익(합산)", q_data["net_income_ttm"]):
+        ocf_conv = q_data["ocf_ttm"] / max(abs(q_data["net_income_ttm"]), 1e-6)
+        capex = _num(q_data["capex_ttm"])
+        fcf_ttm = (q_data["ocf_ttm"] - capex) if capex is not None else None
+        ocf_prev = _num(q_data["ocf_prev_ttm"])
+        ocf_growing = (q_data["ocf_ttm"] > ocf_prev) if ocf_prev is not None else None
+        if ocf_growing is not None and fcf_ttm is not None:
+            is_investment_phase_fcf = bool(ocf_growing and ocf_conv >= 1.0 and fcf_ttm < 0)
+        ocf_warn = (ocf_conv < 0.80) and not is_investment_phase_fcf
+        fcf_txt = (f" (FCF {'+' if fcf_ttm >= 0 else '−'}{_s_big(abs(fcf_ttm), is_krx)})" if fcf_ttm is not None
+                   else f" (FCF {NO_DATA}: 설비투자 데이터 없음)")
+        note = "" if ocf_growing is not None else " · 영업CF 전년 비교 없음(투자기 예외 미적용)"
+        add_item("현금 전환율 (영업CF/순이익)", f"{ocf_conv:.2f}배{fcf_txt}", ocf_warn,
+                 ("G1 초기 가속 투자의 정상적 과정 (면제)" if is_investment_phase_fcf
+                  else ("장부상 이익 위험 (<0.8)" if ocf_warn else "현금 창출력 우수")) + note)
+    else:
+        add_item("현금 전환율 (영업CF/순이익)", NO_DATA, None, NO_DATA)
+    # 5) 매출 1단위당 소요 자본
+    reinv = q_data.get("reinvest_per_dollar_rising")
+    if reinv is None:
+        missing.append("매출 1단위당 소요 자본 추세")
+        add_item("매출 1단위당 소요 자본", NO_DATA, None, NO_DATA)
+    else:
+        add_item("매출 1단위당 소요 자본", "상승 추세" if reinv else "안정적 유지", bool(reinv),
+                 "성장의 한계비용 상승 경고" if reinv else "자본 효율성 유지")
 
-    # 3) GAAP vs Non-GAAP 격차[cite: 2]
-    ng_gap = (q_data["non_gaap_eps"] - q_data["gaap_eps"]) / max(abs(q_data["non_gaap_eps"]), 1e-6)
-    ng_warn = ng_gap > 0.20
-    if ng_warn:
-        warn_cnt += 1
-    quality_items.append({
-        "name": "GAAP vs Non-GAAP 격차",
-        "value": f"{ng_gap*100:.1f}%",
-        "warn": ng_warn,
-        "desc": "SBC 과다·일회성 비용 만성화" if ng_warn else "회계 이익 괴리 낮음 (<20%)"
-    })
-
-    # 4) 현금 전환율 (OCF / Net Income) 및 ★ 투자기 현금흐름 예외 조항[cite: 2]
-    ocf_conv = q_data["ocf_ttm"] / max(abs(q_data["net_income_ttm"]), 1e-6)
-    fcf_ttm = q_data["ocf_ttm"] - q_data["capex_ttm"]
-    ocf_growing = q_data["ocf_ttm"] > q_data["ocf_prev_ttm"]
-    # ★ 투자 단계 현금흐름 예외 규정: ΔOCF > 0 이고 OCF/NI >= 1.0 이면 CAPEX로 인해 FCF < 0 이어도 완전 면제[cite: 2]
-    is_investment_phase_fcf = bool(ocf_growing and ocf_conv >= 1.0 and fcf_ttm < 0)
-    ocf_warn = (ocf_conv < 0.80) and not is_investment_phase_fcf
-    if ocf_warn:
-        warn_cnt += 1
-    quality_items.append({
-        "name": "현금 전환율 (영업CF/순이익)",
-        "value": f"{ocf_conv:.2f}배 (FCF {fcf_ttm:+.1f})",
-        "warn": ocf_warn,
-        "desc": "G1 초기 가속 투자의 정상적 과정 (면제)" if is_investment_phase_fcf else ("장부상 이익 위험 (<0.8)" if ocf_warn else "현금 창출력 우수")
-    })
-
-    # 5) 매출 1단위당 소요 자본[cite: 2]
-    reinv_warn = bool(q_data["reinvest_per_dollar_rising"])
-    if reinv_warn:
-        warn_cnt += 1
-    quality_items.append({
-        "name": "매출 1단위당 소요 자본",
-        "value": "상승 추세" if reinv_warn else "안정적 유지",
-        "warn": reinv_warn,
-        "desc": "성장의 한계비용 상승 경고" if reinv_warn else "자본 효율성 유지"
-    })
-
-    axis4_score = 2 if warn_cnt == 0 else (1 if warn_cnt == 1 else 0)
+    inv_warn = bool(inv_diff is not None and inv_diff > 0.05)
+    axis4_score: Optional[int] = None
+    if n_checked >= 2:   # 점검 가능한 항목이 2개 미만이면 점수를 내지 않는다
+        axis4_score = 2 if warn_cnt == 0 else (1 if warn_cnt == 1 else 0)
 
     # -----------------------------------------------------------------
-    # E7. 미래 먹거리 측정 (RPO 증가율 vs 매출 증가율 & 증분 영업이익률)[cite: 2]
+    # E7. 미래 먹거리 측정 (RPO vs 매출 증가율 & 증분 영업이익률)
     # -----------------------------------------------------------------
     sus = d["sustainability"]
-    delta_op = sus["op_t"] - sus["op_t_minus_4"]
-    delta_sales = sus["sales_t"] - sus["sales_t_minus_4"]
-    inc_opm = delta_op / delta_sales if abs(delta_sales) > 1e-6 else ac["opm_actual"]
-    avg_opm = float(ac["opm_actual"])
-    rpo_yoy = float(sus["rpo_yoy_growth"])
+    inc_opm = None
+    if need("분기 영업이익·매출(올해·전년 동기)", sus["op_t"], sus["op_t_minus_4"], sus["sales_t"], sus["sales_t_minus_4"]):
+        delta_op = sus["op_t"] - sus["op_t_minus_4"]
+        delta_sales = sus["sales_t"] - sus["sales_t_minus_4"]
+        inc_opm = (delta_op / delta_sales) if abs(delta_sales) > 1e-6 else _num(ac["opm_actual"])
+    avg_opm = _num(ac["opm_actual"])
+    rpo_yoy = _num(sus.get("rpo_yoy_growth"))
+    if rpo_yoy is None:
+        missing.append("수주잔고(RPO) 증가율")
 
-    op_leverage_active = bool(inc_opm > avg_opm)
-    rpo_outpacing_sales = bool(rpo_yoy > sales_yoy)
+    op_leverage_active: Optional[bool] = (inc_opm > avg_opm) if (inc_opm is not None and avg_opm is not None) else None
+    rpo_outpacing_sales: Optional[bool] = (rpo_yoy > sales_yoy) if (rpo_yoy is not None and sales_yoy is not None) else None
 
-    if op_leverage_active and rpo_outpacing_sales:
-        axis3_score = 2
-    elif op_leverage_active or rpo_outpacing_sales:
-        axis3_score = 1
-    else:
-        axis3_score = 0
+    axis3_score: Optional[int] = None
+    if op_leverage_active is not None:
+        axis3_score = (1 if op_leverage_active else 0) + (1 if rpo_outpacing_sales else 0)
 
     # -----------------------------------------------------------------
-    # 3장. 실적 생애주기 5단계 (G1 ~ G5) 및 사이클 단계 (C1 ~ C4) 자동 분류[cite: 2]
+    # 3장. 실적 생애주기 5단계 (G1 ~ G5) 및 사이클 단계 (C1 ~ C4) 분류 — 근거가 있는 조건만 참으로 본다
     # -----------------------------------------------------------------
     th = d["thesis"]
-    pq_both_down = (th["p_trend"] == "하락" and th["q_trend"] == "하락")
+    p_tr, q_tr = th.get("p_trend"), th.get("q_trend")
+    pq_both_down = bool(p_tr == "하락" and q_tr == "하락")
+    eps_yoy_v = _num(ac["eps_yoy"])
+    regime_hold_reason: Optional[str] = None
+    n_axes = sum(1 for s in (axis1_score, axis2_score, axis3_score, axis4_score, axis5_score) if s is not None)
 
-    if th["hard_block_triggered"] or (pq_both_down and g_hist == "miss_2q" and rpo_yoy < 0):
-        e_regime = "G5"
-        e_regime_label = "구조적 쇠퇴 / 어닝 쇼크 (Structural Decline)"
-        peak_out_warning = True
-    elif margin_squeeze_detected or (not op_leverage_active and growth_accel == "감속") or (delta_30 < -0.005):
-        e_regime = "G4"
-        e_regime_label = "피크아웃 / 성장 둔화 (Peak-out Risk)"
-        peak_out_warning = True
-    elif growth_accel == "가속" and op_leverage_active and rpo_outpacing_sales and delta_30 > 0:
-        e_regime = "G1"
-        e_regime_label = "초기 가속 / 턴어라운드 (Emerging Growth)"
-        peak_out_warning = False
-    elif sales_yoy >= 0.10 and float(ac["eps_yoy"]) >= 0.10 and warn_cnt == 0 and op_leverage_active:
-        e_regime = "G2"
-        e_regime_label = "우량 지속 성장 (Quality Compounder)"
-        peak_out_warning = False
+    if th.get("hard_block_triggered") or (pq_both_down and g_hist == "miss_2q" and rpo_yoy is not None and rpo_yoy < 0):
+        e_regime, e_regime_label, peak_out_warning = "G5", "구조적 쇠퇴 / 어닝 쇼크 (Structural Decline)", True
+    elif margin_squeeze_detected or (op_leverage_active is False and growth_accel == "감속") or (delta_30 is not None and delta_30 < -0.005):
+        e_regime, e_regime_label, peak_out_warning = "G4", "피크아웃 / 성장 둔화 (Peak-out Risk)", True
+    elif growth_accel == "가속" and op_leverage_active and rpo_outpacing_sales and delta_30 is not None and delta_30 > 0:
+        e_regime, e_regime_label, peak_out_warning = "G1", "초기 가속 / 턴어라운드 (Emerging Growth)", False
+    elif (sales_yoy is not None and sales_yoy >= 0.10 and eps_yoy_v is not None and eps_yoy_v >= 0.10
+          and n_checked >= 2 and warn_cnt == 0 and op_leverage_active):
+        e_regime, e_regime_label, peak_out_warning = "G2", "우량 지속 성장 (Quality Compounder)", False
+    elif n_axes >= 2 and sales_yoy is not None and sales_yoy < 0.10:
+        # G3는 저성장 근거(매출 성장 10% 미만)가 있을 때만. 근거 없이 '나머지 전부'를 성숙기로 몰지 않는다.
+        e_regime, e_regime_label, peak_out_warning = "G3", "성숙 / 현금 회수 (Mature Cash Cow)", False
+    elif sales_yoy is not None and sales_yoy >= 0.10:
+        _fail = []
+        if eps_yoy_v is None:
+            _fail.append(f"EPS 성장률 {NO_DATA}")
+        elif eps_yoy_v < 0.10:
+            _fail.append(f"EPS 성장 {eps_yoy_v*100:+.0f}% (<10%)")
+        if warn_cnt > 0:
+            _fail.append(f"이익의 질 경고 {warn_cnt}개")
+        if n_checked < 2:
+            _fail.append(f"이익의 질 점검 {n_checked}개 (<2)")
+        if not op_leverage_active:
+            _fail.append("고정비 레버리지 " + (NO_DATA if op_leverage_active is None else "미작동"))
+        regime_hold_reason = (f"고성장(매출 {sales_yoy*100:+.0f}%)이나 G2 조건 미충족: " + ", ".join(_fail)) if _fail else None
+        e_regime, e_regime_label, peak_out_warning = "NA", f"성장 단계 판정 보류 — {regime_hold_reason or '근거 부족'}", False
     else:
-        e_regime = "G3"
-        e_regime_label = "성숙 / 현금 회수 (Mature Cash Cow)"
-        peak_out_warning = False
+        e_regime, e_regime_label, peak_out_warning = "NA", f"판정 불가 ({NO_DATA}: " + (
+            "매출 성장률" if (n_axes >= 2 and sales_yoy is None) else f"판정 가능한 축 {n_axes}개") + ")", False
 
-    # 사이클형(a) 종목인 경우 C1 ~ C4 단계 병기[cite: 2]
     cycle_stage = None
     if sector_type == "사이클형":
-        if th["p_trend"] == "하락" and th["q_trend"] == "상승":
+        if p_tr == "하락" and q_tr == "상승":
             cycle_stage = "C1 바닥 통과 (Q 출하 반등)"
-        elif th["p_trend"] == "상승" and th["q_trend"] == "상승":
+        elif p_tr == "상승" and q_tr == "상승":
             cycle_stage = "C3 정점 과열 (재고 급증 경고)" if inv_warn else "C2 확장 (P·Q 동반 상승)"
+        elif p_tr is None or q_tr is None:
+            cycle_stage = f"{NO_DATA} (P·Q 추세 미입력)"
         else:
             cycle_stage = "C4 하강 (P·Q 동반 둔화)"
 
     # -----------------------------------------------------------------
-    # 4장. 5대 미래 지속성 평가 축 가중합산 및 최종 등급 판정[cite: 2]
+    # 4장. 5대 축 가중합산 — 판정 가능한 축의 가중치로 정규화
     # -----------------------------------------------------------------
-    # 가중치: 축1(20%) + 축2(25%) + 축3(25%) + 축4(15%) + 축5(15%)[cite: 2]
-    weighted_score = round(
-        axis1_score * 0.20 +
-        axis2_score * 0.25 +
-        axis3_score * 0.25 +
-        axis4_score * 0.15 +
-        axis5_score * 0.15,
-        2
-    )
+    axis_w = [(axis1_score, 0.20), (axis2_score, 0.25), (axis3_score, 0.25), (axis4_score, 0.15), (axis5_score, 0.15)]
+    w_sum = sum(w for s, w in axis_w if s is not None)
+    weighted_score: Optional[float] = (round(sum(s * w for s, w in axis_w if s is not None) / w_sum, 2) if w_sum > 0 else None)
+    coverage = round(w_sum, 2)
 
-    if th["hard_block_triggered"] or e_regime == "G5":
-        final_grade = "🔴"
-        thesis_status = "붕괴"
-        real_signal = "약"
+    if th.get("hard_block_triggered") or e_regime == "G5":
+        final_grade, thesis_status, real_signal = "🔴", "붕괴", "약"
+    elif weighted_score is None or coverage < 0.40:
+        final_grade, thesis_status, real_signal = "⚪", "미확인", "중립"
     elif weighted_score < 1.0 or e_regime == "G4":
-        final_grade = "🔴"
-        thesis_status = "경계"
-        real_signal = "약"
+        final_grade, thesis_status, real_signal = "🔴", "경계", "약"
     elif weighted_score >= 1.6 and e_regime in ["G1", "G2"]:
-        final_grade = "🟢"
-        thesis_status = "유효"
-        real_signal = "강"
+        final_grade, thesis_status, real_signal = "🟢", "유효", "강"
     else:
-        final_grade = "🟡"
-        thesis_status = "유효" if weighted_score >= 1.2 else "경계"
+        final_grade, thesis_status = "🟡", ("유효" if weighted_score >= 1.2 else "경계")
         real_signal = "중립"
 
-    if e_regime in ["G1", "G2"]:
-        headline = f"수주잔고(RPO) +{rpo_yoy*100:.0f}% 급증 및 증분 OPM {inc_opm*100:.1f}%로 영업레버리지 가속화"
+    if e_regime in ["G1", "G2"] and inc_opm is not None:
+        headline = (f"증분 OPM {inc_opm*100:.1f}%로 영업레버리지 작동"
+                    + (f" · RPO +{rpo_yoy*100:.0f}%" if rpo_yoy is not None else " (RPO 데이터 없음)"))
     elif e_regime == "G4":
         headline = f"피크아웃 경고 — {'매출 상회 속 마진 압착 발생' if margin_squeeze_detected else '30일 EPS 리비전 모멘텀 둔화 포착'}"
     elif e_regime == "G5":
         headline = "핵심 이익 드라이버 붕괴 또는 P·Q 동반 역성장 발동 (신규 진입 차단)"
+    elif e_regime == "NA" and regime_hold_reason:
+        headline = f"{regime_hold_reason} — 성장 단계를 단정하지 않고 V 트랙은 중립 규칙으로 계산"
+    elif e_regime == "NA":
+        headline = f"실적 판정에 필요한 데이터가 부족합니다 ({NO_DATA} {len(missing)}건)"
     else:
-        headline = f"성숙기 현금 창출 구간 (평균 OPM {avg_opm*100:.1f}%, 90일 리비전 {delta_90*100:+.1f}%)"
+        headline = (f"성숙기 현금 창출 구간 (평균 OPM {_s_pct(avg_opm, signed=False)}, 90일 리비전 {_s_pct(delta_90)})")
 
-    # E8-2. 시장의 이익 오판 포인트 자동 도출[cite: 2]
+    # E8-2. 시장의 이익 오판 포인트 — 근거 데이터가 있을 때만 서술
     if rpo_outpacing_sales and op_leverage_active:
         mispricing_type = "시장 과소평가 포인트 (성장 잠재력)"
-        mispricing_detail = (
-            f"RPO 증가율(+{rpo_yoy*100:.0f}%)이 매출 성장률(+{sales_yoy*100:.0f}%)을 크게 상회하고 "
-            f"증분 OPM({inc_opm*100:.1f}%)이 평균 OPM({avg_opm*100:.1f}%)을 웃돌아 향후 1~2년 고정비 레버리지 폭발 구간 진입."
-        )
+        mispricing_detail = (f"RPO 증가율(+{rpo_yoy*100:.0f}%)이 매출 성장률(+{sales_yoy*100:.0f}%)을 상회하고 "
+                             f"증분 OPM({inc_opm*100:.1f}%)이 평균 OPM({avg_opm*100:.1f}%)을 웃돕니다.")
     elif peak_out_warning:
         mispricing_type = "시장 과대평가 포인트 (저무는 기업 경고)"
-        mispricing_detail = (
-            "외형 매출 수치만 유지될 뿐 한계비용 상승(증분 마진 둔화) 또는 단기 30일 리비전 하향 변곡점이 발생하여 "
-            "컨센서스 하향 조정이 임박한 상태."
-        )
+        mispricing_detail = "마진 압착 또는 단기 30일 리비전 하향 변곡점이 확인되어 컨센서스 하향 조정 가능성이 있습니다."
+    elif e_regime == "NA" and regime_hold_reason:
+        mispricing_type, mispricing_detail = "판정 보류", regime_hold_reason
+    elif e_regime == "NA":
+        mispricing_type, mispricing_detail = NO_DATA, NO_DATA
     else:
         mispricing_type = "컨센서스 부합 구간"
-        mispricing_detail = "현재 실적 궤적과 시장 컨센서스 기대치가 유사한 수준으로 형성됨."
+        mispricing_detail = "확인 가능한 실적 궤적과 시장 기대치에 뚜렷한 괴리가 없습니다."
 
+    acc_note = {"analysts": lambda v: (f"{int(v)}명" if _num(v) is not None else NO_DATA)}
     return {
         "regime": {
-            "earnings_regime": e_regime,
-            "regime_label": e_regime_label,
-            "sector_type": sector_type,
-            "cycle_stage": cycle_stage,
-            "growth_acceleration": growth_accel,
+            "earnings_regime": e_regime, "regime_label": e_regime_label, "sector_type": sector_type,
+            "cycle_stage": cycle_stage, "growth_acceleration": growth_accel if growth_accel else NO_DATA,
         },
         "verdict": {
-            "score": weighted_score,
-            "grade": final_grade,
-            "real_signal": real_signal,
-            "headline_reason": headline,
-            "peak_out_warning": peak_out_warning,
+            "score": weighted_score, "coverage": coverage, "axes_scored": n_axes,
+            "grade": final_grade, "real_signal": real_signal,
+            "headline_reason": headline, "peak_out_warning": peak_out_warning,
         },
         "projections": {
-            "eps_1y": {
-                "formula": f"{w_a:.2f}*{lbl_1} + {w_b:.2f}*{lbl_2}",
-                "base": eps_1y_base,
-                "bull": eps_1y_bull,
-                "bear": eps_1y_bear,
-                "cycle_bear": cycle_bear_1y,
-            },
-            "eps_2y": {
-                "formula": f"{w_a:.2f}*{lbl_2} + {w_b:.2f}*{lbl_3}",
-                "base": eps_2y_base,
-                "bull": eps_2y_bull,
-                "bear": eps_2y_bear,
-            },
-            "certainty_adjustment": certainty_adj,
-            "certainty_label": certainty_label,
+            "eps_basis": eps_basis, "eps_basis_label": eps_basis_label, "ttm_eps": ttm_eps,
+            "eps_1y": {"formula": f_1y, "base": eps_1y["base"], "bull": eps_1y["bull"], "bear": eps_1y["bear"],
+                       "cycle_bear": cycle_bear_1y},
+            "eps_2y": {"formula": f_2y, "base": eps_2y["base"], "bull": eps_2y["bull"], "bear": eps_2y["bear"]},
+            "certainty_adjustment": certainty_adj, "certainty_label": certainty_label,
         },
         "sustainability_metrics": {
-            "incremental_opm": round(inc_opm, 4),
-            "average_opm": round(avg_opm, 4),
-            "rpo_yoy_growth": round(rpo_yoy, 4),
-            "sales_yoy_growth": round(sales_yoy, 4),
+            "incremental_opm": round(inc_opm, 4) if inc_opm is not None else None,
+            "average_opm": round(avg_opm, 4) if avg_opm is not None else None,
+            "rpo_yoy_growth": round(rpo_yoy, 4) if rpo_yoy is not None else None,
+            "sales_yoy_growth": round(sales_yoy, 4) if sales_yoy is not None else None,
             "operating_leverage_active": op_leverage_active,
-            "design_wins_note": sus["design_wins_note"],
+            "design_wins_note": sus.get("design_wins_note") or NO_DATA,
         },
         "revision_dynamics": {
             "status": rev_status,
-            "change_90d": round(delta_90, 4),
-            "change_30d": round(delta_30, 4),
+            "change_90d": round(delta_90, 4) if delta_90 is not None else None,
+            "change_30d": round(delta_30, 4) if delta_30 is not None else None,
             "inflection_flag": inflection_flag,
             "table": [
-                {"period": "현재 (t)", "ntm_eps": f"{fmt_price(rev['ntm_t'], is_krx)}", "fy1_eps": f"{fmt_price(rev['fy1_t'], is_krx)}", "fy2_eps": f"{fmt_price(rev['fy2_t'], is_krx)}", "analysts": f"{rev['analysts_t']}명"},
-                {"period": "30일 전 (t-30)", "ntm_eps": f"{fmt_price(rev['ntm_30d'], is_krx)}", "fy1_eps": f"{fmt_price(rev['fy1_30d'], is_krx)}", "fy2_eps": f"{fmt_price(rev['fy2_30d'], is_krx)}", "analysts": f"{rev['analysts_30d']}명"},
-                {"period": "90일 전 (t-90)", "ntm_eps": f"{fmt_price(rev['ntm_90d'], is_krx)}", "fy1_eps": f"{fmt_price(rev['fy1_90d'], is_krx)}", "fy2_eps": f"{fmt_price(rev['fy2_90d'], is_krx)}", "analysts": f"{rev['analysts_90d']}명"},
+                {"period": "현재 (t)", "ntm_eps": _s_price(rev["ntm_t"], is_krx), "fy1_eps": _s_price(rev["fy1_t"], is_krx),
+                 "fy2_eps": _s_price(rev["fy2_t"], is_krx), "analysts": acc_note["analysts"](rev["analysts_t"])},
+                {"period": "30일 전 (t-30)", "ntm_eps": _s_price(rev["ntm_30d"], is_krx), "fy1_eps": _s_price(rev["fy1_30d"], is_krx),
+                 "fy2_eps": _s_price(rev["fy2_30d"], is_krx), "analysts": acc_note["analysts"](rev["analysts_30d"])},
+                {"period": "90일 전 (t-90)", "ntm_eps": _s_price(rev["ntm_90d"], is_krx), "fy1_eps": _s_price(rev["fy1_90d"], is_krx),
+                 "fy2_eps": _s_price(rev["fy2_90d"], is_krx), "analysts": acc_note["analysts"](rev["analysts_90d"])},
             ],
         },
         "quality_checks": {
-            "warning_count": warn_cnt,
+            "warning_count": warn_cnt, "checked_count": n_checked, "basis": q_data.get("basis") or NO_DATA,
             "is_investment_phase_fcf": is_investment_phase_fcf,
-            "margin_squeeze_detected": margin_squeeze_detected,
+            "margin_squeeze_detected": margin_squeeze_detected, "margin_squeeze_known": margin_squeeze_known,
             "items": quality_items,
         },
         "thesis_driver": {
             "status": thesis_status,
-            "invalidation_condition": th["invalidation_condition"],
-            "current_status": th["current_status"],
-            "capital_structure_note": th["capital_structure_note"],
-            "mispricing_type": mispricing_type,
-            "mispricing_detail": mispricing_detail,
+            "invalidation_condition": th.get("invalidation_condition") or NO_DATA,
+            "current_status": th.get("current_status") or NO_DATA,
+            "capital_structure_note": th.get("capital_structure_note") or NO_DATA,
+            "mispricing_type": mispricing_type, "mispricing_detail": mispricing_detail,
         },
         "evaluation_axes": [
-            {"axis": "축 1: 성장 가속도 (E1)", "weight": "20%", "score": axis1_score, "status": f"2차 미분 [{growth_accel}] ({g_t2*100:.0f}%→{g_t1*100:.0f}%→{g_t*100:.0f}%)"},
-            {"axis": "축 2: 리비전 변곡점 (E3)", "weight": "25%", "score": axis2_score, "status": f"{rev_status} (90일 {delta_90*100:+.1f}% / 30일 {delta_30*100:+.1f}%)"},
-            {"axis": "축 3: 미래 지속성·레버리지 (E7)", "weight": "25%", "score": axis3_score, "status": f"증분OPM {inc_opm*100:.1f}% vs 평균 {avg_opm*100:.1f}% · RPO +{rpo_yoy*100:.0f}%"},
-            {"axis": "축 4: 질 및 현금 전환 (E6)", "weight": "15%", "score": axis4_score, "status": f"경고 {warn_cnt}개" + (" (투자기 FCF 감소 면제)" if is_investment_phase_fcf else "")},
-            {"axis": "축 5: 경영진 가이드 신뢰 (E2)", "weight": "15%", "score": axis5_score, "status": f"{certainty_label} (할인율 {certainty_adj*100:+.0f}%p)"},
+            {"axis": "축 1: 성장 가속도 (E1)", "weight": "20%", "score": axis1_score,
+             "status": (f"2차 미분 [{growth_accel}] ({traj_text})" if growth_accel else NO_DATA)},
+            {"axis": "축 2: 리비전 변곡점 (E3)", "weight": "25%", "score": axis2_score,
+             "status": (f"{rev_status} (90일 {_s_pct(delta_90)} / 30일 {_s_pct(delta_30)})" if axis2_score is not None else NO_DATA)},
+            {"axis": "축 3: 미래 지속성·레버리지 (E7)", "weight": "25%", "score": axis3_score,
+             "status": (f"증분OPM {inc_opm*100:.1f}% vs 평균 {avg_opm*100:.1f}% · RPO "
+                        + (f"+{rpo_yoy*100:.0f}%" if rpo_yoy is not None else f"{NO_DATA}(RPO 없이 최대 1점)")
+                        if axis3_score is not None else NO_DATA)},
+            {"axis": "축 4: 질 및 현금 전환 (E6)", "weight": "15%", "score": axis4_score,
+             "status": (f"경고 {warn_cnt}개 / 점검 {n_checked}개" + (" (투자기 FCF 감소 면제)" if is_investment_phase_fcf else "")
+                        if axis4_score is not None else f"{NO_DATA} (점검 가능 항목 {n_checked}개)")},
+            {"axis": "축 5: 경영진 가이드 신뢰 (E2)", "weight": "15%", "score": axis5_score,
+             "status": (f"{certainty_label} (할인율 {certainty_adj*100:+.0f}%p)" if axis5_score is not None else certainty_label)},
         ],
         "e1_surprise_table": e1_table,
+        "data_quality": {
+            "source": d["meta"].get("source"), "as_of": d["meta"].get("as_of"),
+            "eps_basis": eps_basis, "eps_basis_label": eps_basis_label,
+            "missing": sorted(set(missing)), "notes": d["meta"].get("notes", []),
+        },
     }
 
 
 # =====================================================================
 # [Track 3] 펀더멘탈 분석 트랙 v1.0 (멀티플·가치평가·0~3차 매수기준선 엔진)
 # =====================================================================
+# ---------------------------------------------------------------------
+# [V 트랙] 펀더멘탈 입력 실제 데이터 수집
+#   미국/기타: yfinance (info · 가격이력 · 연간/분기 재무제표 · 산업 상위 기업)
+#   한국(.KS/.KQ): DART(연간 재무제표) + yfinance(가격·베타·배당·컨센서스 목표가)
+#   못 받은 값은 None (가짜 값으로 채우지 않는다). 화면에는 '데이터 없음'으로 표시된다.
+# ---------------------------------------------------------------------
+FUND_DATA_PARAMS = {
+    "peer_candidates": 20,          # 산업 상위 기업 중 조회할 후보 수
+    "peer_max_count": 12,           # 유효 피어 상한
+    "peer_min_valid": 5,            # 피어 통계(중앙값·상위25%·σ)를 내는 최소 유효 종목 수
+    "peer_pe_range": (0.0, 200.0),  # 유효 PER 범위 (초과·음수는 제외)
+    "peer_roe_range": (-1.0, 3.0),  # 피어 ROE 유효 범위 (자본잠식 등 극단값 제외)
+    "peer_growth_range": (-0.9, 3.0),  # 피어 선행/후행 EPS 성장률 유효 범위
+    "band_years": 5,                # 자기 밴드 관측 창
+    "band_min_points": 24,          # 밴드 통계에 필요한 최소 월간 관측치 (2년)
+    "band_max_eps_change": 3.0,     # 밴드 기간 안 확정 EPS 최대/최소가 이 배수를 넘으면 밴드 신뢰 불가(이익 규모 급변)
+    "band_max_log_std": 0.5,        # 로그 PER σ가 이보다 크면 밴드 신뢰 불가
+    "band_lag_days_us": 60,         # 사업연도 종료 후 EPS가 시장에 알려지기까지의 지연 (미국)
+    "band_lag_days_kr": 90,         # 한국 (사업보고서 제출 기한)
+}
+
+# DART 계정 추가 (자본·유동성·차입·지배주주순이익)
+_DART_ACCOUNTS.update({
+    "equity_parent": {"ids": ["ifrs-full_EquityAttributableToOwnersOfParent"],
+                      "names": ["지배기업의소유주에게귀속되는자본", "지배기업소유주지분", "지배기업의소유주에게귀속되는지분"], "sj": ["BS"]},
+    "equity": {"ids": ["ifrs-full_Equity"], "names": ["자본총계"], "sj": ["BS"]},
+    "ni_parent": {"ids": ["ifrs-full_ProfitLossAttributableToOwnersOfParent"],
+                  "names": ["지배기업의소유주에게귀속되는당기순이익", "지배기업소유주지분순이익", "지배기업소유주지분",
+                            "지배기업의소유주에게귀속되는당기순이익(손실)"], "sj": ["IS", "CIS"]},
+    "cash": {"ids": ["ifrs-full_CashAndCashEquivalents"], "names": ["현금및현금성자산"], "sj": ["BS"]},
+    "sti": {"ids": ["ifrs-full_CurrentFinancialAssetsAtFairValueThroughProfitOrLoss"],
+            "names": ["단기금융상품", "단기금융자산", "단기투자자산"], "sj": ["BS"]},
+    "debt_short": {"ids": ["ifrs-full_ShorttermBorrowings", "ifrs-full_CurrentBorrowings"],
+                   "names": ["단기차입금", "유동차입금"], "sj": ["BS"]},
+    "debt_cur_ltd": {"ids": ["ifrs-full_CurrentPortionOfLongtermBorrowings"],
+                     "names": ["유동성장기부채", "유동성장기차입금", "유동성사채"], "sj": ["BS"]},
+    "debt_long": {"ids": ["ifrs-full_LongtermBorrowings", "ifrs-full_NoncurrentPortionOfNoncurrentLoansReceived"],
+                  "names": ["장기차입금"], "sj": ["BS"]},
+    "bonds": {"ids": ["ifrs-full_BondsIssued", "ifrs-full_NoncurrentPortionOfNoncurrentBondsIssued"],
+              "names": ["사채", "회사채"], "sj": ["BS"]},
+})
+
+
+def _tz_naive(ts: Any) -> Any:
+    t = pd.Timestamp(ts)
+    return t.tz_localize(None) if t.tzinfo is not None else t
+
+
+def _annual_pairs(df: Any, names: List[str]) -> List[Tuple[Any, float]]:
+    """yfinance 연간 재무제표(행=항목, 열=결산일)에서 names 중 처음 찾은 행을 (결산일, 값) 목록으로."""
+    try:
+        if df is None or len(df) == 0:
+            return []
+        idx = {str(i).strip().lower(): i for i in df.index}
+        for nm in names:
+            key = nm.strip().lower()
+            if key in idx:
+                out = []
+                for c, v in df.loc[idx[key]].items():
+                    x = _num(v)
+                    if x is not None:
+                        out.append((_tz_naive(c), x))
+                if out:
+                    return out
+    except Exception:
+        pass
+    return []
+
+
+def _month_end_prices(hist: Any) -> List[Tuple[Any, float]]:
+    """일봉 종가(분할 보정, 배당 미보정)를 월말 종가 목록 [(날짜, 종가)]로. 오래된 순."""
+    out: List[Tuple[Any, float]] = []
+    try:
+        s = hist["Close"].dropna()
+        last_key = None
+        for ts, v in s.items():
+            t = _tz_naive(ts)
+            x = _num(v)
+            if x is None or x <= 0:
+                continue
+            key = (t.year, t.month)
+            if out and key == last_key:
+                out[-1] = (t, x)
+            else:
+                out.append((t, x))
+            last_key = key
+    except Exception:
+        return []
+    return out
+
+
+def _asof_fy(pairs: List[Tuple[Any, float]], date: Any, lag_days: int) -> Optional[float]:
+    """date 시점에 시장이 알고 있던 가장 최근 사업연도 값 (결산일 + 공시 지연 이후에만 반영)."""
+    best = None
+    for fy_end, v in sorted(pairs, key=lambda x: x[0]):
+        if fy_end + pd.Timedelta(days=lag_days) <= date:
+            best = v
+    return best
+
+
+def _lagged_ratio_stats(prices: List[Tuple[Any, float]], pairs: List[Tuple[Any, float]],
+                        lag_days: int, years: int, min_points: int) -> Optional[Dict[str, Any]]:
+    """월말 주가 ÷ (그 시점에 알려진 연간 주당값) 의 평균·표준편차·최소. 분모가 0 이하인 달은 제외."""
+    if not prices or not pairs:
+        return None
+    cutoff = prices[-1][0] - pd.DateOffset(years=years)
+    vals: List[float] = []
+    dens: List[float] = []
+    series: List[Tuple[str, float]] = []
+    for d, p in prices:
+        if d < cutoff:
+            continue
+        den = _asof_fy(pairs, d, lag_days)
+        if den is None or den <= 0:
+            continue
+        vals.append(p / den)
+        dens.append(den)
+        series.append((str(pd.Timestamp(d).date()), round(p / den, 2)))
+    if len(vals) < min_points:
+        return None
+    # 로그 PER로 계산: 이익이 급변한 종목(예: 확정 EPS가 몇 년 새 수십 배)은 과거 PER이 수백 배로 튀어
+    # 산술 평균·σ가 망가진다. 로그 평균의 지수(기하평균)를 중심으로, σ는 로그 단위(배수 비율)로 둔다.
+    lv = [math.log(v) for v in vals]
+    lm = sum(lv) / len(lv)
+    lsd = math.sqrt(sum((x - lm) ** 2 for x in lv) / len(lv))
+    m = math.exp(lm)
+    return {"mean": m, "log_std": lsd, "std": m * (math.exp(lsd) - 1.0), "min": min(vals), "n": len(vals),
+            "span_years": round(len(vals) / 12.0, 1), "series": series,
+            "eps_lo": min(dens), "eps_hi": max(dens)}
+
+
+def _band_unreliable_reasons(band: Dict[str, Any]) -> List[str]:
+    """자기 PER 밴드를 믿을 수 없는 이유 목록 (비어 있으면 사용 가능). 이익 규모 급변·PER 분산 과대."""
+    why: List[str] = []
+    lo, hi = band.get("eps_lo"), band.get("eps_hi")
+    chg = (hi / lo) if (lo and hi and lo > 0) else None
+    if chg is not None and chg > FUND_DATA_PARAMS["band_max_eps_change"]:
+        why.append(f"밴드 기간 확정 EPS {lo:,.2f} → {hi:,.2f} ({chg:.1f}배)")
+    if band.get("log_std") is not None and band["log_std"] > FUND_DATA_PARAMS["band_max_log_std"]:
+        why.append(f"로그 PER σ {band['log_std']:.2f} > {FUND_DATA_PARAMS['band_max_log_std']}")
+    return why
+
+
+def _percentile(sorted_vals: List[float], q: float) -> float:
+    """선형 보간 백분위수 (q: 0~1)."""
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    pos = q * (len(sorted_vals) - 1)
+    lo = int(math.floor(pos))
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (pos - lo)
+
+
+def _peer_stats_us(tk: Any, info: Dict[str, Any], ticker: str, meta: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    """같은 산업(없으면 같은 섹터)의 상위 기업들로 피어 PER·ROE·성장률 단면 통계를 만든다. 못 받으면 전부 None."""
+    out: Dict[str, Optional[float]] = {"peer_median_per": None, "peer_top25_per": None, "peer_std_per": None,
+                                       "peer_median_roe": None, "peer_median_fwd_growth": None}
+    try:
+        import yfinance as yf
+    except Exception:
+        meta["notes"].append("피어: yfinance 없음")
+        return out
+    symbols: List[str] = []
+    for kind, key_name in (("Industry", "industryKey"), ("Sector", "sectorKey")):
+        key = info.get(key_name)
+        if not key:
+            continue
+        try:
+            obj = getattr(yf, kind)(key)
+            df = obj.top_companies
+            if df is not None and len(df) > 0:
+                symbols = [str(s) for s in list(df.index)]
+                meta["peer_group"] = f"{kind}:{key}"
+                break
+        except Exception:
+            continue
+    me = str(ticker).upper()
+    symbols = [s for s in symbols if s.upper() != me][:FUND_DATA_PARAMS["peer_candidates"]]
+    if not symbols:
+        meta["notes"].append("피어 목록 없음")
+        return out
+
+    def _one(sym: str) -> Dict[str, Optional[float]]:
+        try:
+            pi = yf.Ticker(sym).info or {}
+        except Exception:
+            return {}
+        pe = _num(pi.get("forwardPE"))
+        lo, hi = FUND_DATA_PARAMS["peer_pe_range"]
+        if pe is None or not (lo < pe <= hi):
+            pe = None
+        te, fe = _num(pi.get("trailingEps")), _num(pi.get("forwardEps"))
+        growth = (fe / te - 1.0) if (te is not None and fe is not None and te > 0 and fe > 0) else None
+        return {"pe": pe, "roe": _num(pi.get("returnOnEquity")), "g": growth}
+
+    rows: List[Dict[str, Optional[float]]] = []
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            rows = list(ex.map(_one, symbols))
+    except Exception:
+        rows = [_one(s) for s in symbols]
+    # 시가총액 비중 순서(원래 순서)대로 유효한 PER만 최대 peer_max_count개 채택 (값 크기로 자르지 않는다)
+    _valid_rows = [r for r in rows if r.get("pe") is not None][:FUND_DATA_PARAMS["peer_max_count"]]
+    pes = sorted(r["pe"] for r in _valid_rows)
+    meta["peer_count"] = len(pes)
+    if len(pes) >= FUND_DATA_PARAMS["peer_min_valid"]:
+        m = sum(pes) / len(pes)
+        out["peer_median_per"] = _percentile(pes, 0.5)
+        out["peer_top25_per"] = _percentile(pes, 0.75)
+        out["peer_std_per"] = math.sqrt(sum((v - m) ** 2 for v in pes) / len(pes))
+    else:
+        meta["notes"].append(f"피어 유효 PER {len(pes)}개 (<{FUND_DATA_PARAMS['peer_min_valid']}) — 피어 통계 제외")
+    # ROE·성장률도 PER이 유효한 같은 피어 집합에서만, 이상치(ROE −3,092 등)를 빼고 계산한다. 피어 PER 통계가 없으면 같이 '데이터 없음'.
+    if len(pes) >= FUND_DATA_PARAMS["peer_min_valid"]:
+        r_lo, r_hi = FUND_DATA_PARAMS["peer_roe_range"]
+        g_lo, g_hi = FUND_DATA_PARAMS["peer_growth_range"]
+        roes = sorted(r["roe"] for r in _valid_rows if r.get("roe") is not None and r_lo <= r["roe"] <= r_hi)
+        if len(roes) >= FUND_DATA_PARAMS["peer_min_valid"]:
+            out["peer_median_roe"] = _percentile(roes, 0.5)
+        gs = sorted(r["g"] for r in _valid_rows if r.get("g") is not None and g_lo <= r["g"] <= g_hi)
+        if len(gs) >= FUND_DATA_PARAMS["peer_min_valid"]:
+            out["peer_median_fwd_growth"] = _percentile(gs, 0.5)
+    return out
+
+
+def _dart_annual_block(dart: Any, code6: str, cache: Dict[Tuple[int, str], Any], meta: Dict[str, Any]) -> Dict[str, Any]:
+    """DART 사업보고서에서 EPS·자본 이력(최대 6년)과 최신 연도의 유동성·차입·FCF·주식수 계산 재료를 모은다."""
+    blk: Dict[str, Any] = {"eps_pairs": [], "equity_pairs": [], "latest": {}, "prev": {}}
+    this_year = datetime.now().year
+    base_year = None
+    for y in (this_year - 1, this_year - 2):          # 가장 최근에 공시된 사업연도
+        if _dart_fetch(dart, code6, y, "11011", cache) is not None:
+            base_year = y
+            break
+    if base_year is None:
+        meta["notes"].append("DART 사업보고서 없음")
+        return blk
+    meta["dart_base_year"] = base_year
+    eps_pairs: Dict[int, float] = {}
+    eq_pairs: Dict[int, float] = {}
+    for y in (base_year, base_year - 3):               # 사업보고서 1건에 당기·전기·전전기 3개년이 들어 있다
+        df = _dart_fetch(dart, code6, y, "11011", cache)
+        if df is None:
+            continue
+        for off, col in ((0, "thstrm_amount"), (1, "frmtrm_amount"), (2, "bfefrmtrm_amount")):
+            yy = y - off
+            e = _dart_pick(df, "eps", col)
+            if e is not None:
+                eps_pairs.setdefault(yy, e)
+            q = _dart_pick(df, "equity_parent", col)
+            if q is None:
+                q = _dart_pick(df, "equity", col)
+            if q is not None:
+                eq_pairs.setdefault(yy, q)
+    blk["eps_pairs"] = [(pd.Timestamp(f"{y}-12-31"), v) for y, v in sorted(eps_pairs.items())]
+    blk["equity_pairs"] = [(pd.Timestamp(f"{y}-12-31"), v) for y, v in sorted(eq_pairs.items())]
+    dfl = _dart_fetch(dart, code6, base_year, "11011", cache)
+    for key in ("cash", "sti", "debt_short", "debt_cur_ltd", "debt_long", "bonds", "equity_parent", "equity",
+                "ocf", "capex", "ni_parent", "eps"):
+        col_now = "thstrm_amount"
+        blk["latest"][key] = _dart_pick(dfl, key, col_now)
+        blk["prev"][key] = _dart_pick(dfl, key, "frmtrm_amount")
+    return blk
+
+
+def _kr_liquidity_and_survival(blk: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    L, P = blk.get("latest", {}), blk.get("prev", {})
+    out: Dict[str, Optional[float]] = {"net_cash_krw": None, "fcf_ttm_krw": None,
+                                       "short_term_debt_ratio": None, "share_dilution_yoy": None}
+    cash = L.get("cash")
+    liquid = None if cash is None else cash + (L.get("sti") or 0.0)
+    debt_items = {k: L.get(k) for k in ("debt_short", "debt_cur_ltd", "debt_long", "bonds") if L.get(k) is not None}
+    if liquid is not None and debt_items:
+        out["net_cash_krw"] = liquid - sum(debt_items.values())
+        meta["notes"].append("순현금: DART 계정명 기준 차입 항목(" + ", ".join(sorted(debt_items)) + ")만 합산 — 미확인 차입이 있으면 과대 추정 가능")
+    short_items = [L.get(k) for k in ("debt_short", "debt_cur_ltd") if L.get(k) is not None]
+    if liquid is not None and liquid > 0 and short_items:
+        out["short_term_debt_ratio"] = sum(short_items) / liquid
+    ocf, capex = L.get("ocf"), L.get("capex")
+    if ocf is not None and capex is not None:
+        out["fcf_ttm_krw"] = ocf - abs(capex)
+        meta["notes"].append("FCF: 최근 사업연도(연간) OCF − 유형자산 취득")
+    n1, e1, n0, e0 = L.get("ni_parent"), L.get("eps"), P.get("ni_parent"), P.get("eps")
+    if None not in (n1, e1, n0, e0) and e1 and e0:
+        sh1, sh0 = n1 / e1, n0 / e0
+        if sh0 > 0 and sh1 > 0:
+            out["share_dilution_yoy"] = sh1 / sh0 - 1.0
+            meta["notes"].append("희석률: 지배주주순이익÷기본EPS로 역산한 가중평균 주식수의 전년 대비 (완전희석 아님)")
+    return out
+
+
+def _us_liquidity_and_survival(tk: Any, meta: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    out: Dict[str, Optional[float]] = {"net_cash_krw": None, "fcf_ttm_krw": None,
+                                       "short_term_debt_ratio": None, "share_dilution_yoy": None}
+    try:
+        bs = tk.quarterly_balance_sheet
+        liquid = (_stmt_series(bs, ["Cash Cash Equivalents And Short Term Investments"]) or [None])[0]
+        if liquid is None:
+            liquid = (_stmt_series(bs, ["Cash And Cash Equivalents"]) or [None])[0]
+        total_debt = (_stmt_series(bs, ["Total Debt"]) or [None])[0]
+        cur_debt = (_stmt_series(bs, ["Current Debt And Capital Lease Obligation", "Current Debt"]) or [None])[0]
+        if liquid is not None and total_debt is not None:
+            out["net_cash_krw"] = liquid - total_debt
+        if liquid is not None and liquid > 0 and cur_debt is not None:
+            out["short_term_debt_ratio"] = cur_debt / liquid
+    except Exception:
+        meta["notes"].append("분기 재무상태표 없음")
+    try:
+        cf = tk.quarterly_cashflow
+        fcf_q = _stmt_series(cf, ["Free Cash Flow"])
+        if len(fcf_q) >= 4 and all(v is not None for v in fcf_q[:4]):
+            out["fcf_ttm_krw"] = float(sum(fcf_q[:4]))
+        else:
+            ocf_q = _stmt_series(cf, ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"])
+            cap_q = _stmt_series(cf, ["Capital Expenditure", "Purchase Of PPE"])
+            if len(ocf_q) >= 4 and len(cap_q) >= 4 and all(v is not None for v in ocf_q[:4] + cap_q[:4]):
+                out["fcf_ttm_krw"] = float(sum(ocf_q[:4]) - sum(abs(c) for c in cap_q[:4]))
+    except Exception:
+        meta["notes"].append("분기 현금흐름표 없음")
+    try:
+        sh_q = _stmt_series(tk.quarterly_income_stmt, ["Diluted Average Shares"])
+        if len(sh_q) >= 5 and sh_q[0] is not None and sh_q[4] is not None and sh_q[4] > 0:
+            out["share_dilution_yoy"] = sh_q[0] / sh_q[4] - 1.0
+        else:
+            sh_a = _annual_pairs(tk.income_stmt, ["Diluted Average Shares"])
+            sh_a = sorted(sh_a, key=lambda x: x[0])
+            if len(sh_a) >= 2 and sh_a[-2][1] > 0:
+                out["share_dilution_yoy"] = sh_a[-1][1] / sh_a[-2][1] - 1.0
+    except Exception:
+        pass
+    return out
+
+
+def fetch_real_fundamental_inputs(ticker: str, current_price: float) -> Dict[str, Any]:
+    """V 트랙 입력을 실제 데이터로 만든다. 반환: {"values": {키: 값 또는 None}, "meta": {...}}.
+    못 받은 값은 None이며 가짜 값으로 채우지 않는다. 모델 상수(성숙 성장률 등)는 여기서 다루지 않는다."""
+    is_krx = str(ticker).upper().endswith((".KS", ".KQ"))
+    meta: Dict[str, Any] = {"source": "DART+yfinance" if is_krx else "yfinance", "notes": [],
+                            "band_basis": "후행(TTM·연간 확정) EPS 기준", "peer_count": 0, "peer_group": None,
+                            "band_points": 0, "band_span_years": None, "pb_points": 0}
+    keys = ["industry_beta", "sustainable_roe", "dividend_yield", "is_financial_sector", "listing_years",
+            "self_5y_mean", "self_5y_std", "self_5y_log_std", "self_5y_min", "ind_5y_mean", "ind_5y_std",
+            "ind_rel_5y_mean", "ind_rel_5y_std", "ind_rel_current",
+            "peer_median_per", "peer_top25_per", "peer_std_per", "peer_rel_5y_mean", "peer_rel_5y_std",
+            "ind_rerate_evidences", "ind_derate_evidences", "ind_evidence_2q_confirmed",
+            "current_pb", "pb_5y_mean", "pb_5y_std",
+            "company_roe", "peer_median_roe", "company_fwd_growth", "peer_median_fwd_growth",
+            "shareholder_return_advantage", "price_12m_ago", "eps_lag_12m_ago", "eps_lag_now",
+            "mkt_per_12m_ago", "mkt_per_now", "ind_per_12m_ago", "ind_per_now", "historical_max_5y_cagr",
+            "consensus_target_price", "net_cash_krw", "fcf_ttm_krw", "short_term_debt_ratio", "share_dilution_yoy"]
+    vals: Dict[str, Any] = {k: None for k in keys}
+
+    try:
+        import yfinance as yf
+        tk = yf.Ticker(ticker)
+    except Exception:
+        meta["notes"].append("yfinance 사용 불가 — 시장 기반 값 전부 없음")
+        return {"values": vals, "meta": meta}
+
+    # ---- info: 베타·ROE·배당·섹터·상장연수·컨센서스 목표가 ----
+    info: Dict[str, Any] = {}
+    try:
+        info = tk.info or {}
+    except Exception:
+        meta["notes"].append("yfinance info 없음")
+    px = float(current_price) if current_price else None
+    vals["industry_beta"] = _num(info.get("beta"))
+    vals["company_roe"] = _num(info.get("returnOnEquity"))
+    vals["sustainable_roe"] = vals["company_roe"]
+    vals["consensus_target_price"] = _num(info.get("targetMeanPrice"))
+    drate = _num(info.get("dividendRate"))
+    if drate is None:
+        drate = _num(info.get("trailingAnnualDividendRate"))
+    if drate is not None and px:
+        vals["dividend_yield"] = drate / px
+    elif info and not is_krx:
+        vals["dividend_yield"] = 0.0     # 미국: info는 받았는데 배당 항목이 없으면 무배당으로 본다
+    sector = str(info.get("sector") or "")
+    if sector:
+        vals["is_financial_sector"] = sector.strip().lower() == "financial services"
+    t0 = _num(info.get("firstTradeDateEpochUtc"))
+    if t0 is None:
+        ms = _num(info.get("firstTradeDateMilliseconds"))
+        t0 = None if ms is None else ms / 1000.0
+    if t0:
+        vals["listing_years"] = round((datetime.now().timestamp() - t0) / (365.25 * 86400), 1)
+    te, fe = _num(info.get("trailingEps")), _num(info.get("forwardEps"))
+    if te is not None and fe is not None and te > 0 and fe > 0:
+        vals["company_fwd_growth"] = fe / te - 1.0
+
+    # ---- 가격 이력: 12개월 전 가격 · 자기 PER 밴드 · P/B 밴드 ----
+    prices: List[Tuple[Any, float]] = []
+    try:
+        hist = tk.history(period=f"{FUND_DATA_PARAMS['band_years'] + 1}y", auto_adjust=False)
+        prices = _month_end_prices(hist)
+        if len(hist) > 0:
+            closes = hist["Close"].dropna()
+            last_d = _tz_naive(closes.index[-1])
+            target = last_d - pd.DateOffset(years=1)
+            older = [(_tz_naive(i), _num(v)) for i, v in closes.items() if _tz_naive(i) <= target]
+            if older and older[-1][1]:
+                vals["price_12m_ago"] = older[-1][1]
+    except Exception:
+        meta["notes"].append("가격 이력 없음")
+
+    lag = FUND_DATA_PARAMS["band_lag_days_kr"] if is_krx else FUND_DATA_PARAMS["band_lag_days_us"]
+    eps_pairs: List[Tuple[Any, float]] = []
+    equity_pairs: List[Tuple[Any, float]] = []
+    shares_now = _num(info.get("sharesOutstanding"))
+    kr_blk: Dict[str, Any] = {}
+    if is_krx:
+        dart = _get_dart_client()
+        if dart is None:
+            meta["notes"].append("DART 사용 불가(API 키 또는 라이브러리 없음)")
+        else:
+            try:
+                kr_blk = _dart_annual_block(dart, str(ticker).split(".")[0], {}, meta)
+                eps_pairs, equity_pairs = kr_blk.get("eps_pairs", []), kr_blk.get("equity_pairs", [])
+                for k, v in _kr_liquidity_and_survival(kr_blk, meta).items():
+                    vals[k] = v
+                if vals["company_roe"] is None:
+                    L = kr_blk.get("latest", {})
+                    eq = L.get("equity_parent") if L.get("equity_parent") is not None else L.get("equity")
+                    if L.get("ni_parent") is not None and eq:
+                        vals["company_roe"] = L["ni_parent"] / eq
+                        vals["sustainable_roe"] = vals["company_roe"]
+            except Exception as e:
+                meta["notes"].append(f"DART 수집 실패: {type(e).__name__}")
+    else:
+        try:
+            eps_pairs = _annual_pairs(tk.income_stmt, ["Diluted EPS", "Basic EPS"])
+            equity_pairs = _annual_pairs(tk.balance_sheet, ["Stockholders Equity", "Common Stock Equity"])
+        except Exception:
+            meta["notes"].append("연간 재무제표 없음")
+        for k, v in _us_liquidity_and_survival(tk, meta).items():
+            vals[k] = v
+        try:
+            for k, v in _peer_stats_us(tk, info, ticker, meta).items():
+                if k in vals or k in ("peer_median_per", "peer_top25_per", "peer_std_per",
+                                      "peer_median_roe", "peer_median_fwd_growth"):
+                    vals[k] = v
+        except Exception:
+            meta["notes"].append("피어 수집 실패")
+
+    band = _lagged_ratio_stats(prices, eps_pairs, lag, FUND_DATA_PARAMS["band_years"], FUND_DATA_PARAMS["band_min_points"])
+    if band:
+        meta["band_points"], meta["band_span_years"] = band["n"], band["span_years"]
+        meta["band_series"] = band.get("series", [])
+        _why = _band_unreliable_reasons(band)
+        if _why:
+            # 이익 규모가 크게 바뀐 기간의 PER은 지금 회사와 비교할 기준이 못 된다 → 자기 밴드는 '데이터 없음'
+            meta["band_excluded"] = "이익 규모 급변으로 자기 PER 밴드 제외: " + " · ".join(_why)
+            meta["band_ref"] = {"mean": round(band["mean"], 1), "log_std": round(band["log_std"], 3)}
+            meta["notes"].append(meta["band_excluded"])
+        else:
+            vals["self_5y_mean"], vals["self_5y_std"], vals["self_5y_min"] = band["mean"], band["std"], band["min"]
+            vals["self_5y_log_std"] = band["log_std"]
+    else:
+        meta["notes"].append("자기 PER 밴드: 확정 EPS 이력 또는 가격 이력 부족 (월간 24개 미만)")
+    if prices and eps_pairs:
+        vals["eps_lag_now"] = _asof_fy(eps_pairs, prices[-1][0], lag)
+        vals["eps_lag_12m_ago"] = _asof_fy(eps_pairs, prices[-1][0] - pd.DateOffset(years=1), lag)
+
+    if shares_now and shares_now > 0 and equity_pairs:
+        bv_pairs = [(d, v / shares_now) for d, v in equity_pairs]
+        pb = _lagged_ratio_stats(prices, bv_pairs, lag, FUND_DATA_PARAMS["band_years"], FUND_DATA_PARAMS["band_min_points"])
+        if pb:
+            vals["pb_5y_mean"], vals["pb_5y_std"] = pb["mean"], pb["std"]
+            meta["pb_points"] = pb["n"]
+            meta["notes"].append("P/B 밴드: 연간 자본÷현재 주식수 근사 (자사주·증자 반영 오차 가능)")
+        latest_bv = sorted(bv_pairs, key=lambda x: x[0])[-1][1]
+        if px and latest_bv > 0:
+            vals["current_pb"] = px / latest_bv
+    if vals["current_pb"] is None:
+        vals["current_pb"] = _num(info.get("priceToBook"))
+
+    meta["missing"] = sorted(k for k, v in vals.items() if v is None)
+    return {"values": vals, "meta": meta}
+
+
+FUND_MODEL_PARAMS = {
+    "mature_g": 0.03,        # 성숙기 영구성장률 g_성숙 (모델 상수)
+    "position_cap": 0.05,    # 종목당 목표 비중 상한 (모델 상수)
+    # 시장 위험프리미엄(ERP): 데이터가 아니라 모델 가정. 출처를 화면에 함께 표시한다.
+    "market_erp_us": 0.0446,
+    "market_erp_kr": 0.0487,
+    "market_erp_source": "Damodaran 국가별 ERP 표 (2026년 1월 갱신: 미국 4.46% · 한국 4.87%)",
+}
+
+
+# ---------------------------------------------------------------------
+# 무위험수익률(10년 국채) 실데이터: FRED 공개 CSV (미국 DGS10 일별, 한국 IRLTLT01KRM156N 월별 OECD 장기금리).
+# 미국은 실패 시 yfinance ^TNX로 한 번 더 시도. 못 받으면 None → '데이터 없음' (고정값으로 대체하지 않는다).
+# ---------------------------------------------------------------------
+RF_SERIES = {"US": "DGS10", "KR": "IRLTLT01KRM156N"}
+_RF_CACHE: Dict[str, Dict[str, Any]] = {}
+_RF_TTL_SEC = 6 * 3600
+
+
+def _rf_fields(is_krx: bool) -> Dict[str, Any]:
+    """거시 트랙 출력용 10년 국채 금리 필드 (못 받으면 None)."""
+    r = fetch_risk_free_10y(is_krx)
+    return {"rf_10y_current": r["value"], "rf_source": r["source"], "rf_as_of": r["as_of"]}
+
+
+def fetch_risk_free_10y(is_krx: bool) -> Dict[str, Any]:
+    """10년 국채 금리(소수, 예 0.0484). 반환 {value, as_of, source}. 못 받으면 value=None.
+    한국: ECOS 817Y002 국고채 10년(일별, ECOS_API_KEY) → FRED OECD 월별 장기금리.
+    미국: FRED DGS10(FRED_API_KEY 있으면 API, 없으면 공개 CSV) → yfinance ^TNX."""
+    key = "KR" if is_krx else "US"
+    hit = _RF_CACHE.get(key)
+    if hit and (time.time() - hit["_t"] < _RF_TTL_SEC):
+        return {k: v for k, v in hit.items() if k != "_t"}
+    val = as_of = None
+    src = NO_DATA
+    _start = (datetime.now() - pd.Timedelta(days=45)).strftime("%Y-%m-%d")
+    if is_krx:
+        try:
+            ser = _ecos_series("817Y002", "010210000", _start, datetime.now().strftime("%Y-%m-%d"))
+            if ser is not None and len(ser):
+                val, as_of, src = float(ser.iloc[-1]), str(ser.index[-1].date()), "한국은행 ECOS 국고채 10년"
+        except Exception:
+            val = None
+    if val is None:
+        try:
+            ser = _fred_series(RF_SERIES[key])
+            if ser is not None and len(ser):
+                val, as_of = float(ser.iloc[-1]), str(ser.index[-1].date())
+                src = f"FRED {RF_SERIES[key]}" + (" (월별 OECD 장기금리)" if is_krx else "")
+        except Exception:
+            val = None
+    if val is None and not is_krx:
+        try:
+            import yfinance as yf
+            h = yf.Ticker("^TNX").history(period="10d")
+            if h is not None and len(h) > 0:
+                val = float(h["Close"].dropna().iloc[-1])
+                as_of = str(h.index[-1].date())
+                src = "yfinance ^TNX"
+        except Exception:
+            val = None
+    if val is not None and not (-1.0 < val < 25.0):   # 연 % 단위가 아닌 값(잘못 받은 시세 등)은 버린다
+        val = None
+    out = {"value": (round(val / 100.0, 5) if val is not None else None), "as_of": as_of if val is not None else None,
+           "source": src if val is not None else NO_DATA}
+    if val is not None:   # 실패는 캐시하지 않는다 (다음 실행에서 다시 시도)
+        _RF_CACHE[key] = dict(out, _t=time.time())
+    return out
+
+
+def _vpx(price: float, direction: str, is_krx: bool) -> float:
+    """V 트랙 가격선 보정: 한국은 호가 단위 정수, 미국은 센트(소수 2자리) 유지."""
+    p = adjust_krx_price(price, direction, is_krx)
+    return int(p) if is_krx else round(float(p), 2)
+
+
 def analyze_fundamental_track(
     ticker: str,
     current_price: float,
@@ -2587,79 +3606,63 @@ def analyze_fundamental_track(
         earnings_output = analyze_earnings_track(ticker)
 
     e_reg_info = earnings_output.get("regime", {})
-    e_regime = e_reg_info.get("earnings_regime", "G2")          # "G1" ~ "G5"[cite: 2, 4]
+    e_regime = e_reg_info.get("earnings_regime", "G3")          # "G1" ~ "G5" 또는 "NA"(판정 불가)
+    regime_neutral = e_regime not in ("G1", "G2", "G3", "G4", "G5")   # 판정 불가·보류(NA)
+    if regime_neutral:
+        e_regime = "G3"   # 판정 불가는 화면에는 '판정 불가'로 표시하고, 계산에서만 중립(G3) 처리 (G5 차단으로 흐르지 않게)
     sector_type = e_reg_info.get("sector_type", "구조성장형")     # "사이클형" | "구조성장형" | "방어형" | "정책의존형"[cite: 2, 4]
     cycle_stage = e_reg_info.get("cycle_stage")                 # "C1" ~ "C4"[cite: 2, 4]
     proj = earnings_output.get("projections", {})
-    eps_1y_dict = proj.get("eps_1y", {"base": 4200, "bull": 5100, "bear": 3500, "cycle_bear": 2800})
-    eps_2y_dict = proj.get("eps_2y", {"base": 5300, "bull": 6600, "bear": 4100})
-    certainty_adj = float(proj.get("certainty_adjustment", -0.02))
+    eps_basis = proj.get("eps_basis", "none")
+    _e1, _e2 = proj.get("eps_1y") or {}, proj.get("eps_2y") or {}
+    _ttm = proj.get("ttm_eps")
+    has_eps2 = False   # 1Y·2Y 미래 추정치가 모두 있을 때만 True (2Y 성장률·2Y 목표가 계산 조건)
+    if _e1.get("base") is not None:
+        _b = float(_e1["base"])
+        eps_1y_dict = {
+            "base": _b,
+            "bull": float(_e1["bull"]) if _e1.get("bull") is not None else _b,
+            "bear": float(_e1["bear"]) if _e1.get("bear") is not None else _b,
+            "cycle_bear": _e1.get("cycle_bear"),
+        }
+        eps_2y_dict = {"base": float(_e2["base"]) if _e2.get("base") is not None else _b}
+        has_eps2 = _e2.get("base") is not None
+    elif _ttm is not None:
+        # 참고용: 미래 추정치가 없으면 최근 확정 EPS(TTM) 하나로 계산한다 (시나리오 폭 없음)
+        eps_1y_dict = {"base": float(_ttm), "bull": float(_ttm), "bear": float(_ttm), "cycle_bear": None}
+        eps_2y_dict = {"base": float(_ttm)}
+        eps_basis = "ttm_reference"
+    else:
+        raise ValueError("EPS 데이터 없음: 미래 추정치와 최근 확정 EPS를 모두 받지 못해 펀더멘탈(V) 트랙을 계산할 수 없습니다.")
+    eps_floor = 1.0 if is_krx else 0.01   # 0 나눗셈 방지 하한 (원화 EPS는 1원, 달러 EPS는 1센트)
+    certainty_adj = float(proj.get("certainty_adjustment") or 0.0)
     sus = earnings_output.get("sustainability_metrics", {})
     qual = earnings_output.get("quality_checks", {})
     th_status = earnings_output.get("thesis_driver", {}).get("status", "유효")
 
     # 거시 트랙(Track 4) 입력값 수신 (기본값: 한국/미국 10Y 금리 및 ERP)[cite: 4]
     if macro_input is None:
-        macro_input = {"rf_10y": 0.035 if is_krx else 0.042, "market_erp": 0.055}
+        macro_input = {}
+    if "rf_10y" not in macro_input:   # 거시 트랙을 거치지 않고 호출된 경우 직접 받는다
+        _rfi = fetch_risk_free_10y(is_krx)
+        macro_input = dict(macro_input, rf_10y=_rfi["value"], rf_source=_rfi["source"], rf_as_of=_rfi["as_of"])
 
-    # 기본 멀티플·피어·생존성 시드 데이터 (yfinance / DART / 컨센서스 연동 및 오버라이드 지원)[cite: 4]
-    default_f = {
-        "rf_10y": float(macro_input.get("rf_10y", 0.035 if is_krx else 0.042)),
-        "market_erp": float(macro_input.get("market_erp", 0.055)),
-        "industry_beta": 1.10 if sector_type in ["구조성장형", "사이클형"] else 0.85,
-        "mature_g": 0.03,                 # 성숙기 영구성장률 g_성숙 (3.0%)[cite: 4]
-        "sustainable_roe": 0.14,          # 지속가능 ROE / ROIC (14.0%)[cite: 4]
-        "dividend_yield": 0.018 if is_krx else 0.010,  # 예상 배당수익률 d[cite: 4]
-        "is_financial_sector": False,
-        "listing_years": 10,
-        # 자기 5년 PER 밴드 및 산업/피어 밴드[cite: 4]
-        "self_5y_mean": 15.2,
-        "self_5y_std": 2.8,
-        "self_5y_min": 9.5,
-        "ind_5y_mean": 14.0,
-        "ind_5y_std": 2.5,
-        "ind_rel_5y_mean": 1.15,
-        "ind_rel_5y_std": 0.18,
-        "ind_rel_current": 1.08,
-        "peer_median_per": 14.5,
-        "peer_top25_per": 17.5,
-        "peer_std_per": 2.6,
-        "peer_rel_5y_mean": 1.05,
-        "peer_rel_5y_std": 0.15,
-        # F1-3. 산업 레짐 실물 증거 (상향 증거 개수, 하향 증거 개수, 2분기 연속 확인 여부)[cite: 4]
-        "ind_rerate_evidences": 1,
-        "ind_derate_evidences": 0,
-        "ind_evidence_2q_confirmed": False,
-        # F1-4. 사이클형 P/B z-score (정점 착시 감지용)[cite: 4]
-        "current_pb": 1.65,
-        "pb_5y_mean": 1.40,
-        "pb_5y_std": 0.30,
-        # F2-2. 피어 중앙값 비교용 벤치마크 수치[cite: 4]
-        "company_roic": 0.165,
-        "peer_median_roic": 0.120,
-        "peer_median_2y_cagr": 0.140,
-        "shareholder_return_advantage": 1,  # +1(소각/밸류업 우위), 0(동등), -1(중복상장/희석 열위)[cite: 4]
-        # F4. 12개월 주가·이익·배수 3층 로그 분해용 기초값 (12개월 전 vs 현재)[cite: 4]
-        "price_12m_ago": round(current_price * 1.12, 0),
-        "ntm_eps_12m_ago": round(float(eps_1y_dict["base"]) * 0.87, 0),
-        "mkt_per_12m_ago": 11.2 if is_krx else 19.5,
-        "mkt_per_now": 10.3 if is_krx else 20.8,
-        "ind_per_12m_ago": 15.8,
-        "ind_per_now": 12.6,
-        # F5-2. 역대 최고 5Y CAGR[cite: 4]
-        "historical_max_5y_cagr": 0.25,
-        # F8-1. 증권사 컨센서스 평균 목표가 (앵커 1)[cite: 4]
-        "consensus_target_price": round(current_price * 1.28, -2),
-        # F9. 재무 생존성 3지표[cite: 4]
-        "net_cash_krw": 120.0,            # 순현금 (양수면 순현금, 음수면 순차입금)[cite: 4]
-        "fcf_ttm_krw": 18.5,              # 최근 4분기 합산 FCF[cite: 4]
-        "short_term_debt_ratio": 0.22,    # 1년 내 차입 만기 / 보유 현금성자산[cite: 4]
-        "share_dilution_yoy": 0.00,       # 연간 완전희석 주식수 증가율[cite: 4]
-        "position_cap": 0.05,
-    }
+    # 펀더멘탈 입력: 실제 데이터(미국 yfinance · 한국 DART+yfinance). 못 받은 값은 None → '데이터 없음'으로 계산에서 빠진다.
+    fdata = fetch_real_fundamental_inputs(ticker, current_price)
+    fmeta = dict(fdata.get("meta", {}))
+    f = dict(fdata.get("values", {}))
+    # 모델 상수와 거시 트랙 입력 (데이터가 아니라 모델 설정값)
+    _rf_in = macro_input.get("rf_10y")
+    f["rf_10y"] = float(_rf_in) if _rf_in is not None else None      # None → 요구수익률·k_e 계산 불가('데이터 없음')
+    _erp_in = macro_input.get("market_erp")
+    f["market_erp"] = float(_erp_in) if _erp_in is not None else FUND_MODEL_PARAMS["market_erp_kr" if is_krx else "market_erp_us"]
+    if f["rf_10y"] is None:
+        fmeta.setdefault("missing", [])
+        fmeta["missing"] = sorted(set(fmeta["missing"]) | {"rf_10y"})
+    f["mature_g"] = FUND_MODEL_PARAMS["mature_g"]
+    f["position_cap"] = FUND_MODEL_PARAMS["position_cap"]
     if fund_override:
-        default_f.update(fund_override)
-    f = default_f
+        f.update(fund_override)
 
     eps_1y_base = float(eps_1y_dict["base"])
     eps_1y_bull = float(eps_1y_dict["bull"])
@@ -2667,38 +3670,52 @@ def analyze_fundamental_track(
     eps_1y_cycle_bear = float(eps_1y_dict.get("cycle_bear") or (eps_1y_bear * 0.80))
     eps_2y_base = float(eps_2y_dict["base"])
 
-    # 2Y EPS CAGR 산출[cite: 4]
-    consensus_2y_cagr = max(0.02, (eps_2y_base / max(eps_1y_base, 1.0)) - 1.0)
+    # 2Y EPS CAGR: 미래 추정치(1Y·2Y)가 모두 있을 때만 계산 (없으면 '데이터 없음' — 2% 같은 임의 하한을 만들지 않는다)
+    consensus_2y_cagr: Optional[float] = None
+    if has_eps2:
+        consensus_2y_cagr = max(0.02, (eps_2y_base / max(eps_1y_base, eps_floor)) - 1.0)
+
+    # 자기 PER 밴드는 후행(확정 EPS) 기준이므로 같은 기준의 현재 PER로 z-score를 낸다
+    cur_per_band: Optional[float] = None
+    if _ttm is not None and float(_ttm) > 0:
+        cur_per_band = current_price / float(_ttm)
 
     # -----------------------------------------------------------------
     # F0. 멀티플 종류 선택 (분모 왜곡 방지 규칙)[cite: 4]
     # -----------------------------------------------------------------
-    if f["is_financial_sector"]:
+    listing_years = f.get("listing_years")
+    if f.get("is_financial_sector"):
         primary_mult, secondary_mult = "P/B", "배당수익률"
     elif e_regime == "G1" and eps_1y_base <= 0:
         primary_mult, secondary_mult = "NTM EV/매출", "목표 OPM 도달 시 내재 PER"
-    elif f["listing_years"] < 3:
+    elif listing_years is not None and listing_years < 3:
         primary_mult, secondary_mult = "피어 그룹 PER (μ, σ)", "PEG"
     elif sector_type == "사이클형":
         primary_mult, secondary_mult = "NTM PER", "P/B 밴드 (필수 교차)"
     else:
         primary_mult, secondary_mult = "NTM PER", "EV/EBITDA"
 
-    current_per = round(current_price / max(eps_1y_base, 1.0), 2)
+    current_per = round(current_price / max(eps_1y_base, eps_floor), 2)
 
     # -----------------------------------------------------------------
     # F1. 산업이 받을 수 있는 멀티플 (이론 성숙 PER, 상대 밴드, 레짐, 사이클 착시)[cite: 4]
     # -----------------------------------------------------------------
     # F1-1. 시장 자기자본비용 k_e = R_f + ERP * beta (요구수익률 r과 엄격 분리)[cite: 4]
-    market_ke = f["rf_10y"] + f["market_erp"] * f["industry_beta"]
-    g_mat = min(f["mature_g"], market_ke - 0.02)
-    roe_sust = max(f["sustainable_roe"], g_mat + 0.02)
-    theoretical_mature_per = round((1.0 - (g_mat / roe_sust)) / max(market_ke - g_mat, 0.01), 1)
+    market_ke: Optional[float] = None
+    theoretical_mature_per: Optional[float] = None
+    if f.get("industry_beta") is not None and f.get("rf_10y") is not None:
+        market_ke = f["rf_10y"] + f["market_erp"] * float(f["industry_beta"])
+        if f.get("sustainable_roe") is not None:
+            g_mat = min(f["mature_g"], market_ke - 0.02)
+            roe_sust = max(float(f["sustainable_roe"]), g_mat + 0.02)
+            theoretical_mature_per = round((1.0 - (g_mat / roe_sust)) / max(market_ke - g_mat, 0.01), 1)
 
-    # F1-3. 산업 레짐 3단계 판정[cite: 4]
-    if f["ind_rerate_evidences"] >= 2 and f["ind_evidence_2q_confirmed"]:
+    # F1-3. 산업 레짐 3단계 판정 (산업 실물 증거는 자동 수집 불가 → 데이터 없음)[cite: 4]
+    if f.get("ind_rerate_evidences") is None or f.get("ind_derate_evidences") is None:
+        ind_regime = NO_DATA
+    elif f["ind_rerate_evidences"] >= 2 and f.get("ind_evidence_2q_confirmed"):
         ind_regime = "전환 확정 (상향)"
-    elif f["ind_derate_evidences"] >= 2 and f["ind_evidence_2q_confirmed"]:
+    elif f["ind_derate_evidences"] >= 2 and f.get("ind_evidence_2q_confirmed"):
         ind_regime = "전환 확정 (하향)"
     elif f["ind_rerate_evidences"] >= 2 or f["ind_derate_evidences"] >= 2:
         ind_regime = "전환 진행"
@@ -2706,18 +3723,53 @@ def analyze_fundamental_track(
         ind_regime = "기존 밴드 유효"
 
     # -----------------------------------------------------------------
-    # F3. 현재 멀티플 위치 (3중 z-score 입체 진단)[cite: 4]
+    # F3. 현재 멀티플 위치 (3중 z-score 입체 진단) — 각 z는 필요한 데이터가 있을 때만[cite: 4]
     # -----------------------------------------------------------------
-    self_mean = float(f["self_5y_mean"])
-    self_std = max(float(f["self_5y_std"]), 0.5)
-    self_z = round((current_per - self_mean) / self_std, 2)
+    # 자기 PER 밴드: 중심 = 로그 평균의 지수(기하평균), 폭 = 로그 σ. k σ 지점은 μ·e^(kσ) (위아래 비대칭).
+    self_mean: Optional[float] = None if f.get("self_5y_mean") is None else float(f["self_5y_mean"])
+    self_lsd: Optional[float] = None
+    if self_mean is not None and self_mean > 0:
+        if f.get("self_5y_log_std") is not None:
+            self_lsd = max(float(f["self_5y_log_std"]), 0.02)
+        elif f.get("self_5y_std") is not None:   # 산술 σ만 주어진 경우(외부 입력) 근사 변환
+            self_lsd = max(math.log(1.0 + max(float(f["self_5y_std"]), 0.0) / self_mean), 0.02)
+    self_std: Optional[float] = None if self_lsd is None else self_mean * (math.exp(self_lsd) - 1.0)   # 표시용(+1σ − μ)
 
-    ind_rel_z = round((f["ind_rel_current"] - f["ind_rel_5y_mean"]) / max(f["ind_rel_5y_std"], 0.05), 2)
-    peer_rel_now = current_per / max(f["peer_median_per"], 1.0)
-    peer_rel_z = round((peer_rel_now - f["peer_rel_5y_mean"]) / max(f["peer_rel_5y_std"], 0.05), 2)
+    def _sb(k: float, base: Optional[float] = None) -> Optional[float]:
+        """자기 밴드 k σ 지점의 PER (base 생략 시 자기 기하평균 기준)."""
+        b = self_mean if base is None else base
+        return None if (b is None or self_lsd is None) else b * math.exp(k * self_lsd)
 
-    if peer_rel_z <= -1.0:
+    # 시나리오 폭(Bull/Bear·2차선)용 로그 σ: 자기 밴드가 없으면(이익 급변 제외 포함) 피어 PER 분산으로 대체
+    _pm, _ps = f.get("peer_median_per"), f.get("peer_std_per")
+    peer_lsd: Optional[float] = (max(math.log(1.0 + float(_ps) / float(_pm)), 0.02)
+                                 if (_pm is not None and _ps is not None and float(_pm) > 0) else None)
+    scen_lsd: Optional[float] = self_lsd if self_lsd is not None else peer_lsd
+    scen_lsd_src = "자기 밴드 σ" if self_lsd is not None else ("피어 PER σ" if peer_lsd is not None else NO_DATA)
+
+    def _scen(k: float, base: float) -> Optional[float]:
+        return None if scen_lsd is None else base * math.exp(k * scen_lsd)
+
+    self_z: Optional[float] = None
+    if self_mean is not None and self_lsd is not None and cur_per_band is not None and cur_per_band > 0:
+        self_z = round((math.log(cur_per_band) - math.log(self_mean)) / self_lsd, 2)
+
+    ind_rel_z: Optional[float] = None
+    if None not in (f.get("ind_rel_current"), f.get("ind_rel_5y_mean"), f.get("ind_rel_5y_std")):
+        ind_rel_z = round((f["ind_rel_current"] - f["ind_rel_5y_mean"]) / max(f["ind_rel_5y_std"], 0.05), 2)
+
+    peer_median_per = f.get("peer_median_per")
+    peer_top25_per = f.get("peer_top25_per")
+    peer_std_per = f.get("peer_std_per")
+    peer_rel_now: Optional[float] = None if peer_median_per is None else current_per / max(float(peer_median_per), 1.0)
+    peer_rel_z: Optional[float] = None
+    if peer_rel_now is not None and f.get("peer_rel_5y_mean") is not None and f.get("peer_rel_5y_std") is not None:
+        peer_rel_z = round((peer_rel_now - f["peer_rel_5y_mean"]) / max(f["peer_rel_5y_std"], 0.05), 2)
+
+    if peer_rel_z is not None and peer_rel_z <= -1.0:
         z_interp = "피어 대비 뚜렷한 저평가"
+    elif self_z is None:
+        z_interp = NO_DATA
     elif self_z <= -1.0:
         z_interp = "역사적 밴드 하단 저평가"
     elif self_z >= 2.0:
@@ -2727,93 +3779,149 @@ def analyze_fundamental_track(
     else:
         z_interp = "정상 거래 밴드 구간"
 
-    triple_z_summary = f"자기 밴드 {self_z:+.2f}σ | 산업 상대 {ind_rel_z:+.2f}σ | 피어 상대 {peer_rel_z:+.2f}σ ({z_interp})"
+    def _zs(z: Optional[float]) -> str:
+        return NO_DATA if z is None else f"{z:+.2f}σ"
+
+    if peer_rel_z is not None:
+        _peer_txt = _zs(peer_rel_z)
+    elif peer_rel_now is not None:
+        _peer_txt = f"PER {peer_rel_now:.2f}배 (σ {NO_DATA})"
+    else:
+        _peer_txt = NO_DATA
+    triple_z_summary = f"자기 밴드 {_zs(self_z)} | 산업 상대 {_zs(ind_rel_z)} | 피어 상대 {_peer_txt}" + (f" ({z_interp})" if z_interp != NO_DATA else "")
 
     # F1-4. 사이클형 정점 착시 감지기 (Spread_z = z_PB - z_PER >= 1.5)[cite: 4]
     cycle_type = None
     pb_per_z_spread = None
     is_cycle_peak_trap = False
     if sector_type == "사이클형":
-        z_pb = (f["current_pb"] - f["pb_5y_mean"]) / max(f["pb_5y_std"], 0.05)
-        pb_per_z_spread = round(z_pb - self_z, 2)
+        z_pb: Optional[float] = None
+        if None not in (f.get("current_pb"), f.get("pb_5y_mean"), f.get("pb_5y_std")):
+            z_pb = (f["current_pb"] - f["pb_5y_mean"]) / max(f["pb_5y_std"], 0.05)
+        if z_pb is not None and self_z is not None:
+            pb_per_z_spread = round(z_pb - self_z, 2)
         rev_status = earnings_output.get("revision_dynamics", {}).get("status", "보합")
-        if pb_per_z_spread >= 1.5 or cycle_stage == "C3 정점 과열 (재고 급증 경고)":
+        if (pb_per_z_spread is not None and pb_per_z_spread >= 1.5) or cycle_stage == "C3 정점 과열 (재고 급증 경고)":
             cycle_type = "Type 2 (정점 착시 / 디레이팅 경고)"
             is_cycle_peak_trap = True
         elif rev_status == "하향 지속" or cycle_stage == "C4 하강 (P·Q 동반 둔화)":
             cycle_type = "Type 3 (하강 확정)"
-        else:
+        elif pb_per_z_spread is not None:
             cycle_type = "Type 1 (확장 초중기)"
+        else:
+            cycle_type = f"{NO_DATA} (P/B·PER 밴드 부족으로 정점 착시 판정 불가)"
 
     # -----------------------------------------------------------------
     # F9. 재무 생존성 3지표 (Hard Survival Filter — F2-2 7번 요인 연계)[cite: 4]
     # -----------------------------------------------------------------
-    fcf_ttm = float(f["fcf_ttm_krw"])
-    net_cash = float(f["net_cash_krw"])
-    if fcf_ttm >= 0:
+    fcf_ttm = f.get("fcf_ttm_krw")
+    net_cash = f.get("net_cash_krw")
+    runway_warn = False
+    if fcf_ttm is None:
+        runway_str = NO_DATA
+    elif fcf_ttm >= 0:
         runway_str = "FCF 흑자 (해당 없음)"
-        runway_warn = False
+    elif net_cash is None:
+        runway_str = f"{NO_DATA} (FCF 적자이나 순현금 미확인)"
     elif net_cash > 0 and (net_cash / abs(fcf_ttm)) >= 2.0:
         runway_str = f"{net_cash / abs(fcf_ttm):.1f}년 (순현금 방어)"
-        runway_warn = False
     else:
         rw_yrs = max(0.0, net_cash / abs(fcf_ttm)) if net_cash > 0 else 0.0
         runway_str = f"{rw_yrs:.1f}년 (위험 < 2.0년)"
         runway_warn = True
 
-    debt_mat_ratio = float(f["short_term_debt_ratio"])
-    debt_warn = debt_mat_ratio > 1.00
-    dilution_yoy = float(f["share_dilution_yoy"])
-    dilution_warn = dilution_yoy > 0.05
+    debt_mat_ratio = f.get("short_term_debt_ratio")
+    debt_warn = bool(debt_mat_ratio is not None and debt_mat_ratio > 1.00)
+    dilution_yoy = f.get("share_dilution_yoy")
+    dilution_warn = bool(dilution_yoy is not None and dilution_yoy > 0.05)
     survival_warning = bool(runway_warn or debt_warn or dilution_warn)
+    survival_checked = sum(1 for v in (fcf_ttm, debt_mat_ratio, dilution_yoy) if v is not None)
 
     # -----------------------------------------------------------------
     # F2. 피어 대비 프리미엄·디스카운트 정당화 8대 요인 비교표[cite: 4]
     # -----------------------------------------------------------------
     peer_factors = []
-    # 1) 성장 격차 (g)[cite: 4]
-    g_diff = consensus_2y_cagr - f["peer_median_2y_cagr"]
-    f1_s = 1 if g_diff >= 0.03 else (-1 if g_diff <= -0.03 else 0)
-    peer_factors.append({"no": 1, "factor": "성장 격차 (2Y EPS CAGR)", "diff": f"{g_diff*100:+.1f}%p", "score": f1_s})
+    # 1) 성장 격차 (선행/후행 EPS 증가율: 기업·피어 모두 같은 야후 기준)[cite: 4]
+    _cg, _pg = f.get("company_fwd_growth"), f.get("peer_median_fwd_growth")
+    if _cg is None or _pg is None:
+        peer_factors.append({"no": 1, "factor": "성장 격차 (선행/후행 EPS, 피어 대비)", "diff": NO_DATA, "score": 0})
+    else:
+        g_diff = float(_cg) - float(_pg)
+        f1_s = 1 if g_diff >= 0.03 else (-1 if g_diff <= -0.03 else 0)
+        peer_factors.append({"no": 1, "factor": "성장 격차 (선행/후행 EPS, 피어 대비)", "diff": f"{g_diff*100:+.1f}%p", "score": f1_s})
 
-    # 2) 수익성·효율 격차 (ROIC)[cite: 4]
-    roic_diff = f["company_roic"] - f["peer_median_roic"]
-    f2_s = 1 if roic_diff >= 0.03 else (-1 if roic_diff <= -0.03 else 0)
-    peer_factors.append({"no": 2, "factor": "수익성·효율 격차 (ROIC)", "diff": f"{roic_diff*100:+.1f}%p", "score": f2_s})
+    # 2) 수익성·효율 격차 (ROE: 기업·피어 모두 같은 야후 기준)[cite: 4]
+    _cr, _pr = f.get("company_roe"), f.get("peer_median_roe")
+    if _cr is None or _pr is None:
+        peer_factors.append({"no": 2, "factor": "수익성·효율 격차 (ROE, 피어 대비)", "diff": NO_DATA, "score": 0})
+    else:
+        roic_diff = float(_cr) - float(_pr)
+        f2_s = 1 if roic_diff >= 0.03 else (-1 if roic_diff <= -0.03 else 0)
+        peer_factors.append({"no": 2, "factor": "수익성·효율 격차 (ROE, 피어 대비)", "diff": f"{roic_diff*100:+.1f}%p", "score": f2_s})
 
     # 3) 영업레버리지 (ΔOPM)[cite: 4]
-    op_lev_spread = float(sus.get("incremental_opm", 0.24)) - float(sus.get("average_opm", 0.20))
-    f3_s = 1 if op_lev_spread > 0.02 else (-1 if op_lev_spread < -0.02 else 0)
-    peer_factors.append({"no": 3, "factor": "영업레버리지 (증분-평균 OPM)", "diff": f"{op_lev_spread*100:+.1f}%p", "score": f3_s})
+    op_lev_spread, rpo_spread = None, None   # 데이터가 없으면 None 유지 (아래 F5 4축에서 '데이터 없음' 처리)
+    _inc_opm, _avg_opm = sus.get("incremental_opm"), sus.get("average_opm")
+    if _inc_opm is None or _avg_opm is None:
+        peer_factors.append({"no": 3, "factor": "영업레버리지 (증분-평균 OPM)", "diff": NO_DATA, "score": 0})
+    else:
+        op_lev_spread = float(_inc_opm) - float(_avg_opm)
+        f3_s = 1 if op_lev_spread > 0.02 else (-1 if op_lev_spread < -0.02 else 0)
+        peer_factors.append({"no": 3, "factor": "영업레버리지 (증분-평균 OPM)", "diff": f"{op_lev_spread*100:+.1f}%p", "score": f3_s})
 
     # 4) 이익 지속성 (RPO·수주)[cite: 4]
-    rpo_spread = float(sus.get("rpo_yoy_growth", 0.30)) - float(sus.get("sales_yoy_growth", 0.20))
-    f4_s = 1 if rpo_spread > 0.0 else (-1 if rpo_spread < -0.05 else 0)
-    peer_factors.append({"no": 4, "factor": "이익 지속성 (RPO - 매출 성장)", "diff": f"{rpo_spread*100:+.1f}%p", "score": f4_s})
+    _rpo, _sy = sus.get("rpo_yoy_growth"), sus.get("sales_yoy_growth")
+    if _rpo is None or _sy is None:
+        peer_factors.append({"no": 4, "factor": "이익 지속성 (RPO - 매출 성장)", "diff": NO_DATA, "score": 0})
+    else:
+        rpo_spread = float(_rpo) - float(_sy)
+        f4_s = 1 if rpo_spread > 0.0 else (-1 if rpo_spread < -0.05 else 0)
+        peer_factors.append({"no": 4, "factor": "이익 지속성 (RPO - 매출 성장)", "diff": f"{rpo_spread*100:+.1f}%p", "score": f4_s})
 
     # 5) 가이던스 신뢰도[cite: 4]
-    f5_s = 1 if certainty_adj < 0 else (-1 if certainty_adj > 0 else 0)
-    peer_factors.append({"no": 5, "factor": "경영진 가이던스 신뢰도", "diff": f"할인율 {certainty_adj*100:+.0f}%p", "score": f5_s})
+    if str(proj.get("certainty_label", "")).startswith(NO_DATA):
+        peer_factors.append({"no": 5, "factor": "경영진 가이던스 신뢰도", "diff": NO_DATA, "score": 0})
+    else:
+        f5_s = 1 if certainty_adj < 0 else (-1 if certainty_adj > 0 else 0)
+        peer_factors.append({"no": 5, "factor": "경영진 가이던스 신뢰도", "diff": f"할인율 {certainty_adj*100:+.0f}%p", "score": f5_s})
 
     # 6) 이익의 질 (현금 전환)[cite: 4]
     w_cnt = int(qual.get("warning_count", 0))
-    f6_s = 1 if w_cnt == 0 else (-1 if w_cnt >= 2 else 0)
-    peer_factors.append({"no": 6, "factor": "이익의 질 (회계·현금전환)", "diff": f"경고 {w_cnt}개", "score": f6_s})
+    if int(qual.get("checked_count", 0)) == 0:
+        peer_factors.append({"no": 6, "factor": "이익의 질 (회계·현금전환)", "diff": NO_DATA, "score": 0})
+    else:
+        f6_s = 1 if w_cnt == 0 else (-1 if w_cnt >= 2 else 0)
+        peer_factors.append({"no": 6, "factor": "이익의 질 (회계·현금전환)", "diff": f"경고 {w_cnt}개", "score": f6_s})
 
     # 7) 재무 생존성[cite: 4]
-    f7_s = 1 if (net_cash > 0 and not survival_warning) else (-1 if survival_warning else 0)
-    peer_factors.append({"no": 7, "factor": "재무 생존성 (순현금·런웨이)", "diff": "무경고" if not survival_warning else "경고 발동", "score": f7_s})
+    if survival_checked == 0 and net_cash is None:
+        peer_factors.append({"no": 7, "factor": "재무 생존성 (순현금·런웨이)", "diff": NO_DATA, "score": 0})
+    else:
+        f7_s = -1 if survival_warning else (1 if (net_cash is not None and net_cash > 0) else 0)
+        peer_factors.append({"no": 7, "factor": "재무 생존성 (순현금·런웨이)", "diff": "무경고" if not survival_warning else "경고 발동", "score": f7_s})
 
-    # 8) 주주환원·지배구조[cite: 4]
-    f8_s = -1 if dilution_warn else int(f["shareholder_return_advantage"])
-    peer_factors.append({"no": 8, "factor": "주주환원·지배구조 (소각/밸류업)", "diff": "우위(+1)" if f8_s > 0 else ("열위(-1)" if f8_s < 0 else "동등(0)"), "score": f8_s})
+    # 8) 주주환원·지배구조 (소각/밸류업 우위는 자동 수집 불가 → 희석 경고만 반영)[cite: 4]
+    _sra = f.get("shareholder_return_advantage")
+    if dilution_warn or _sra is not None:
+        f8_s = -1 if dilution_warn else int(_sra)
+        peer_factors.append({"no": 8, "factor": "주주환원·지배구조 (소각/밸류업)", "diff": "우위(+1)" if f8_s > 0 else ("열위(-1)" if f8_s < 0 else "동등(0)"), "score": f8_s})
+    else:
+        peer_factors.append({"no": 8, "factor": "주주환원·지배구조 (소각/밸류업)", "diff": NO_DATA, "score": 0})
 
     net_adv_score = sum(item["score"] for item in peer_factors)
-    if net_adv_score >= 2 and (peer_rel_now <= 1.0 or peer_rel_z <= -1.0):
+    n_factors_scored = sum(1 for item in peer_factors if item["diff"] != NO_DATA)
+    if peer_rel_now is None:
+        if net_adv_score >= 2:
+            peer_just = f"펀더멘탈 순우위 (피어 멀티플 비교 {NO_DATA})"
+        elif net_adv_score <= -2:
+            peer_just = f"펀더멘탈 순열위 (피어 멀티플 비교 {NO_DATA})"
+        else:
+            peer_just = f"피어 멀티플 비교 {NO_DATA}"
+    elif net_adv_score >= 2 and (peer_rel_now <= 1.0 or (peer_rel_z is not None and peer_rel_z <= -1.0)):
         peer_just = "📈 멀티플 과소평가 후보 (펀더멘탈 순우위이나 피어 대비 할인)"
     elif net_adv_score >= 2 and peer_rel_now > 1.0:
         peer_just = "✅ 정당한 프리미엄 (순우위 뒷받침)"
-    elif net_adv_score <= -2 and (peer_rel_now >= 1.0 or peer_rel_z >= 1.0):
+    elif net_adv_score <= -2 and (peer_rel_now >= 1.0 or (peer_rel_z is not None and peer_rel_z >= 1.0)):
         peer_just = "📉 멀티플 과대평가 후보 (펀더멘탈 열위이나 피어 대비 할증)"
     elif net_adv_score <= -2:
         peer_just = "✅ 정당한 디스카운트 (가치 함정 주의)"
@@ -2821,95 +3929,116 @@ def analyze_fundamental_track(
         peer_just = "피어 평균 부합 구간"
 
     # -----------------------------------------------------------------
-    # F4. 배수 변화 3층 로그 분해 (시장층 + 산업층 + 기업층)[cite: 4]
+    # F4. 12개월 주가 변화 분해 — 후행 EPS 기준 2층(이익 + 배수). 시장·산업층은 업종 PER 이력이 없어 '데이터 없음'[cite: 4]
     # -----------------------------------------------------------------
-    p_0 = max(float(f["price_12m_ago"]), 1.0)
-    eps_0 = max(float(f["ntm_eps_12m_ago"]), 1.0)
-    per_0 = p_0 / eps_0
+    p_0 = f.get("price_12m_ago")
+    e_lag_now, e_lag_0 = f.get("eps_lag_now"), f.get("eps_lag_12m_ago")
+    log_price_ret = log_eps_contrib = log_mult_contrib = None
+    layer_market = layer_industry = layer_company = None
+    if p_0 is not None and float(p_0) > 0:
+        log_price_ret = math.log(max(current_price, 1.0) / float(p_0))
+        if e_lag_now is not None and e_lag_0 is not None and e_lag_now > 0 and e_lag_0 > 0:
+            log_eps_contrib = math.log(float(e_lag_now) / float(e_lag_0))
+            log_mult_contrib = log_price_ret - log_eps_contrib
+    mkt_layers = [f.get("mkt_per_12m_ago"), f.get("mkt_per_now"), f.get("ind_per_12m_ago"), f.get("ind_per_now")]
+    if log_mult_contrib is not None and all(v is not None and v > 0 for v in mkt_layers):
+        layer_market = math.log(f["mkt_per_now"] / f["mkt_per_12m_ago"])
+        layer_industry = math.log((f["ind_per_now"] / f["mkt_per_now"]) / (f["ind_per_12m_ago"] / f["mkt_per_12m_ago"]))
+        layer_company = log_mult_contrib - (layer_market + layer_industry)
 
-    log_price_ret = math.log(max(current_price, 1.0) / p_0)
-    log_eps_contrib = math.log(max(eps_1y_base, 1.0) / eps_0)
-    log_mult_contrib = math.log(max(current_per, 0.1) / max(per_0, 0.1))
-
-    mkt_0, mkt_t = float(f["mkt_per_12m_ago"]), float(f["mkt_per_now"])
-    ind_0, ind_t = float(f["ind_per_12m_ago"]), float(f["ind_per_now"])
-
-    layer_market = math.log(mkt_t / mkt_0)
-    layer_industry = math.log((ind_t / mkt_t) / (ind_0 / mkt_0))
-    layer_company = log_mult_contrib - (layer_market + layer_industry)
-
-    abs_layers = [("시장층(금리·ERP)", abs(layer_market), layer_market), ("산업층(업종 쏠림/배수)", abs(layer_industry), layer_industry), ("기업층(개별 프리미엄)", abs(layer_company), layer_company)]
-    abs_layers.sort(key=lambda x: x[1], reverse=True)
-    top_layer_name, _, top_layer_val = abs_layers[0]
-
-    if "산업층" in top_layer_name and top_layer_val < 0 and log_eps_contrib > 0:
-        dom_driver = "⚡ 업종 센티먼트 동반 매도 (이익은 성장했으나 산업 배수 압축)"
-    elif "시장층" in top_layer_name and top_layer_val < 0:
-        dom_driver = "⚡ 시장 금리·ERP 상승에 따른 매크로 배수 압축 (기업 훼손 아님)"
-    elif "기업층" in top_layer_name and top_layer_val > 0 and e_regime in ["G1", "G2"]:
-        dom_driver = "🏛️ 기업 고유 구조적 리레이팅 (RPO·영업레버리지 개선 반영)"
-    elif "기업층" in top_layer_name and top_layer_val < 0 and e_regime in ["G4", "G5"]:
-        dom_driver = "🏛️ 피크아웃·성장 둔화에 따른 구조적 디레이팅"
+    if layer_market is not None:
+        abs_layers = [("시장층(금리·ERP)", abs(layer_market), layer_market), ("산업층(업종 쏠림/배수)", abs(layer_industry), layer_industry), ("기업층(개별 프리미엄)", abs(layer_company), layer_company)]
+        abs_layers.sort(key=lambda x: x[1], reverse=True)
+        top_layer_name, _, top_layer_val = abs_layers[0]
+        if "산업층" in top_layer_name and top_layer_val < 0 and log_eps_contrib > 0:
+            dom_driver = "⚡ 업종 센티먼트 동반 매도 (이익은 성장했으나 산업 배수 압축)"
+        elif "시장층" in top_layer_name and top_layer_val < 0:
+            dom_driver = "⚡ 시장 금리·ERP 상승에 따른 매크로 배수 압축 (기업 훼손 아님)"
+        elif "기업층" in top_layer_name and top_layer_val > 0 and e_regime in ["G1", "G2"]:
+            dom_driver = "🏛️ 기업 고유 구조적 리레이팅 (RPO·영업레버리지 개선 반영)"
+        elif "기업층" in top_layer_name and top_layer_val < 0 and e_regime in ["G4", "G5"]:
+            dom_driver = "🏛️ 피크아웃·성장 둔화에 따른 구조적 디레이팅"
+        else:
+            dom_driver = f"{top_layer_name} 주도 배수 변화 ({top_layer_val*100:+.1f}%)"
+    elif log_mult_contrib is not None:
+        if abs(log_eps_contrib) >= abs(log_mult_contrib):
+            dom_driver = f"📊 이익 변화 주도 (EPS {log_eps_contrib*100:+.1f}% · 배수 {log_mult_contrib*100:+.1f}%, 후행 EPS 기준)"
+        else:
+            dom_driver = f"📊 배수 변화 주도 (배수 {log_mult_contrib*100:+.1f}% · EPS {log_eps_contrib*100:+.1f}%, 후행 EPS 기준)"
     else:
-        dom_driver = f"{top_layer_name} 주도 배수 변화 ({top_layer_val*100:+.1f}%)"
+        dom_driver = NO_DATA
 
     # -----------------------------------------------------------------
     # F7-1. 요구수익률 r 산출 (F5-2 역산 및 F7 매수기준선 공통 사용)[cite: 4]
     # -----------------------------------------------------------------
     sector_prem_map = {"방어형": 0.04, "구조성장형": 0.07, "정책의존형": 0.10, "사이클형": 0.12}
     sector_prem = sector_prem_map.get(sector_type, 0.07)
-    req_r = round(f["rf_10y"] + sector_prem + certainty_adj, 4)
-
-    # -----------------------------------------------------------------
-    # F5. 재평가(리레이팅·디레이팅) 4축 진단 및 5년 성숙기 수렴 내재 성장률 역산[cite: 4]
-    # -----------------------------------------------------------------
-    per_terminal = max(theoretical_mature_per, float(f["ind_5y_mean"]))
-    implied_5y_cagr = ((current_price * ((1.0 + req_r) ** 5)) / max(eps_1y_base * per_terminal, 1.0)) ** (1.0 / 5.0) - 1.0
-    implied_5y_cagr = round(implied_5y_cagr, 4)
-
-    ax_dur = "강" if rpo_spread > 0 else ("중" if rpo_spread >= -0.05 else "약")
-    ax_inc = "강" if op_lev_spread > 0 else "약"
-    ax_cert = "강" if (certainty_adj < 0 and w_cnt == 0) else ("약" if (certainty_adj > 0 or w_cnt >= 2) else "중")
-    if implied_5y_cagr < consensus_2y_cagr and self_z <= 0.5:
-        ax_priced = "낮음"  # 유리 (과소평가)[cite: 4]
-    elif implied_5y_cagr > max(consensus_2y_cagr, f["historical_max_5y_cagr"]) or self_z >= 1.0:
-        ax_priced = "높음"  # 과열[cite: 4]
-    else:
-        ax_priced = "중립"
-
-    strong_cnt = sum(1 for x in [ax_dur, ax_inc, ax_cert] if x == "강")
-    if e_regime in ["G4", "G5"] or (ax_priced == "높음" and self_z >= 1.0):
-        rerate_dir = "⬇ 수축 위험"
-    elif strong_cnt >= 2 and ax_priced == "낮음":
-        rerate_dir = "⬆ 확장 여지"
-    else:
-        rerate_dir = "➡ 유지"
+    req_r = None if f.get("rf_10y") is None else round(f["rf_10y"] + sector_prem + certainty_adj, 4)
 
     # -----------------------------------------------------------------
     # F6. 실적 국면(G1~G5) 연동 Base·Bull·Bear 멀티플 결정 (가치 함정 차단)[cite: 4]
+    #     필요한 멀티플 근거(자기 밴드·피어 통계·이론 성숙 PER)가 없으면 해당 값은 None → 가격선 '데이터 없음'
     # -----------------------------------------------------------------
     is_value_trap_blocked = False
+    base_mult: Optional[float] = None
+    bull_mult: Optional[float] = None
+    bear_mult: Optional[float] = None
+    _theo11 = None if theoretical_mature_per is None else theoretical_mature_per * 1.1
     if e_regime == "G1":
-        base_mult = round(float(f["peer_top25_per"]), 1)
-        bull_mult = round(base_mult + float(f["peer_std_per"]), 1)
-        bear_mult = round(float(f["peer_median_per"]), 1)
         mult_rule_desc = "G1 초기 가속: 피어 상위 25% 멀티플 채택 (초기 적자/저수익 자기밴드 왜곡 보정)"
+        if peer_top25_per is not None:
+            base_mult = round(float(peer_top25_per), 1)
+            bull_mult = None if peer_std_per is None else round(base_mult + float(peer_std_per), 1)
+            bear_mult = None if peer_median_per is None else round(float(peer_median_per), 1)
     elif e_regime == "G2":
-        base_mult = round(self_mean, 1)
-        bull_mult = round(self_mean + self_std, 1)
-        bear_mult = round(max(5.0, self_mean - self_std), 1)
         mult_rule_desc = "G2 우량 지속 성장: 자기 5년 역사적 평균(μ) 중심 표준 밴드 적용"
+        if self_mean is not None:
+            base_mult = round(self_mean, 1)
+            if self_lsd is not None:
+                bull_mult = round(_sb(1.0), 1)
+                bear_mult = round(max(5.0, _sb(-1.0)), 1)
+        elif peer_median_per is not None:
+            base_mult = round(float(peer_median_per), 1)
+            mult_rule_desc = f"G2 우량 지속 성장: 자기 밴드 {NO_DATA} → 피어 중앙값 PER 대체, 폭은 피어 PER σ"
+            if scen_lsd is not None:
+                bull_mult = round(_scen(1.0, base_mult), 1)
+                bear_mult = round(max(5.0, _scen(-1.0, base_mult)), 1)
     elif e_regime == "G3":
-        base_mult = round(min(self_mean, float(f["peer_median_per"]), theoretical_mature_per * 1.1), 1)
-        bull_mult = round(base_mult + 0.5 * self_std, 1)
-        bear_mult = round(max(4.0, base_mult - 1.0 * self_std), 1)
-        mult_rule_desc = "G3 성숙/현금회수: min(자기평균, 피어중앙값, 이론성숙PER×1.1) 상한 적용"
+        # 이론 성숙 PER(1단계 고든: 내년부터 영구 g_성숙 성장)은 초과성장 기간을 0으로 보므로 우량 성숙주도 13~16배로
+        # 눌러 버린다. 그래서 상한이 아니라 참고값으로만 두고, 실제 관측 배수(자기 평균·피어 중앙값)가 둘 다 없을 때만 쓴다.
+        _g3 = [x for x in (self_mean, None if peer_median_per is None else float(peer_median_per)) if x is not None]
+        if _g3:
+            mult_rule_desc = "G3 성숙/현금회수: min(자기 평균 PER, 피어 중앙값 PER) 적용 (있는 값만 사용 · 이론 성숙 PER은 참고값)"
+        elif _theo11 is not None:
+            _g3 = [_theo11]
+            mult_rule_desc = f"G3 성숙/현금회수: 자기 밴드·피어 PER {NO_DATA} → 이론 성숙 PER×1.1 대체 사용 (보수적 하한 성격)"
+        else:
+            mult_rule_desc = "G3 성숙/현금회수: min(자기 평균 PER, 피어 중앙값 PER) 적용"
+        if _g3:
+            base_mult = round(min(_g3), 1)
+            if scen_lsd is not None:
+                bull_mult = round(_scen(0.5, base_mult), 1)
+                bear_mult = round(max(4.0, _scen(-1.0, base_mult)), 1)
+                if self_lsd is None:
+                    mult_rule_desc += " · Bull/Bear 폭은 피어 PER σ (자기 밴드 없음)"
     elif e_regime == "G4":
         is_value_trap_blocked = True
-        base_mult = round(min(self_mean - 1.0 * self_std, current_per, theoretical_mature_per), 1)
-        bull_mult = round(current_per, 1)
-        bear_mult = round(min(self_mean - 2.0 * self_std, float(f["self_5y_min"])), 1)
         mult_rule_desc = "🚨 G4 피크아웃 디레이팅 Cap 발동: 과거 평균 회귀 불인정 (가치 함정 원천 차단)"
+        _g4 = []
+        if self_mean is not None and self_lsd is not None:
+            _g4.append(_sb(-1.0))
+        if theoretical_mature_per is not None:
+            _g4.append(theoretical_mature_per)
+        if _g4:   # 현재 PER만으로는 목표 배수를 만들지 않는다 (현재가로 목표를 정당화하는 순환논리 차단)
+            base_mult = round(min(_g4 + [current_per]), 1)
+            bull_mult = round(current_per, 1)
+            _g4b = []
+            if self_mean is not None and self_lsd is not None:
+                _g4b.append(_sb(-2.0))
+            if f.get("self_5y_min") is not None:
+                _g4b.append(float(f["self_5y_min"]))
+            if _g4b:
+                bear_mult = round(min(_g4b), 1)
     else:  # G5 구조적 쇠퇴[cite: 4]
         is_value_trap_blocked = True
         base_mult = 0.0
@@ -2917,7 +4046,63 @@ def analyze_fundamental_track(
         bear_mult = 0.0
         mult_rule_desc = "🚨 G5 구조적 쇠퇴: 목표 멀티플 산출 중단 및 가격 자격 하드 차단"
 
+    if regime_neutral:
+        mult_rule_desc = "실적 국면 판정 보류 → 중립 규칙 적용 · " + mult_rule_desc.replace("G3 성숙/현금회수: ", "")
+    scenario_width_missing = False
+    if base_mult is None:
+        mult_rule_desc += f" — 필요한 멀티플 근거 {NO_DATA} (목표 배수 산출 불가)"
+    else:
+        if bull_mult is None:
+            bull_mult, scenario_width_missing = base_mult, True
+        if bear_mult is None:
+            bear_mult, scenario_width_missing = base_mult, True
+        if scenario_width_missing:
+            mult_rule_desc += " — Bull/Bear 배수 폭 근거 없음 (Base와 동일 처리)"
+
     base_independence_passed = bool(e_regime != "G5")
+
+    # -----------------------------------------------------------------
+    # F5. 재평가(리레이팅·디레이팅) 4축 진단 및 5년 성숙기 수렴 내재 성장률 역산[cite: 4]
+    # -----------------------------------------------------------------
+    # 종착 배수: F6에서 채택한 Base 배수(실제 관측 배수 근거)를 쓴다. 없을 때만 이론 성숙 PER·업종 평균으로 대체.
+    # (이론 성숙 PER을 종착으로 쓰면 우량 성숙주의 내재 성장률이 30%대로 과장된다)
+    _term_c = [x for x in (theoretical_mature_per, f.get("ind_5y_mean")) if x is not None]
+    per_terminal: Optional[float] = base_mult if (base_mult is not None and base_mult > 0) else (max(_term_c) if _term_c else None)
+    terminal_per_basis = ("채택 Base 배수" if (base_mult is not None and base_mult > 0)
+                          else ("이론 성숙 PER·업종 평균 중 큰 값 (Base 배수 없음)" if _term_c else NO_DATA))
+    implied_5y_cagr: Optional[float] = None
+    if per_terminal is not None and req_r is not None:
+        implied_5y_cagr = round(((current_price * ((1.0 + req_r) ** 5)) / max(eps_1y_base * per_terminal, 1.0)) ** (1.0 / 5.0) - 1.0, 4)
+
+    ax_dur = NO_DATA if rpo_spread is None else ("강" if rpo_spread > 0 else ("중" if rpo_spread >= -0.05 else "약"))
+    ax_inc = NO_DATA if op_lev_spread is None else ("강" if op_lev_spread > 0 else "약")
+    if str(proj.get("certainty_label", "")).startswith(NO_DATA):
+        ax_cert = NO_DATA
+    else:
+        ax_cert = "강" if (certainty_adj < 0 and w_cnt == 0) else ("약" if (certainty_adj > 0 or w_cnt >= 2) else "중")
+
+    _hist_max = f.get("historical_max_5y_cagr")
+    _can_cmp = implied_5y_cagr is not None and consensus_2y_cagr is not None
+    if implied_5y_cagr is None and self_z is None:
+        ax_priced = NO_DATA
+    elif _can_cmp and self_z is not None and implied_5y_cagr < consensus_2y_cagr and self_z <= 0.5:
+        ax_priced = "낮음"  # 유리 (과소평가)[cite: 4]
+    elif (_can_cmp and implied_5y_cagr > max(consensus_2y_cagr, _hist_max if _hist_max is not None else consensus_2y_cagr)) or (self_z is not None and self_z >= 1.0):
+        ax_priced = "높음"  # 과열[cite: 4]
+    elif not _can_cmp or self_z is None:
+        ax_priced = NO_DATA  # 판정에 필요한 근거 일부 없음 (중립으로 단정하지 않는다)
+    else:
+        ax_priced = "중립"
+
+    strong_cnt = sum(1 for x in [ax_dur, ax_inc, ax_cert] if x == "강")
+    if e_regime in ["G4", "G5"] or (ax_priced == "높음" and self_z is not None and self_z >= 1.0):
+        rerate_dir = "⬇ 수축 위험"
+    elif strong_cnt >= 2 and ax_priced == "낮음":
+        rerate_dir = "⬆ 확장 여지"
+    elif ax_priced == NO_DATA:
+        rerate_dir = NO_DATA
+    else:
+        rerate_dir = "➡ 유지"
 
     # -----------------------------------------------------------------
     # F7-2 & F7-3. 사이클 정점 보호 및 0~3차 매수기준선(buy_tranches) 생성[cite: 4]
@@ -2928,58 +4113,64 @@ def analyze_fundamental_track(
     else:
         eps_eff_1y = eps_1y_base
 
-    div_d = float(f["dividend_yield"])
-    disc_1y = max(0.02, 1.0 + req_r - div_d)
-    disc_1y_floor = max(0.02, 1.0 + (req_r - 0.03) - div_d)
+    div_d = float(f["dividend_yield"]) if f.get("dividend_yield") is not None else 0.0   # 없으면 0%로 계산(보수적)
+    disc_1y = None if req_r is None else max(0.02, 1.0 + req_r - div_d)
+    disc_1y_floor = None if req_r is None else max(0.02, 1.0 + (req_r - 0.03) - div_d)
 
+    t0_price = t1_price = t2_price = t3_price = None
     if e_regime == "G5":
         t0_price, t1_price, t2_price, t3_price = 0, 0, 0, 0
-    else:
+    elif base_mult is not None and disc_1y is not None:   # 요구수익률(무위험수익률 필요)이 없으면 매수선을 할인할 수 없다
         raw_t0 = (eps_eff_1y * base_mult) / disc_1y_floor
         raw_t1 = (eps_eff_1y * base_mult) / disc_1y
-        raw_t2 = min(raw_t1 * 0.90, (eps_eff_1y * max(1.0, base_mult - 0.5 * self_std)) / disc_1y)
+        raw_t2 = raw_t1 * 0.90
+        if scen_lsd is not None:
+            raw_t2 = min(raw_t2, (eps_eff_1y * max(1.0, _scen(-0.5, base_mult))) / disc_1y)
         raw_bear_line = (eps_1y_bear * bear_mult) / disc_1y
         raw_t3 = max(raw_bear_line, raw_t1 * 0.80)
 
         # 상위 차수와 하위 차수 최소 5% 간격 강제 및 KRX 호가 내림 처리[cite: 4]
-        t1_price = int(adjust_krx_price(raw_t1, "down", is_krx))
-        t0_price = int(adjust_krx_price(max(raw_t0, t1_price * 1.05), "down", is_krx))
-        t2_price = int(adjust_krx_price(min(raw_t2, t1_price * 0.92), "down", is_krx))
-        t3_price = int(adjust_krx_price(min(raw_t3, t2_price * 0.92), "down", is_krx))
+        t1_price = _vpx(raw_t1, "down", is_krx)
+        t0_price = _vpx(max(raw_t0, t1_price * 1.05), "down", is_krx)
+        t2_price = _vpx(min(raw_t2, t1_price * 0.92), "down", is_krx)
+        t3_price = _vpx(min(raw_t3, t2_price * 0.92), "down", is_krx)
+    has_lines = t1_price is not None
 
     # F7-4. 시나리오 수익률 매트릭스 · 확률가중 기대수익률 E[R] · MDD Ratio[cite: 4]
-    p_bull_1y = eps_1y_bull * bull_mult
-    p_base_1y = eps_eff_1y * base_mult
-    p_bear_1y = eps_1y_bear * bear_mult
-    p_cbear_1y = eps_1y_cycle_bear * bear_mult
+    r_bull = r_base = r_bear = r_cbear = None
+    exp_return = mdd_ratio = downside_convexity = None
+    p_bear_1y = None
+    if base_mult is not None:
+        p_bull_1y = eps_1y_bull * bull_mult
+        p_base_1y = eps_eff_1y * base_mult
+        p_bear_1y = eps_1y_bear * bear_mult
+        p_cbear_1y = eps_1y_cycle_bear * bear_mult
 
-    r_bull = (p_bull_1y / max(current_price, 1.0)) - 1.0 + div_d
-    r_base = (p_base_1y / max(current_price, 1.0)) - 1.0 + div_d
-    r_bear = (p_bear_1y / max(current_price, 1.0)) - 1.0 + div_d
-    r_cbear = (p_cbear_1y / max(current_price, 1.0)) - 1.0 + div_d
+        r_bull = (p_bull_1y / max(current_price, 1.0)) - 1.0 + div_d
+        r_base = (p_base_1y / max(current_price, 1.0)) - 1.0 + div_d
+        r_bear = (p_bear_1y / max(current_price, 1.0)) - 1.0 + div_d
+        r_cbear = (p_cbear_1y / max(current_price, 1.0)) - 1.0 + div_d
 
-    if sector_type == "사이클형":
-        # 사이클형: Base 40%, Bull 20%, Bear 20%, CycleBear 20%[cite: 2, 4]
-        exp_return = 0.40 * r_base + 0.20 * r_bull + 0.20 * r_bear + 0.20 * r_cbear
-        worst_loss = abs(min(r_bear, r_cbear, -0.05))
-    else:
-        # 일반: Base 50%, Bull 25%, Bear 25%[cite: 2, 4]
-        exp_return = 0.50 * r_base + 0.25 * r_bull + 0.25 * r_bear
-        worst_loss = abs(min(r_bear, -0.05))
+        if sector_type == "사이클형":
+            # 사이클형: Base 40%, Bull 20%, Bear 20%, CycleBear 20%[cite: 2, 4]
+            exp_return = 0.40 * r_base + 0.20 * r_bull + 0.20 * r_bear + 0.20 * r_cbear
+            worst_loss = abs(min(r_bear, r_cbear, -0.05))
+        else:
+            # 일반: Base 50%, Bull 25%, Bear 25%[cite: 2, 4]
+            exp_return = 0.50 * r_base + 0.25 * r_bull + 0.25 * r_bear
+            worst_loss = abs(min(r_bear, -0.05))
 
-    mdd_ratio = round(exp_return / max(worst_loss, 0.01), 2)
-    downside_convexity = round(
-        abs(current_price - p_bear_1y) / max(abs(p_bull_1y - current_price), 1.0), 2
-    )
+        mdd_ratio = round(exp_return / max(worst_loss, 0.01), 2)
+        downside_convexity = round(abs(current_price - p_bear_1y) / max(abs(p_bull_1y - current_price), 1.0), 2)
 
     # 0차 개방 여부: G1/G2 이고 MDD Ratio >= 0.30 일 때만 0차 개방[cite: 4]
     pos_cap = float(f["position_cap"])
     if survival_warning:
         pos_cap *= 0.5  # F9 런웨이 경고 시 목표 비중 50% 축소[cite: 4]
 
-    open_t0 = bool(e_regime in ["G1", "G2"] and mdd_ratio >= 0.30)
+    open_t0 = bool(e_regime in ["G1", "G2"] and mdd_ratio is not None and mdd_ratio >= 0.30)
     buy_tranches = []
-    if e_regime != "G5":
+    if e_regime != "G5" and has_lines:
         if open_t0:
             buy_tranches.append({"tranche": 0, "price": t0_price, "weight": round(pos_cap * 0.10, 4), "label": "0차 탐색선 (r_floor 보험)"})
             w_t1 = round(pos_cap * 0.30, 4)
@@ -2992,54 +4183,105 @@ def analyze_fundamental_track(
     # -----------------------------------------------------------------
     # F8. 매도목표가(sell_target) 4대 독립 앵커 및 보유기간 상한 검증[cite: 4]
     # -----------------------------------------------------------------
-    # 앵커 1: 컨센서스 목표가[cite: 4]
-    anchor1_price = int(adjust_krx_price(f["consensus_target_price"], "down", is_krx))
-    anchor1_per = round(anchor1_price / max(eps_1y_base, 1.0), 1)
+    # 앵커 1: 컨센서스 목표가 (yfinance targetMeanPrice)[cite: 4]
+    anchor1_price = anchor1_per = None
+    if f.get("consensus_target_price") is not None:
+        anchor1_price = _vpx(f["consensus_target_price"], "down", is_krx)
+        anchor1_per = round(anchor1_price / max(eps_1y_base, eps_floor), 1)
 
     # 앵커 2: 역사적 밴드 상단 (단, G3/G4는 자기 평균 μ_self로 캡)[cite: 4]
-    anchor2_per = round(self_mean if e_regime in ["G3", "G4"] else (self_mean + 1.0 * self_std), 1)
-    anchor2_price = int(adjust_krx_price(anchor2_per * eps_1y_base, "down", is_krx))
+    anchor2_per = anchor2_price = None
+    if self_mean is not None and (e_regime in ["G3", "G4"] or self_lsd is not None):
+        anchor2_per = round(self_mean if e_regime in ["G3", "G4"] else _sb(1.0), 1)
+        anchor2_price = _vpx(anchor2_per * eps_1y_base, "down", is_krx)
 
     # 앵커 3: PEG 적정 배수 (한국 0.8 / 미국 1.0 / G1 초기 가속 1.2, 산업 +2σ 및 50배 상한)[cite: 4]
     peg_target = 1.2 if e_regime == "G1" else (0.8 if is_krx else 1.0)
-    ind_upper_2s = float(f["ind_5y_mean"]) + 2.0 * float(f["ind_5y_std"])
-    anchor3_per = round(min(peg_target * (100.0 * consensus_2y_cagr), ind_upper_2s, 50.0), 1)
-    anchor3_per = max(anchor3_per, base_mult)
-    anchor3_price = int(adjust_krx_price(anchor3_per * eps_1y_base, "down", is_krx))
+    anchor3_per = anchor3_price = None
+    anchor3_peg_raw: Optional[float] = None
+    anchor3_floored = False
+    if consensus_2y_cagr is not None:
+        _caps = [50.0]
+        if f.get("ind_5y_mean") is not None and f.get("ind_5y_std") is not None:
+            _caps.append(float(f["ind_5y_mean"]) + 2.0 * float(f["ind_5y_std"]))
+        anchor3_per = round(min([peg_target * (100.0 * consensus_2y_cagr)] + _caps), 1)
+        anchor3_peg_raw = anchor3_per
+        if base_mult is not None and base_mult > anchor3_per:
+            anchor3_per = base_mult          # Base 배수 하한 적용 → 이 경우 PEG는 독립 근거가 아님(화면에 명시)
+            anchor3_floored = True
+        anchor3_price = _vpx(anchor3_per * eps_1y_base, "down", is_krx)
 
     # 앵커 4: 피어 상위 25% 배수 (F2-2 순우위 >= +2일 때만 유효)[cite: 4]
     anchor4_valid = net_adv_score >= 2
-    anchor4_per = round(float(f["peer_top25_per"]), 1)
-    anchor4_price = int(adjust_krx_price(anchor4_per * eps_1y_base, "down", is_krx))
+    anchor4_per = anchor4_price = None
+    if peer_top25_per is not None:
+        anchor4_per = round(float(peer_top25_per), 1)
+        anchor4_price = _vpx(anchor4_per * eps_1y_base, "down", is_krx)
 
-    # 최종 채택 매도목표가: 독립 앵커 2와 앵커 3의 평균[cite: 4]
-    adopted_sell_per = round((anchor2_per + anchor3_per) / 2.0, 1)
-    sell_target_1y = int(adjust_krx_price(adopted_sell_per * eps_1y_base, "down", is_krx))
-    sell_target_formula = f"{fmt_price(sell_target_1y, is_krx)} = 1Y Base EPS {fmt_price(eps_1y_base, is_krx)} × 목표 PER {adopted_sell_per:.1f}배 (독립 앵커2·3 평균)"
+    # 최종 채택 매도목표가: 독립 앵커 2와 앵커 3의 평균 (있는 앵커만 사용)[cite: 4]
+    _indep = [(n, p) for n, p in (("2", anchor2_per), ("3", anchor3_per)) if p is not None]
+    adopted_sell_per = round(sum(p for _, p in _indep) / len(_indep), 1) if _indep else None
+    ttm_prefix = "[참고용: 최근 확정 EPS 기준 · 미래 시나리오 없음] " if eps_basis == "ttm_reference" else ""
+    if adopted_sell_per is None:
+        sell_target_1y = None
+        sell_target_formula = f"{ttm_prefix}{NO_DATA} (독립 앵커 2·3을 만들 근거가 없음)"
+    else:
+        sell_target_1y = _vpx(adopted_sell_per * eps_1y_base, "down", is_krx)
+        _a2_is_mu = e_regime in ["G3", "G4"]
+        _notes = []
+        if _a2_is_mu and anchor2_per is not None:
+            _notes.append("앵커2=자기 평균 μ(G3·G4 상한)")
+        if anchor3_floored:
+            _notes.append(f"앵커3=PEG {anchor3_peg_raw:.1f}배가 Base 배수보다 낮아 Base {base_mult:.1f}배로 대체")
+        _anch_txt = ("앵커2·3 평균" if len(_indep) == 2 else f"앵커{_indep[0][0]}만 사용 (다른 앵커 {NO_DATA})") + \
+                    (" · " + " · ".join(_notes) if _notes else "")
+        sell_target_formula = f"{ttm_prefix}{fmt_price(sell_target_1y, is_krx)} = 1Y Base EPS {fmt_price(eps_1y_base, is_krx)} × 목표 PER {adopted_sell_per:.1f}배 ({_anch_txt})"
 
-    # 2Y 매도목표가 및 보유기간 상한 경고 (2Y 목표가 < 1Y 목표가 역전 여부)[cite: 4]
-    per_2y_target = max(theoretical_mature_per, base_mult)
-    sell_target_2y = int(adjust_krx_price(per_2y_target * eps_2y_base, "down", is_krx))
-    holding_cap_warn = bool(sell_target_2y < sell_target_1y)
+    # 2Y 매도목표가 및 보유기간 상한 경고 (2Y 목표가 < 1Y 목표가 역전 여부) — 2Y 추정치가 있을 때만[cite: 4]
+    _p2 = [x for x in (theoretical_mature_per, base_mult) if x is not None]
+    sell_target_2y = None
+    if _p2 and has_eps2:
+        sell_target_2y = _vpx(max(_p2) * eps_2y_base, "down", is_krx)
+    holding_cap_warn = None if (sell_target_2y is None or sell_target_1y is None) else bool(sell_target_2y < sell_target_1y)
+
+    def _a_per(v):
+        return NO_DATA if v is None else f"{v:.1f}배"
+
+    def _a_px(v):
+        return NO_DATA if v is None else f"{fmt_price(v, is_krx)}"
 
     anchors_table = [
-        {"id": "앵커 1", "name": "증권사 컨센서스 평균", "target_per": f"{anchor1_per:.1f}배", "target_price": f"{fmt_price(anchor1_price, is_krx)}", "indep": "반종속 (참고 교차검증)"},
-        {"id": "앵커 2", "name": "역사적 밴드 상단 (μ+1σ)", "target_per": f"{anchor2_per:.1f}배", "target_price": f"{fmt_price(anchor2_price, is_krx)}", "indep": "✅ 독립 (채택 반영)"},
-        {"id": "앵커 3", "name": f"PEG 적정 배수 (PEG={peg_target})", "target_per": f"{anchor3_per:.1f}배", "target_price": f"{fmt_price(anchor3_price, is_krx)}", "indep": "✅ 독립 (채택 반영)"},
-        {"id": "앵커 4", "name": "피어 상위 25% 배수", "target_per": f"{anchor4_per:.1f}배", "target_price": f"{fmt_price(anchor4_price, is_krx)}", "indep": "유효 참고" if anchor4_valid else "미충족 (순우위<2)"},
+        {"id": "앵커 1", "name": "증권사 컨센서스 평균", "target_per": _a_per(anchor1_per), "target_price": _a_px(anchor1_price), "indep": "반종속 (참고 교차검증)" if anchor1_price is not None else NO_DATA},
+        {"id": "앵커 2",
+         "name": ("역사적 밴드 평균 (μ · G3·G4는 μ+1σ 대신 μ로 상한)" if e_regime in ["G3", "G4"] else "역사적 밴드 상단 (μ+1σ)"),
+         "target_per": _a_per(anchor2_per), "target_price": _a_px(anchor2_price),
+         "indep": NO_DATA if anchor2_per is None else ("✅ 독립 (채택 반영 · Base 배수와 같은 값)" if (base_mult is not None and abs(anchor2_per - base_mult) < 0.05)
+                                                       else "✅ 독립 (채택 반영)")},
+        {"id": "앵커 3", "name": f"PEG 적정 배수 (PEG={peg_target})", "target_per": _a_per(anchor3_per), "target_price": _a_px(anchor3_price),
+         "indep": NO_DATA if anchor3_per is None else (f"⚠️ 독립 아님 — PEG 산출 {anchor3_peg_raw:.1f}배 < Base, Base 배수로 대체 (채택 반영)" if anchor3_floored
+                                                       else "✅ 독립 (채택 반영)")},
+        {"id": "앵커 4", "name": "피어 상위 25% 배수", "target_per": _a_per(anchor4_per), "target_price": _a_px(anchor4_price),
+         "indep": NO_DATA if anchor4_per is None else ("유효 참고" if anchor4_valid else "미충족 (순우위<2)")},
     ]
 
     # -----------------------------------------------------------------
-    # 4장. 트랙 종합 판정: 가격 자격 (QUALIFIED / CONDITIONAL / DISQUALIFIED)[cite: 4]
+    # 4장. 트랙 종합 판정: 가격 자격 (QUALIFIED / CONDITIONAL / DISQUALIFIED / NA)[cite: 4]
     # -----------------------------------------------------------------
-    if e_regime == "G5" or th_status == "붕괴" or mdd_ratio < 0.15:
+    if e_regime == "G5" or th_status == "붕괴":
         pq_status = "DISQUALIFIED"
         pq_icon = "🔴"
-        if e_regime == "G5" or th_status == "붕괴":
-            pq_reason = "실적 국면 G5(구조적 쇠퇴) 또는 드라이버 붕괴로 가격 자격 하드 차단"
-        else:
-            pq_reason = f"MDD Ratio({mdd_ratio:.2f}) 최소 기준(0.15) 미달로 위험 대비 기대수익 부적격"
-    elif current_price <= t1_price and mdd_ratio >= 0.30 and exp_return >= req_r and not survival_warning and self_z < 1.0:
+        pq_reason = "실적 국면 G5(구조적 쇠퇴) 또는 드라이버 붕괴로 가격 자격 하드 차단"
+    elif not has_lines:
+        pq_status = "NA"
+        pq_icon = "⚪"
+        pq_reason = (f"무위험수익률(10년 국채) {NO_DATA}로 요구수익률을 계산할 수 없어 매수기준선을 만들 수 없습니다"
+                     if req_r is None else
+                     f"목표 배수를 만들 근거(자기 PER 밴드·피어 PER·이론 성숙 PER)가 모두 없어({NO_DATA}) 가격 자격을 판정할 수 없습니다")
+    elif mdd_ratio < 0.15:
+        pq_status = "DISQUALIFIED"
+        pq_icon = "🔴"
+        pq_reason = f"MDD Ratio({mdd_ratio:.2f}) 최소 기준(0.15) 미달로 위험 대비 기대수익 부적격"
+    elif current_price <= t1_price and mdd_ratio >= 0.30 and exp_return >= req_r and not survival_warning and self_z is not None and self_z < 1.0:
         pq_status = "QUALIFIED"
         pq_icon = "🟢"
         gap_pct = (current_price / t1_price - 1.0) * 100.0
@@ -3048,6 +4290,8 @@ def analyze_fundamental_track(
         pq_status = "CONDITIONAL"
         pq_icon = "🟡"
         pq_reason = f"조건부 가격 자격 — 0차 탐색선({fmt_price(t0_price, is_krx)}) 이하 도달 또는 목표 비중 50% 축소 가동 구간 (MDD Ratio {mdd_ratio:.2f})"
+        if self_z is None and current_price <= t1_price and mdd_ratio >= 0.30 and exp_return >= req_r and not survival_warning:
+            pq_reason = f"조건부 — 1차 기준선 이하이나 자기 PER 밴드 {NO_DATA}로 '정상 밴드' 확인 불가 (QUALIFIED 보류, MDD Ratio {mdd_ratio:.2f})"
     else:
         pq_status = "DISQUALIFIED"
         pq_icon = "🔴"
@@ -3055,20 +4299,32 @@ def analyze_fundamental_track(
         pq_reason = f"현재가({fmt_price(current_price, is_krx)})가 1차 매수기준선({fmt_price(t1_price, is_krx)}) 대비 +{gap_to_t1:.1f}% 높음 — 지정가 도달 전까지 추격 매수 금지(대기)"
 
     # F10. 멀티플 오판 포인트 자동 문장 생성[cite: 4]
-    if implied_5y_cagr < consensus_2y_cagr:
+    _dd = "" if dom_driver == NO_DATA else f" ({dom_driver})"
+    if implied_5y_cagr is None or consensus_2y_cagr is None:
+        underval_pt = f"내재 5년 성장률 대 컨센서스 성장률 비교 {NO_DATA} (성숙 PER 또는 2Y 추정치 부족)."
+    elif implied_5y_cagr < consensus_2y_cagr:
         underval_pt = (
             f"현재 주가에 내재된 5년 성장률({implied_5y_cagr*100:.1f}%)이 컨센서스 성장률({consensus_2y_cagr*100:.1f}%)보다 현저히 낮아 "
-            f"멀티플 안전마진이 확보됨 ({dom_driver})."
+            f"멀티플 안전마진이 확보됨{_dd}."
         )
     else:
         underval_pt = "현재 배수는 컨센서스 성장률을 상당 부분 반영 중."
 
-    if implied_5y_cagr > max(consensus_2y_cagr, f["historical_max_5y_cagr"]) or self_z >= 1.5:
-        overval_pt = f"내재 5년 성장률({implied_5y_cagr*100:.1f}%) 또는 자기 밴드({self_z:+.2f}σ)가 과열 구간에 진입하여 멀티플 수축 위험 존재."
+    _over_growth = (implied_5y_cagr is not None and consensus_2y_cagr is not None and
+                    implied_5y_cagr > max(consensus_2y_cagr, _hist_max if _hist_max is not None else consensus_2y_cagr))
+    if _over_growth or (self_z is not None and self_z >= 1.5):
+        _ig = f"내재 5년 성장률({implied_5y_cagr*100:.1f}%)" if implied_5y_cagr is not None else "내재 5년 성장률"
+        overval_pt = f"{_ig} 또는 자기 밴드({_zs(self_z)})가 과열 구간에 진입하여 멀티플 수축 위험 존재."
     elif is_cycle_peak_trap:
-        overval_pt = f"사이클 정점 착시(P/B-PER Z스프레드 {pb_per_z_spread:+.2f}σ) 발동 — 표면적 저PER 함정 주의."
+        _sp = NO_DATA if pb_per_z_spread is None else f"{pb_per_z_spread:+.2f}σ"
+        overval_pt = f"사이클 정점 착시(P/B-PER Z스프레드 {_sp}) 발동 — 표면적 저PER 함정 주의."
+    elif implied_5y_cagr is None and self_z is None:
+        overval_pt = f"과열 여부 판정 {NO_DATA} (자기 밴드·내재 성장률 모두 없음)"
     else:
         overval_pt = "해당 없음 (과열 신호 없음)"
+
+    def _r4(v):
+        return None if v is None else round(v, 4)
 
     return {
         "status": "완료",
@@ -3090,34 +4346,46 @@ def analyze_fundamental_track(
             "self_5y_z": self_z,
             "self_5y_mean": self_mean,
             "self_5y_std": self_std,
+            "self_5y_log_std": self_lsd,
+            "self_band_levels": (None if self_lsd is None else {k: round(_sb(float(k)), 2) for k in (-2, -1, 0, 1, 2)}),
             "industry_rel_z": ind_rel_z,
             "peer_rel_z": peer_rel_z,
+            "peer_rel_now": None if peer_rel_now is None else round(peer_rel_now, 2),
+            "current_per_trailing": None if cur_per_band is None else round(cur_per_band, 2),
             "summary_text": triple_z_summary,
         },
         "industry_and_peer": {
             "theoretical_mature_per": theoretical_mature_per,
-            "market_ke": round(market_ke, 4),
+            "market_ke": _r4(market_ke),
+            "rf_10y": f.get("rf_10y"),
+            "rf_source": macro_input.get("rf_source", NO_DATA),
+            "rf_as_of": macro_input.get("rf_as_of"),
+            "market_erp": f.get("market_erp"),
+            "market_erp_source": FUND_MODEL_PARAMS["market_erp_source"],
             "industry_regime": ind_regime,
             "cycle_type": cycle_type,
             "pb_per_z_spread": pb_per_z_spread,
             "peer_net_advantage_score": net_adv_score,
+            "peer_factors_scored": n_factors_scored,
             "peer_justification": peer_just,
             "peer_factors_table": peer_factors,
         },
         "multiple_decomposition": {
-            "price_return_12m": round(log_price_ret, 4),
-            "eps_contribution_12m": round(log_eps_contrib, 4),
-            "multiple_contribution_12m": round(log_mult_contrib, 4),
-            "layer_market": round(layer_market, 4),
-            "layer_industry": round(layer_industry, 4),
-            "layer_company": round(layer_company, 4),
+            "price_return_12m": _r4(log_price_ret),
+            "eps_contribution_12m": _r4(log_eps_contrib),
+            "multiple_contribution_12m": _r4(log_mult_contrib),
+            "layer_market": _r4(layer_market),
+            "layer_industry": _r4(layer_industry),
+            "layer_company": _r4(layer_company),
             "dominant_driver": dom_driver,
+            "basis": "후행(확정) EPS 기준 2층 분해 — 시장·산업층은 업종 PER 이력이 없어 " + NO_DATA,
         },
         "rerating_assessment": {
             "direction": rerate_dir,
             "implied_5y_cagr": implied_5y_cagr,
-            "consensus_2y_cagr": round(consensus_2y_cagr, 4),
+            "consensus_2y_cagr": _r4(consensus_2y_cagr),
             "terminal_per_used": per_terminal,
+            "terminal_per_basis": terminal_per_basis,
             "four_axes": {
                 "duration": ax_dur,
                 "incremental_margin": ax_inc,
@@ -3126,37 +4394,54 @@ def analyze_fundamental_track(
             },
         },
         "valuation_targets": {
+            "eps_basis": eps_basis,
             "required_return_r": req_r,
-            "effective_eps_1y": int(round(eps_eff_1y, 0)),
+            "effective_eps_1y": int(round(eps_eff_1y, 0)) if is_krx else round(eps_eff_1y, 2),
             "base_multiple_target": base_mult,
             "bull_multiple_target": bull_mult,
             "bear_multiple_target": bear_mult,
+            "scenario_width_missing": scenario_width_missing,
             "base_independence_passed": base_independence_passed,
             "buy_tranches": buy_tranches,
             "sell_target": sell_target_1y,
             "sell_target_formula": sell_target_formula,
             "sell_target_2y": sell_target_2y,
             "holding_period_cap_warning": holding_cap_warn,
-            "expected_return_weighted": round(exp_return, 4),
+            "expected_return_weighted": _r4(exp_return),
             "mdd_ratio": mdd_ratio,
             "downside_convexity": downside_convexity,
             "anchors_table": anchors_table,
             "scenario_returns": {
-                "bull": round(r_bull, 4),
-                "base": round(r_base, 4),
-                "bear": round(r_bear, 4),
-                "cycle_bear": round(r_cbear, 4) if sector_type == "사이클형" else None,
+                "bull": _r4(r_bull),
+                "base": _r4(r_base),
+                "bear": _r4(r_bear),
+                "cycle_bear": _r4(r_cbear) if sector_type == "사이클형" else None,
             },
         },
         "financial_survival": {
             "fcf_runway_years": runway_str,
-            "debt_maturity_1y_ratio": round(debt_mat_ratio, 2),
-            "share_dilution_yoy": round(dilution_yoy, 4),
+            "debt_maturity_1y_ratio": None if debt_mat_ratio is None else round(float(debt_mat_ratio), 2),
+            "share_dilution_yoy": _r4(dilution_yoy),
             "survival_warning": survival_warning,
+            "checked_count": survival_checked,
         },
         "mispricing_points": {
             "undervalued_point": underval_pt,
             "overvalued_point": overval_pt,
+        },
+        "input_data": {
+            "source": fmeta.get("source"),
+            "band_basis": fmeta.get("band_basis"),
+            "band_points": fmeta.get("band_points"),
+            "band_series": fmeta.get("band_series", []),
+            "band_excluded": fmeta.get("band_excluded"),
+            "band_ref": fmeta.get("band_ref"),
+            "scenario_width_source": scen_lsd_src,
+            "band_span_years": fmeta.get("band_span_years"),
+            "peer_count": fmeta.get("peer_count"),
+            "peer_group": fmeta.get("peer_group"),
+            "notes": list(fmeta.get("notes", [])),
+            "missing": list(fmeta.get("missing", [])),
         },
         # 하위 호환용 최상위 키 유지 (기술 트랙 연동)
         "buy_tranches": buy_tranches,
@@ -3177,6 +4462,7 @@ MACRO_PARAMS: Dict[str, Any] = {
     "USE_EMPIRICAL_REGRESSION": True,    # 1: 가설 등록 + HAC/Huber 실측[cite: 5]
     "REG_WEEKS_MAIN": 104,               # 2a: 주력 회귀 기간 (104주)[cite: 5]
     "REG_WEEKS_SUB": 52,                 # 2b: 비교 회귀 기간 (52주)[cite: 5]
+    "REGIME_BETA_NOISE": 0.001,          # 국면별 β 부호 반전 경고 하한 (1σ당 ±0.10%p 미만은 노이즈로 보고 경고 안 함)
     "REG_WEEKS_MIN": 78,                 # 2c: 최소 유효 주간 표본 (78주)[cite: 5]
     "OOS_HORIZON_WEEKS": 13,             # 최근 점검 및 OOS 이동 원점 구간 (13주)[cite: 5]
     "RESIDUALIZE_CORR_THRES": 0.50,      # 3: 시장 동행 잔차화 상관계수 임계값 (|ρ| >= 0.50)[cite: 5]
@@ -3377,6 +4663,205 @@ def _residualize_against_market(
     return u_all, True, round(corr, 2)
 
 
+# =====================================================================
+# 거시 트랙 실데이터 입력층 (FRED · 한국은행 ECOS)
+# - 수준(Level) 시계열을 받아 주간 금요일(W-FRI)로 정렬한다. 변화량(Δbp, Δln)은 analyze_macro_track에서 계산.
+# - FRED: .env FRED_API_KEY가 있으면 공식 API(JSON), 없거나 실패하면 공개 CSV(fredgraph). 한국 국고채 10년물은 ECOS 817Y002.
+# - 못 받은 변수는 결과에서 빠지고(missing) 회귀·화면에서 '데이터 없음'. 난수·고정 수준값으로 대체하지 않는다.
+# =====================================================================
+MACRO_SERIES_SPEC: Dict[str, Dict[str, Any]] = {
+    # kind: bp(금리·스프레드, 수준 % → 변화 bp) | ln(가격·환율·건수, 로그 변화)
+    "DFII10":       {"src": "fred", "ids": ["DFII10"],       "kind": "bp", "level_unit": "%",     "level_mult": 1.0,  "name": "미국 실질 10Y 금리"},
+    "T10YIE":       {"src": "fred", "ids": ["T10YIE"],       "kind": "bp", "level_unit": "%",     "level_mult": 1.0,  "name": "미국 10Y 기대인플레이션"},
+    "T10Y2Y":       {"src": "fred", "ids": ["T10Y2Y"],       "kind": "bp", "level_unit": "bp",    "level_mult": 100.0, "name": "장단기 금리차"},
+    "BAMLC0A0CM":   {"src": "fred", "ids": ["BAMLC0A0CM"],   "kind": "bp", "level_unit": "bp",    "level_mult": 100.0, "name": "IG 회사채 스프레드"},
+    "BAMLH0A0HYM2": {"src": "fred", "ids": ["BAMLH0A0HYM2"], "kind": "bp", "level_unit": "bp",    "level_mult": 100.0, "name": "HY 회사채 스프레드"},
+    "DEXKOUS":      {"src": "fred", "ids": ["DEXKOUS"],      "kind": "ln", "level_unit": "원",    "level_mult": 1.0,  "name": "원/달러 환율"},
+    "DCOILWTICO":   {"src": "fred", "ids": ["DCOILWTICO"],   "kind": "ln", "level_unit": "달러",  "level_mult": 1.0,  "name": "WTI 유가"},
+    "ICSA":         {"src": "fred", "ids": ["ICSA"],         "kind": "ln", "level_unit": "만 건", "level_mult": 1e-4, "name": "신규 실업수당 청구"},
+    # 순유동성 = WALCL(백만$) − WTREGEN(백만$) − RRPONTSYD(십억$ ×1000) → 표시 '조 달러'
+    "NETLIQ":       {"src": "fred", "ids": ["WALCL", "WTREGEN", "RRPONTSYD"], "kind": "ln", "level_unit": "조 달러", "level_mult": 1e-6, "name": "연준 순유동성"},
+    "KR10Y":        {"src": "ecos", "stat": "817Y002", "item": "010210000", "kind": "bp", "level_unit": "%", "level_mult": 1.0, "name": "국고채 10년"},
+}
+_MACRO_SERIES_CACHE: Dict[str, Tuple[float, Any]] = {}
+_MACRO_TTL_SEC = 6 * 3600
+
+
+def _http_get_text(url: str, timeout: float = 10.0) -> Optional[str]:
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+def _fred_series(series_id: str, start: Optional[str] = None) -> Optional[pd.Series]:
+    """FRED 일별/주별 관측치 (원 단위). 실패 시 None."""
+    ck = f"fred:{series_id}:{start}"
+    hit = _MACRO_SERIES_CACHE.get(ck)
+    if hit and time.time() - hit[0] < _MACRO_TTL_SEC:
+        return hit[1]
+    ser = None
+    key = _read_env_value("FRED_API_KEY")
+    if key:
+        import json as _json
+        url = (f"https://api.stlouisfed.org/fred/series/observations?series_id={series_id}&api_key={key}&file_type=json"
+               + (f"&observation_start={start}" if start else ""))
+        txt = _http_get_text(url)
+        try:
+            obs = _json.loads(txt)["observations"] if txt else []
+            vals = {o["date"]: float(o["value"]) for o in obs if o.get("value") not in (None, "", ".")}
+            if vals:
+                ser = pd.Series(vals)
+        except Exception:
+            ser = None
+    if ser is None:
+        import io as _io
+        txt = _http_get_text(f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}" + (f"&cosd={start}" if start else ""))
+        if txt:
+            try:
+                df = pd.read_csv(_io.StringIO(txt))
+                df = df[df.iloc[:, 1].astype(str).str.strip() != "."]
+                ser = pd.Series(pd.to_numeric(df.iloc[:, 1], errors="coerce").values, index=df.iloc[:, 0].astype(str)).dropna()
+                if start:
+                    ser = ser[ser.index >= start]
+                if ser.empty:
+                    ser = None
+            except Exception:
+                ser = None
+    if ser is not None:
+        ser.index = pd.to_datetime(ser.index)
+        ser = ser.sort_index()
+        _MACRO_SERIES_CACHE[ck] = (time.time(), ser)
+    return ser
+
+
+def _ecos_series(stat: str, item: str, start: str, end: str) -> Optional[pd.Series]:
+    """한국은행 ECOS 일별 통계 (예: 817Y002/010210000 국고채 10년, % 단위). 키가 없거나 실패 시 None."""
+    ck = f"ecos:{stat}:{item}:{start}"
+    hit = _MACRO_SERIES_CACHE.get(ck)
+    if hit and time.time() - hit[0] < _MACRO_TTL_SEC:
+        return hit[1]
+    key = _read_env_value("ECOS_API_KEY")
+    if not key:
+        return None
+    import json as _json
+    url = f"https://ecos.bok.or.kr/api/StatisticSearch/{key}/json/kr/1/100000/{stat}/D/{start.replace('-', '')}/{end.replace('-', '')}/{item}"
+    txt = _http_get_text(url, timeout=15.0)
+    try:
+        rows = _json.loads(txt)["StatisticSearch"]["row"] if txt else []
+        vals = {r["TIME"]: float(r["DATA_VALUE"]) for r in rows if r.get("DATA_VALUE") not in (None, "", ".")}
+        if not vals:
+            return None
+        ser = pd.Series(vals)
+        ser.index = pd.to_datetime(ser.index, format="%Y%m%d")
+        ser = ser.sort_index()
+        _MACRO_SERIES_CACHE[ck] = (time.time(), ser)
+        return ser
+    except Exception:
+        return None
+
+
+def _to_weekly_fri(ser: pd.Series) -> pd.Series:
+    """일별·주별 관측을 주간 금요일(W-FRI) 마지막 값으로 정렬 (휴일 등 최대 4영업일 ffill)."""
+    s = ser.astype(float).sort_index()
+    s = s.asfreq("B").ffill(limit=4) if len(s) > 1 and (s.index.to_series().diff().median() <= pd.Timedelta(days=3)) else s
+    return s.resample("W-FRI").last()
+
+
+def fetch_macro_levels(var_ids: List[str], start: str, end: Optional[str] = None) -> Dict[str, Any]:
+    """거시 변수 주간 수준 시계열. 반환 {"levels": {var_id: Series(W-FRI, 원 단위)}, "missing": [...], "sources": {...}}."""
+    end = end or datetime.now().strftime("%Y-%m-%d")
+    levels: Dict[str, pd.Series] = {}
+    sources: Dict[str, str] = {}
+    missing: List[str] = []
+    last_obs: Dict[str, str] = {}   # 실제 마지막 관측일 (주간 정렬 라벨은 그 주 금요일이라 미래 날짜가 될 수 있음)
+    for vid in dict.fromkeys(var_ids):
+        spec = MACRO_SERIES_SPEC.get(vid)
+        if spec is None:
+            missing.append(vid)
+            continue
+        try:
+            if spec["src"] == "ecos":
+                raw = _ecos_series(spec["stat"], spec["item"], start, end)
+                if raw is None:
+                    missing.append(vid)
+                    continue
+                w = _to_weekly_fri(raw)
+                last_obs[vid] = str(raw.dropna().index[-1].date())
+                sources[vid] = f"한국은행 ECOS {spec['stat']}/{spec['item']}"
+            elif vid == "NETLIQ":
+                parts = [_fred_series(i, start) for i in spec["ids"]]
+                if any(p is None for p in parts):
+                    missing.append(vid)
+                    continue
+                wa, tga, rrp = (_to_weekly_fri(p) for p in parts)
+                w = (wa - tga - rrp * 1000.0).dropna()
+                last_obs[vid] = str(min(p.dropna().index[-1] for p in parts).date())
+                sources[vid] = "FRED WALCL−WTREGEN−RRPONTSYD×1000"
+            else:
+                raw = _fred_series(spec["ids"][0], start)
+                if raw is None:
+                    missing.append(vid)
+                    continue
+                w = _to_weekly_fri(raw)
+                last_obs[vid] = str(raw.dropna().index[-1].date())
+                sources[vid] = f"FRED {spec['ids'][0]}"
+            w = w.dropna()
+            w.index = _tz_naive_index(w.index)
+            if spec["kind"] == "ln":
+                w = w[w > 0]
+            if len(w) < 10:
+                missing.append(vid)
+                sources.pop(vid, None)
+                continue
+            levels[vid] = w
+        except Exception:
+            missing.append(vid)
+            sources.pop(vid, None)
+    return {"levels": levels, "missing": missing, "sources": sources,
+            "last_obs": {k: v for k, v in last_obs.items() if k in levels}}
+
+
+def _tz_naive_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """시간대가 붙은 날짜(야후 주가: 뉴욕·서울 등)를 현지 날짜 그대로 시간대 없는 날짜로 (FRED·ECOS와 비교 가능하게)."""
+    idx = pd.DatetimeIndex(idx)
+    return idx.tz_localize(None) if idx.tz is not None else idx
+
+
+def _weekly_changes(level: pd.Series, kind: str, idx: pd.DatetimeIndex) -> Optional[np.ndarray]:
+    """주간 수준 → 주가 주간 인덱스(idx)에 맞춘 변화량 (bp: Δ×100, ln: Δlog). 결측이 5% 넘으면 None."""
+    level = level.copy()
+    level.index = _tz_naive_index(level.index)
+    idx = _tz_naive_index(idx)
+    lv = level.reindex(level.index.union(idx)).sort_index().ffill(limit=1)
+    ch = (lv.diff() * 100.0) if kind == "bp" else np.log(lv).diff()
+    ch = ch.reindex(idx)
+    if ch.isna().mean() > 0.05:
+        return None
+    return ch.fillna(0.0).values.astype(float)
+
+
+def _macro_hold_result(ticker: str, is_krx: bool, hyp_id: str, industry_category: str, reason: str,
+                       sample_weeks: int = 0, missing_vars: Optional[List[str]] = None,
+                       sources: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """거시 판정 보류 결과: 수치는 모두 None('데이터 없음'). 가짜 0·고정 국면을 넣지 않는다."""
+    return {
+        "status": "보류",
+        "meta": {"ticker": ticker, "as_of": datetime.now().strftime("%Y-%m-%d"), "data_quality": "🔴",
+                 "sample_weeks": sample_weeks, "hypothesis_id": hyp_id, "industry_category": industry_category,
+                 "is_on_hold": True, "hold_reason": reason, "missing_vars": list(missing_vars or []),
+                 "sources": dict(sources or {}), "macro_as_of": None},
+        "classification": {"grade_icon": "⚪", "label": f"판정 보류 ({reason})", "r2_macro_own": None, "r2_raw": None,
+                           "market_beta": None, "oos_delta_r2_mean": None, "warnings": []},
+        "macro_regime": {"current_regime": NO_DATA, "inflation_week_ratio_13w": None, **_rf_fields(is_krx)},
+        "sensitivities": [], "attribution_13w": {}, "residual_check": {}, "macro_state_13w": [], "watch_calendar": [],
+        "comment": f"거시 회귀 판정을 보류한다: {reason}.",
+    }
+
+
 def analyze_macro_track(
     ticker: str = "005930.KS",
     stock_df: Optional[pd.DataFrame] = None,
@@ -3402,20 +4887,19 @@ def analyze_macro_track(
     hyp_id, hyp_vars = _ensure_macro_hypothesis_file(ticker, industry_category)
 
     # 2) 2-2. 주간 금요일(W-FRI) 시계열 정렬 (최대 4영업일 ffill 허용)[cite: 5]
-    if stock_df is not None and len(stock_df) >= 200:
-        s_close = pd.to_numeric(stock_df["Close"], errors="coerce").ffill(limit=4)
-        w_stock = s_close.resample("W-FRI").last().dropna()
-    else:
-        rng_dates = pd.date_range(end=datetime.now(), periods=135, freq="W-FRI")
-        np.random.seed(abs(hash(ticker)) % 10000)
-        w_stock = pd.Series(50000.0 * np.exp(np.cumsum(np.random.normal(0.001, 0.032, len(rng_dates)))), index=rng_dates)
-
-    if bench_df is not None and len(bench_df) >= 200:
-        b_close = pd.to_numeric(bench_df["Close"], errors="coerce").ffill(limit=4)
-        w_bench = b_close.resample("W-FRI").last().reindex(w_stock.index).ffill(limit=1).bfill()
-    else:
-        np.random.seed(42)
-        w_bench = pd.Series(2600.0 * np.exp(np.cumsum(np.random.normal(0.0008, 0.022, len(w_stock)))), index=w_stock.index)
+    # 주가·지수 데이터가 없으면 판정 보류 (임의 시계열로 대체하지 않는다)
+    if stock_df is None or len(stock_df) < 200:
+        return _macro_hold_result(ticker, is_krx, hyp_id, industry_category, "주가 일봉 200개 미만 또는 데이터 없음")
+    if bench_df is None or len(bench_df) < 200:
+        return _macro_hold_result(ticker, is_krx, hyp_id, industry_category, "시장 지수 데이터 없음")
+    s_close = pd.to_numeric(stock_df["Close"], errors="coerce").ffill(limit=4)
+    s_close.index = _tz_naive_index(s_close.index)   # 야후 주가의 시간대 제거 (거시 데이터는 시간대 없음)
+    w_stock = s_close.resample("W-FRI").last().dropna()
+    b_close = pd.to_numeric(bench_df["Close"], errors="coerce").ffill(limit=4)
+    b_close.index = _tz_naive_index(b_close.index)
+    w_bench = b_close.resample("W-FRI").last().reindex(w_stock.index).ffill(limit=1)
+    _ok = w_bench.notna()
+    w_stock, w_bench = w_stock[_ok], w_bench[_ok]
 
     # 주간 로그수익률 계산[cite: 5]
     r_i_series = np.log(w_stock / w_stock.shift(1)).dropna()
@@ -3423,18 +4907,8 @@ def analyze_macro_track(
 
     n_total = len(r_i_series)
     if n_total < MACRO_PARAMS["REG_WEEKS_MIN"]:
-        return {
-            "status": "보류",
-            "meta": {
-                "ticker": ticker, "as_of": datetime.now().strftime("%Y-%m-%d"),
-                "data_quality": "🔴", "sample_weeks": n_total,
-                "hypothesis_id": hyp_id, "is_on_hold": True,
-            },
-            "classification": {"grade_icon": "⚪", "label": "판정 보류 (표본 78주 미만)", "r2_macro_own": 0.0, "r2_raw": 0.0, "market_beta": 1.0, "oos_delta_r2_mean": 0.0, "warnings": ["유효 주간 표본 부족"]},
-            "macro_regime": {"current_regime": "판정 보류", "inflation_week_ratio_13w": 0.5, "rf_10y_current": 0.035 if is_krx else 0.042},
-            "sensitivities": [], "attribution_13w": {}, "residual_check": {}, "macro_state_13w": [], "watch_calendar": [],
-            "comment": "상장 후 유효 주간 표본이 78주 미만이어서 거시 회귀 판정을 보류한다.",
-        }
+        return _macro_hold_result(ticker, is_krx, hyp_id, industry_category,
+                                  f"유효 주간 표본 {n_total}주 < {MACRO_PARAMS['REG_WEEKS_MIN']}주", sample_weeks=n_total)
 
     # 최근 120주 슬라이스 (주력 104주 + OOS 13주 이동 원점 확보)[cite: 5]
     use_len = min(n_total, 120)
@@ -3444,60 +4918,55 @@ def analyze_macro_track(
     r_i = r_i_sub.values
     r_m = r_m_sub.values
 
-    # 3) 거시 원자료 시계열 생성/정렬 (FRED / ECOS 표준 코드 매핑 및 결정론적 시계열 시드)[cite: 5]
-    # 금리·스프레드는 Δbp, 가격·환율·실업수당·순유동성은 Δln 및 주간 수준(Level) 동시 구축[cite: 5]
-    seed_base = sum(ord(c) for c in ticker)
-    rng = np.random.default_rng(seed_base)
+    # 3) 거시 원자료: FRED·ECOS 실제 수준 시계열 → 주간 변화량 (금리·스프레드 Δbp, 가격·환율·건수·순유동성 Δln)[cite: 5]
+    #    못 받은 변수는 회귀에서 빠진다. 국면 판정용 T10YIE·DFII10도 함께 받는다.
+    _need = [v["var_id"] for v in hyp_vars] + ["T10YIE", "DFII10"]
+    _start = (w_idx[0] - pd.Timedelta(days=40)).strftime("%Y-%m-%d")
+    if macro_raw_df is not None:   # 외부에서 수준 시계열(열=var_id)을 직접 넣은 경우
+        _mlv = {"levels": {c: _to_weekly_fri(macro_raw_df[c].dropna()) for c in macro_raw_df.columns if c in _need},
+                "missing": [c for c in _need if c not in macro_raw_df.columns], "sources": {c: "입력 데이터" for c in macro_raw_df.columns}}
+    else:
+        _mlv = fetch_macro_levels(_need, _start)
+    macro_levels: Dict[str, pd.Series] = {}
+    raw_changes_map: Dict[str, np.ndarray] = {}
+    for _vid, _lv in _mlv["levels"].items():
+        _ch = _weekly_changes(_lv, MACRO_SERIES_SPEC[_vid]["kind"], w_idx) if _vid in MACRO_SERIES_SPEC else None
+        if _ch is not None:
+            raw_changes_map[_vid] = _ch
+            macro_levels[_vid] = _lv
+    macro_missing = sorted(set(_need) - set(raw_changes_map))
+    macro_sources = {k: v for k, v in _mlv["sources"].items() if k in raw_changes_map}
+    _lo = _mlv.get("last_obs") or {}
+    # 실제 관측일 기준 (주간 라벨=금요일은 미래 날짜일 수 있어 쓰지 않음). 오늘 이후로는 표시하지 않는다.
+    _today = datetime.now().strftime("%Y-%m-%d")
+    macro_as_of = max((min(_lo.get(k, str(lv.index[-1].date())), _today) for k, lv in macro_levels.items()), default=None)
 
-    # 시장 수익률(r_m) 및 주가 수익률(r_i)과 현실적인 공변 구조를 갖는 주간 거시 변화량 구축
-    dfii10_chg_bp = -120.0 * r_m + rng.normal(0.0, 6.5, use_len)          # 미국 실질 10Y (Δbp)
-    t10yie_chg_bp = 60.0 * r_m + rng.normal(0.0, 5.2, use_len)            # 미국 10Y 기대인플레 (Δbp)
-    kr10y_chg_bp = -95.0 * r_m + rng.normal(0.0, 5.8, use_len)            # 한국 국고채 10Y (817Y002, Δbp)
-    dexkous_chg_ln = -0.58 * r_m - 0.15 * r_i + rng.normal(0.0, 0.007, use_len)  # 원/달러 (Δln, 시장과 음의 상관)
-    icsa_chg_ln = -0.35 * r_m - 0.22 * r_i + rng.normal(0.0, 0.028, use_len)     # 미국 신규 실업수당 (Δln)
-    ig_oas_chg_bp = -145.0 * r_m + rng.normal(0.0, 3.8, use_len)          # IG OAS (Δbp, 시장 동행)
-    hy_oas_chg_bp = -310.0 * r_m + rng.normal(0.0, 9.5, use_len)          # HY OAS (Δbp, 시장 동행)
-    netliq_chg_ln = 0.25 * r_m + 0.12 * r_i + rng.normal(0.0, 0.009, use_len)    # 연준 순유동성 (RRPONTSYD*1000 보정 후 Δln)[cite: 5]
-    wti_chg_ln = 0.20 * r_m + rng.normal(0.0, 0.032, use_len)             # WTI 유가 (Δln)
-    t10y2y_chg_bp = 40.0 * r_m + rng.normal(0.0, 5.0, use_len)            # 장단기 금리차 (Δbp)
-
-    raw_changes_map: Dict[str, np.ndarray] = {
-        "DFII10": dfii10_chg_bp,
-        "T10YIE": t10yie_chg_bp,
-        "KR10Y": kr10y_chg_bp,
-        "DEXKOUS": dexkous_chg_ln,
-        "ICSA": icsa_chg_ln,
-        "BAMLC0A0CM": ig_oas_chg_bp,
-        "BAMLH0A0HYM2": hy_oas_chg_bp,
-        "NETLIQ": netliq_chg_ln,
-        "DCOILWTICO": wti_chg_ln,
-        "T10Y2Y": t10y2y_chg_bp,
-    }
-
-    # 13주 경로 표기용 수준(Level) 시계열 복원[cite: 5]
-    level_anchor_map = {
-        "DEXKOUS": (1385.0, "원", "pct"),
-        "ICSA": (22.4, "만 건", "pct"),
-        "KR10Y": (3.15, "%", "bp"),
-        "DFII10": (1.85, "%", "bp"),
-        "BAMLC0A0CM": (92.0, "bp", "bp"),
-        "BAMLH0A0HYM2": (315.0, "bp", "bp"),
-        "NETLIQ": (6.12, "조 달러", "pct"),
-        "DCOILWTICO": (71.5, "달러", "pct"),
-        "T10Y2Y": (18.0, "bp", "bp"),
-    }
+    avail_vars = [v for v in hyp_vars if v["var_id"] in raw_changes_map]
+    missing_hyp = [v["var_name"] for v in hyp_vars if v["var_id"] not in raw_changes_map]
+    if not avail_vars:
+        return _macro_hold_result(ticker, is_krx, hyp_id, industry_category,
+                                  "가설 거시 변수를 하나도 받지 못함 (FRED·ECOS 접속 또는 키 확인)",
+                                  sample_weeks=use_len, missing_vars=missing_hyp, sources=macro_sources)
 
     # 4) 5-2. 거시 국면 자동 판정 (최근 13주 중 |ΔT10YIE| > |ΔDFII10| 인플레 주도 주 비중)[cite: 5]
-    infl_weeks_mask = np.abs(t10yie_chg_bp) > np.abs(dfii10_chg_bp)
-    infl_ratio_13w = float(np.mean(infl_weeks_mask[-13:]))
-    if infl_ratio_13w >= MACRO_PARAMS["REGIME_INFL_HIGH"]:
+    regime_known = ("T10YIE" in raw_changes_map) and ("DFII10" in raw_changes_map)
+    if regime_known:
+        infl_weeks_mask = np.abs(raw_changes_map["T10YIE"]) > np.abs(raw_changes_map["DFII10"])
+        infl_ratio_13w: Optional[float] = float(np.mean(infl_weeks_mask[-13:]))
+    else:
+        infl_weeks_mask = np.zeros(use_len, dtype=bool)
+        infl_ratio_13w = None
+    if infl_ratio_13w is None:
+        current_macro_regime = NO_DATA
+    elif infl_ratio_13w >= MACRO_PARAMS["REGIME_INFL_HIGH"]:
         current_macro_regime = "인플레 주도 국면"
     elif infl_ratio_13w <= MACRO_PARAMS["REGIME_INFL_LOW"]:
         current_macro_regime = "성장·정책 주도 국면"
     else:
         current_macro_regime = "혼재 국면"
 
-    rf_10y_current = 0.0315 if is_krx else 0.0420
+    _rff = _rf_fields(is_krx)
+    rf_10y_current = _rff["rf_10y_current"]
 
     # 5) 4-1. 시장 동행 변수 잔차화 (최근 13주 OOS 구간을 제외한 과거 추정 구간 기준으로 잔차화 계수 산출)[cite: 5]
     oos_h = MACRO_PARAMS["OOS_HORIZON_WEEKS"]
@@ -3507,9 +4976,9 @@ def analyze_macro_track(
     raw_vars_list = []
     var_meta_list = []
 
-    for v_info in hyp_vars:
+    for v_info in avail_vars:
         vid = v_info["var_id"]
-        raw_arr = raw_changes_map.get(vid, dfii10_chg_bp)
+        raw_arr = raw_changes_map[vid]
         # 표준화 스케일 (1σ 충격 시 주가 반응 직관적 산출을 위해 훈련 구간 표준편차로 정규화)
         train_sd = float(np.std(raw_arr[:train_end]))
         if train_sd < 1e-10:
@@ -3561,8 +5030,9 @@ def analyze_macro_track(
 
     # 인플레 주도 주간 vs 성장·정책 주도 주간 분리 추정 (국면 의존 점검용)[cite: 5]
     infl_m_104 = infl_weeks_mask[-main_w:]
-    res_A_infl = _ols_hac_and_huber(y_104[infl_m_104], XA_104[infl_m_104], 2) if np.sum(infl_m_104) >= 15 else res_A_104
-    res_A_grw = _ols_hac_and_huber(y_104[~infl_m_104], XA_104[~infl_m_104], 2) if np.sum(~infl_m_104) >= 15 else res_A_104
+    regime_split_ok = bool(regime_known and np.sum(infl_m_104) >= 15 and np.sum(~infl_m_104) >= 15)
+    res_A_infl = _ols_hac_and_huber(y_104[infl_m_104], XA_104[infl_m_104], 2) if regime_split_ok else res_A_104
+    res_A_grw = _ols_hac_and_huber(y_104[~infl_m_104], XA_104[~infl_m_104], 2) if regime_split_ok else res_A_104
 
     # 7) 4-3 & 4-4. 변수별 유의성(|t_HAC| >= 2.0) 및 이상치·안정성 3중 점검[cite: 5]
     sensitivities_out = []
@@ -3585,7 +5055,8 @@ def analyze_macro_track(
         if (b_ols * b_52) < 0 and abs(t_val) >= 1.5:
             var_warns.append("⚠️ 관계 변화(52주 반전)")
         # 인플레 vs 성장 국면 부호 반전[cite: 5]
-        if (b_infl * b_grw) < 0:
+        # 국면별 부호 반전: 두 국면 β가 모두 노이즈 하한(1σ당 ±0.10%) 이상일 때만 경고 (0 근처 값의 부호 흔들림 제외)
+        if regime_split_ok and (b_infl * b_grw) < 0 and min(abs(b_infl), abs(b_grw)) >= MACRO_PARAMS.get("REGIME_BETA_NOISE", 0.001):
             var_warns.append("⚠️ 국면 의존")
 
         for w_str in var_warns:
@@ -3596,7 +5067,7 @@ def analyze_macro_track(
         status_str = "확인" if (is_sig and not var_warns) else ("경고" if is_sig else "미확인")
 
         raw_sd = v_meta["raw_1sd"]
-        if v_meta["unit"] == "bp":
+        if MACRO_SERIES_SPEC[v_meta["var_id"]]["kind"] == "bp":
             shock_str = f"{raw_sd:+.1f}bp"
         else:
             shock_str = f"{raw_sd*100:+.1f}%"
@@ -3617,7 +5088,7 @@ def analyze_macro_track(
             "shock_1sd_str": shock_str,
             "price_response_1sd_num": round(price_resp_pct, 2),
             "price_response_1sd": f"{price_resp_pct:+.2f}%",
-            "regime_beta_str": f"성장 주도 {b_grw:+.2f} / 인플레 주도 {b_infl:+.2f}",
+            "regime_beta_str": (f"성장 주도 {b_grw*100:+.2f}% / 인플레 주도 {b_infl*100:+.2f}% (1σ당 주가 반응)" if regime_split_ok else NO_DATA),
             "status": status_str,
             "warnings": var_warns,
             "duplicate_of": v_meta["dup"],
@@ -3653,7 +5124,7 @@ def analyze_macro_track(
             r2_oos_M = 1.0 - float(np.sum((y_te - pred_M) ** 2)) / denom_oos
             oos_deltas.append(r2_oos_A - r2_oos_M)
 
-    oos_delta_mean = round(float(np.mean(oos_deltas)), 4) if oos_deltas else 0.015
+    oos_delta_mean = round(float(np.mean(oos_deltas)), 4) if oos_deltas else None
     # 연속 2개 구간 ΔR^2_oos <= 0 자동 강등 여부[cite: 5]
     auto_downgrade_idiosyncratic = bool(len(oos_deltas) >= 2 and oos_deltas[0] <= 0.0 and oos_deltas[1] <= 0.0)
 
@@ -3715,12 +5186,13 @@ def analyze_macro_track(
     # 기업 고유 이벤트 주간 분리 (|잔차| > 2.2 * sigma_train 주간을 잠정실적/공시 이벤트 주간으로 식별)[cite: 5]
     event_weeks = []
     normal_resids = []
+    _last_trade = pd.Timestamp(s_close.dropna().index[-1])
     for d_dt, e_val in zip(oos_dates, e_oos_13):
         r_sig = float(e_val / sigma_train)
         if abs(r_sig) >= 2.2 and len(event_weeks) < 2:
             event_weeks.append({
-                "date": str(d_dt)[:10],
-                "type": "실적·가이던스 공시 주간",
+                "date": str(min(pd.Timestamp(d_dt), _last_trade).date()),   # 주간 라벨(금요일)이 아니라 실제 마지막 거래일 이하
+                "type": "기업 고유 충격 주간 (표본 외 잔차 ≥ 2.2σ · 원인 미확인)",
                 "residual_sigma": round(r_sig, 2),
             })
         else:
@@ -3731,7 +5203,7 @@ def analyze_macro_track(
         z_oos = float(np.sum(normal_resids) / (sigma_train * math.sqrt(n_norm)))
         resid_status = "🟢 관계 유지" if abs(z_oos) < MACRO_PARAMS["OOS_RESID_Z_THRES"] else "⚠️ 관계 이탈"
     else:
-        z_oos = 0.0
+        z_oos = None
         resid_status = "판정 불가 (평범한 주 6주 미만)"
 
     # 12) 5-1. 가설 변수 13주 경로 및 6-4 감시 캘린더 생성[cite: 5]
@@ -3740,7 +5212,10 @@ def analyze_macro_track(
     for v_meta in var_meta_list:
         vid = v_meta["var_id"]
         raw_s = v_meta["raw_series"]
-        base_lvl, unit_lbl, chg_kind = level_anchor_map.get(vid, (100.0, "", "pct"))
+        _spec = MACRO_SERIES_SPEC[vid]
+        chg_kind = _spec["kind"]
+        unit_lbl = _spec["level_unit"]
+        _lv13 = macro_levels[vid].loc[:w_idx[-1]].iloc[-13:] * _spec["level_mult"]
 
         chg_13 = float(np.sum(raw_s[-13:]))
         chg_4 = float(np.sum(raw_s[-4:]))
@@ -3755,12 +5230,11 @@ def analyze_macro_track(
         else:
             path_lbl = f"13주 등락 교차 (4주 몫 {int(abs(share_4w)*100)}%)"
 
-        if chg_kind == "bp":
-            chg_13_str = f"{chg_13:+.1f}bp"
-            hi_lo_str = f"{base_lvl - abs(chg_13)*0.006:.2f} ~ {base_lvl + abs(chg_13)*0.006:.2f}{unit_lbl}"
-        else:
-            chg_13_str = f"{chg_13*100:+.1f}%"
-            hi_lo_str = f"{base_lvl*(1.0 - abs(chg_13)*0.6):,.1f} ~ {base_lvl*(1.0 + abs(chg_13)*0.6):,.1f}{unit_lbl}"
+        _dec = 2 if unit_lbl in ("%", "조 달러") else (0 if unit_lbl in ("bp", "원") else 1)
+        _fmt = (lambda x, d=_dec: f"{x:,.{d}f}")
+        chg_13_str = f"{chg_13:+.1f}bp" if chg_kind == "bp" else f"{chg_13*100:+.1f}%"
+        hi_lo_str = (f"{_fmt(float(_lv13.min()))} ~ {_fmt(float(_lv13.max()))}{unit_lbl} (최근 {_fmt(float(_lv13.iloc[-1]))}{unit_lbl})"
+                     if len(_lv13) else NO_DATA)
 
         macro_state_13w.append({
             "var_name": v_meta["var_name"],
@@ -3773,7 +5247,9 @@ def analyze_macro_track(
         watch_calendar.append({
             "var_name": v_meta["var_name"],
             "next_release": "매주 목요일 22:30 (주간)" if vid == "ICSA" else "상시 (일별 마켓 데이터)",
-            "threshold_rule": f"주간 1σ({v_meta['raw_1sd']*100:.1f}% 또는 {v_meta['raw_1sd']:.1f}bp) 이상 급변 시 민감도 재점검",
+            "threshold_rule": (f"주간 1σ({v_meta['raw_1sd']:.1f}bp) 이상 급변 시 민감도 재점검" if MACRO_SERIES_SPEC[vid]["kind"] == "bp"
+                               else f"주간 1σ({v_meta['raw_1sd']*100:.1f}%) 이상 급변 시 민감도 재점검"),
+            "source": macro_sources.get(vid, NO_DATA),
             "duplicate_tag": f"(중복 — {v_meta['dup']})" if v_meta["dup"] else "거시 고유 감시 지표",
         })
 
@@ -3782,12 +5258,16 @@ def analyze_macro_track(
     sec_s = sensitivities_out[1] if len(sensitivities_out) > 1 else top_s
     a13 = attrib_13w["13w"]
     raw_comment = (
-        f"{top_s['var_name']} 및 {sec_s['var_name']} 지표가 1σ 움직일 때 과거 104주 평균 각각 "
-        f"{top_s['price_response_1sd']}, {sec_s['price_response_1sd']}씩 동행해 왔다. "
+        (f"{top_s['var_name']} 및 {sec_s['var_name']} 지표가 1σ 움직일 때 과거 {main_w}주 평균 각각 "
+         f"{top_s['price_response_1sd']}, {sec_s['price_response_1sd']}씩 동행해 왔다. "
+         if sec_s is not top_s else
+         f"{top_s['var_name']} 지표가 1σ 움직일 때 과거 {main_w}주 평균 {top_s['price_response_1sd']}씩 동행해 왔다. ")
+        + 
         f"최근 13주 주가 변화({a13['actual']*100:+.1f}%) 중 시장 몫은 {a13['market']*100:+.1f}%p, "
         f"거시 추가 몫은 {a13['macro_extra']*100:+.1f}%p, 기업 고유 몫은 {a13['idiosyncratic']*100:+.1f}%p이며 "
-        f"평범한 주 기준 과거 관계는 {resid_status} 상태다(z_oos = {z_oos:+.2f}). "
-        f"→ {watch_calendar[0]['var_name']} 발표 일정과 {current_macro_regime} 전환 여부를 감시 목록에 올린다."
+        f"평범한 주 기준 과거 관계는 {resid_status} 상태다(z_oos = {(f'{z_oos:+.2f}' if z_oos is not None else NO_DATA)}). "
+        + (f"→ {watch_calendar[0]['var_name']} 발표 일정과 {current_macro_regime} 전환 여부를 감시 목록에 올린다."
+           if regime_known else f"→ {watch_calendar[0]['var_name']} 발표 일정을 감시 목록에 올린다 (국면 판정용 금리 데이터 {NO_DATA}).")
     )
     clean_comment = _sanitize_macro_comment(raw_comment)
 
@@ -3796,11 +5276,15 @@ def analyze_macro_track(
         "meta": {
             "ticker": ticker,
             "as_of": datetime.now().strftime("%Y-%m-%d"),
-            "data_quality": "🟢",
+            "data_quality": "🟢" if (not missing_hyp and regime_known) else "🟡",
             "sample_weeks": main_w,
             "hypothesis_id": hyp_id,
             "industry_category": industry_category,
             "is_on_hold": False,
+            "missing_vars": missing_hyp,
+            "regime_missing": [] if regime_known else [x for x in ("T10YIE", "DFII10") if x not in raw_changes_map],
+            "sources": macro_sources,
+            "macro_as_of": macro_as_of,
         },
         "classification": {
             "grade_icon": cls_icon,
@@ -3813,14 +5297,16 @@ def analyze_macro_track(
         },
         "macro_regime": {
             "current_regime": current_macro_regime,
-            "inflation_week_ratio_13w": round(infl_ratio_13w, 2),
+            "inflation_week_ratio_13w": round(infl_ratio_13w, 2) if infl_ratio_13w is not None else None,
             "rf_10y_current": rf_10y_current,
+            "rf_source": _rff["rf_source"],
+            "rf_as_of": _rff["rf_as_of"],
         },
         "sensitivities": sensitivities_out,
         "attribution_13w": attrib_13w,
         "residual_check": {
             "status": resid_status,
-            "z_oos": round(z_oos, 2),
+            "z_oos": round(z_oos, 2) if z_oos is not None else None,
             "normal_weeks_count": n_norm,
             "event_weeks": event_weeks,
         },
@@ -3832,6 +5318,18 @@ def analyze_macro_track(
     # =====================================================================
 # [Synthesis] 4대 트랙 종합 결론 프레임워크 v1.1 (Waterfall Gate & MECE 8 아키타입)
 # =====================================================================
+# 종합 V 가격 자격 코드 → 화면 표시명 (코드는 내부용, 사용자에게는 이 이름을 보여준다)
+PRICE_QUAL_LABELS = {
+    "QUALIFIED": "매수 자격 충족",
+    "CONDITIONAL": "조건부 매수 자격",
+    "OVERVALUED": "고평가 — 매수선 위 (가격 대기)",
+    "POOR_RISK_REWARD": "고평가 — 위험 대비 기대수익 부족",
+    "VALUE_TRAP": "가치 함정 (저PER 착시)",
+    "HARD_KILL": "하드 킬 (진입 금지)",
+    "NA": "판정 불가 (데이터 없음)",
+}
+
+
 def synthesize_4tracks(
     ticker: str,
     current_price: float,
@@ -3849,6 +5347,8 @@ def synthesize_4tracks(
     - Step 4: 거시 트랙 오버레이 (예측·찬반 투표 배제, 오직 설명·위험 속성·감시만 첨부)[cite: 6]
     - MECE 8대 종목 아키타입(ARCH_1 ~ ARCH_8) 결정 트리 및 직관적 3줄 브리핑 생성[cite: 6]
     """
+    if current_price is None or not math.isfinite(float(current_price)) or float(current_price) <= 0:
+        raise ValueError("현재가가 비어 있어(NaN·0) 종합 판정을 계산할 수 없습니다. 가격 데이터의 마지막 행을 확인하세요.")
     if synth_cfg is None:
         synth_cfg = {}
 
@@ -3862,14 +5362,22 @@ def synthesize_4tracks(
     days_to_earnings = int(days_raw) if days_known else None
 
     # 트랙별 핵심 데이터 추출 및 프리픽스 표준화 (0-2)[cite: 6]
-    e_regime = earn_out.get("regime", {}).get("earnings_regime", "G2")     # G1 ~ G5[cite: 2, 6]
+    e_regime = earn_out.get("regime", {}).get("earnings_regime", "G3")     # G1 ~ G5 또는 "NA"(판정 불가)
+    e_regime_display = e_regime
+    if e_regime not in ("G1", "G2", "G3", "G4", "G5"):
+        e_regime = "G3"   # 판정 불가는 문구에는 그대로 표시하고, 분기 판정에서만 중립(G3) 취급
     c_stage_raw = earn_out.get("regime", {}).get("cycle_stage")            # C1 ~ C4[cite: 2, 6]
     c_code = c_stage_raw.split()[0] if c_stage_raw else None
     th_status = earn_out.get("thesis_driver", {}).get("status", "유효")
-    rpo_yoy = float(earn_out.get("sustainability_metrics", {}).get("rpo_yoy_growth", 0.0))
-    inc_opm = float(earn_out.get("sustainability_metrics", {}).get("incremental_opm", 0.0))
-    rev_status = earn_out.get("revision_dynamics", {}).get("status", "보합")
-    rev_30d = float(earn_out.get("revision_dynamics", {}).get("change_30d", 0.0))
+    _sm = earn_out.get("sustainability_metrics", {})
+    _rd = earn_out.get("revision_dynamics", {})
+    rpo_yoy = float(_sm["rpo_yoy_growth"]) if _sm.get("rpo_yoy_growth") is not None else 0.0   # 판정용(없으면 0)
+    inc_opm = float(_sm["incremental_opm"]) if _sm.get("incremental_opm") is not None else 0.0
+    rev_status = _rd.get("status", "보합")
+    rev_30d = float(_rd["change_30d"]) if _rd.get("change_30d") is not None else 0.0
+    # 문구용: 값이 없으면 '데이터 없음'
+    rpo_txt = f"RPO +{rpo_yoy*100:.0f}%" if _sm.get("rpo_yoy_growth") is not None else f"RPO {NO_DATA}"
+    inc_opm_txt = f"증분OPM {inc_opm*100:.1f}%" if _sm.get("incremental_opm") is not None else f"증분OPM {NO_DATA}"
 
     raw_state = tech_out.get("lifecycle_state", {}).get("state", "R")
     raw_sub = tech_out.get("lifecycle_state", {}).get("sub_state")
@@ -3894,10 +5402,19 @@ def synthesize_4tracks(
     else:
         cyc_code = None
 
-    mdd_ratio = float(f_vt.get("mdd_ratio", 0.35))
-    exp_ret = float(f_vt.get("expected_return_weighted", 0.20))
-    sell_target_1y = int(f_vt.get("sell_target", round(current_price * 1.25, -2)))
+    # V 트랙 값은 못 받은 경우 None('데이터 없음')일 수 있다. 가짜 기본값(MDD 0.35 등)으로 채우지 않는다.
     tranches = f_vt.get("buy_tranches", [])
+    v_na = bool(f_pq.get("status") == "NA" and not tranches)   # 목표 배수를 만들 근거가 없어 가격선 자체가 없음
+    _mdd, _exp = f_vt.get("mdd_ratio"), f_vt.get("expected_return_weighted")
+    mdd_ratio = float(_mdd) if _mdd is not None else 0.0
+    exp_ret = float(_exp) if _exp is not None else 0.0
+    mdd_txt = f"{mdd_ratio:.2f}" if _mdd is not None else NO_DATA
+    exp_txt = f"{exp_ret*100:+.1f}%" if _exp is not None else NO_DATA
+    _st = f_vt.get("sell_target")
+    sell_target_1y = int(_st) if _st is not None else None
+    sell_txt = fmt_price(sell_target_1y, is_krx) if sell_target_1y is not None else NO_DATA
+    _sz = f_tz.get("self_5y_z")
+    self_z_txt = f"{_sz:+.2f}σ" if _sz is not None else NO_DATA
     t_verdicts = tech_out.get("tranche_verdicts", [])
     high_conf_tranches = tech_out.get("overlap_flags", {}).get("high_conf_buy_tranches", [])
 
@@ -3926,8 +5443,8 @@ def synthesize_4tracks(
     # KILL_SURVIVAL: ① 런웨이 < 1.0년 OR ② 차입만기 > 150% OR ③ 희석률 > 15%[cite: 6]
     rw_str = str(f_surv.get("fcf_runway_years", ""))
     rw_under_1y = ("위험" in rw_str) and any( rw_str.startswith(p) for p in ["0.", "1.0"] )
-    debt_150 = float(f_surv.get("debt_maturity_1y_ratio", 0.0)) > 1.50
-    dil_15 = float(f_surv.get("share_dilution_yoy", 0.0)) > 0.15
+    debt_150 = float(f_surv.get("debt_maturity_1y_ratio") or 0.0) > 1.50    # 값이 없으면(None) 킬 조건으로 보지 않는다
+    dil_15 = float(f_surv.get("share_dilution_yoy") or 0.0) > 0.15
     if rw_under_1y or debt_150 or dil_15:
         kill_codes.append("KILL_SURVIVAL")
         kill_reasons.append("재무 생존성 하드 킬 위반 (FCF 런웨이 1년 미만 / 차입만기 150% 초과 / 주식희석 15% 초과 중 해당)")
@@ -3943,19 +5460,33 @@ def synthesize_4tracks(
     t2_item = next((tr for tr in tranches if tr["tranche"] == 2), None)
     t3_item = next((tr for tr in tranches if tr["tranche"] == 3), None)
 
-    t1_price = int(t1_item["price"]) if t1_item else int(current_price * 0.95)
-    t2_price = int(t2_item["price"]) if t2_item else int(t1_price * 0.90)
-    t0_price = int(t0_item["price"]) if t0_item else t1_price
-    dist_to_t1_pct = round((current_price - t1_price) / max(t1_price, 1), 4)
+    if v_na:
+        # 가격선이 없다: 아래 계산이 깨지지 않도록 중립 자리값만 두고, 화면 문구에서는 쓰지 않는다 (V_NA 분기)
+        t1_price = t2_price = t0_price = int(current_price)
+        dist_to_t1_pct = None
+    else:
+        t1_price = int(t1_item["price"]) if t1_item else int(current_price * 0.95)
+        t2_price = int(t2_item["price"]) if t2_item else int(t1_price * 0.90)
+        t0_price = int(t0_item["price"]) if t0_item else t1_price
+        dist_to_t1_pct = round((current_price - t1_price) / max(t1_price, 1), 4)
 
     # 2-1. 펀더멘탈 가격 자격 4분류 (QUALIFIED / CONDITIONAL / OVERVALUED / VALUE_TRAP)[cite: 6]
-    if is_killed or mdd_ratio < 0.15 or (cyc_code == "CYC_T2" and current_price > t2_price):
-        price_qual_code = "VALUE_TRAP"
+    # MDD Ratio를 계산하지 못했으면(None) 0.0으로 보고 탈락시키지 않는다 (데이터 없음 ≠ 위험)
+    _mdd_known = _mdd is not None
+    _rr_poor = bool(_mdd_known and mdd_ratio < 0.15)
+    if is_killed:
+        price_qual_code = "HARD_KILL"          # Step 1 하드 킬 (악재·Thesis 붕괴·G5·재무 생존성·거래정지)
+    elif not v_na and cyc_code == "CYC_T2" and current_price > t2_price:
+        price_qual_code = "VALUE_TRAP"         # 사이클 고점: 이익이 정점이라 PER이 낮아 보이는 착시
+    elif v_na:
+        price_qual_code = "NA"   # 가격 자격 판정 불가 (목표 배수 근거 데이터 없음)
     elif e_regime == "G4":
         if current_price <= t2_price and mdd_ratio >= 0.15:
             price_qual_code = "CONDITIONAL"  # G4이나 디레이팅 Cap 반영 2·3차 안전마진선 이하 폭락 시 조건부 허용[cite: 6]
         else:
-            price_qual_code = "VALUE_TRAP" if mdd_ratio < 0.15 else "OVERVALUED"
+            price_qual_code = "VALUE_TRAP" if _rr_poor else "OVERVALUED"   # 피크아웃 국면의 저PER 착시
+    elif _rr_poor:
+        price_qual_code = "POOR_RISK_REWARD"   # 실적 훼손 아님: 현재가 대비 시나리오 기대수익이 하락 위험보다 작음(비쌈)
     elif current_price <= t1_price and mdd_ratio >= 0.30 and e_regime in ["G1", "G2", "G3"]:
         price_qual_code = "QUALIFIED"
     elif (t0_item is not None and current_price <= t0_price and e_regime in ["G1", "G2"] and mdd_ratio >= 0.30) or (
@@ -3964,6 +5495,10 @@ def synthesize_4tracks(
         price_qual_code = "CONDITIONAL"
     else:
         price_qual_code = "OVERVALUED"
+    # 가치 트랙이 '조건부'(예: 자기 밴드가 없어 정상 밴드 확인 불가)로 낮춘 경우 종합에서 '충족'으로 올리지 않는다 (단일 출처)
+    if price_qual_code == "QUALIFIED" and f_pq.get("status") == "CONDITIONAL":
+        price_qual_code = "CONDITIONAL"
+    price_qual_label = PRICE_QUAL_LABELS.get(price_qual_code, price_qual_code)
 
     # 현재가가 도달한 가장 유리한(깊은) 활성 차수 찾기
     reached_tranches = [tr for tr in tranches if current_price <= tr["price"]]
@@ -3980,21 +5515,35 @@ def synthesize_4tracks(
     tech_v_verdict = tech_v_match["verdict"] if tech_v_match else "절반"
 
     # 2-2 & 2-3. V 트랙 최종 상태 코드 7종 및 단일 감속 하한(50%) 보장[cite: 6]
-    if is_killed or price_qual_code == "VALUE_TRAP":
+    if is_killed:
         v_status_code = "V_BLOCKED"
-        v_badge = "🔴 V 진입 불가 (가치 함정 / 하드 킬)"
+        v_badge = "🔴 V 진입 불가 (하드 킬 발동)"
+        v_exec_ratio = 0.0
+    elif price_qual_code == "VALUE_TRAP":
+        v_status_code = "V_BLOCKED"
+        v_badge = "🔴 V 진입 불가 (가치 함정 — 이익 정점·피크아웃의 저PER 착시)"
         v_exec_ratio = 0.0
     elif pead_days_left > 0:
         v_status_code = "V_DEFERRED_CHART"
         v_badge = f"🟠 V 매수 보류 (단발 어닝 쇼크 PEAD 냉각기 잔여 {pead_days_left}일)"
         v_exec_ratio = 0.0
-    elif current_price >= sell_target_1y * 0.95:
+    elif sell_target_1y is not None and current_price >= sell_target_1y * 0.95:
         v_status_code = "V_PROFIT_TAKE"
-        v_badge = "🔵 V 목표가 도달 (차익실현 구간)"
+        _over = current_price / max(sell_target_1y, 1e-9) - 1.0
+        v_badge = (f"🔵 V 매도목표가 초과 (현재가가 목표가보다 {_over*100:+.1f}% · 보유분 분할 차익실현, 신규 매수 없음)"
+                   if _over > 0 else "🔵 V 목표가 도달 (차익실현 구간 · 신규 매수 없음)")
+        v_exec_ratio = 0.0
+    elif v_na:
+        v_status_code = "V_NA"
+        v_badge = "⚪ V 가격 판정 불가 (데이터 없음)"
         v_exec_ratio = 0.0
     elif e_regime == "G4" and current_price > t2_price:
         v_status_code = "V_WAIT_EARNINGS_TURN"
         v_badge = "🟣 V 실적 턴어라운드 대기 (G4 피크아웃 경계)"
+        v_exec_ratio = 0.0
+    elif price_qual_code == "POOR_RISK_REWARD":
+        v_status_code = "V_WAIT_PRICE"
+        v_badge = f"⚪ V 가격 대기 (위험 대비 기대수익 부족 · MDD Ratio {mdd_ratio:.2f} < 0.15)"
         v_exec_ratio = 0.0
     elif price_qual_code == "OVERVALUED":
         v_status_code = "V_WAIT_PRICE"
@@ -4031,6 +5580,9 @@ def synthesize_4tracks(
     raw_t_verdict = t_banner.get("t_verdict", "관찰")
     setup_id = t_banner.get("setup_id")
     t_grade = t_banner.get("grade")
+    _t_has = bool(t_ticket.get("setup_id"))                       # 실제 계산된 T 티켓 존재 여부
+    _t_px = ((lambda v: int(v)) if is_krx else (lambda v: round(float(v), 2)))   # USD 센트 절사 방지
+    _t_px = (lambda f: (lambda v: None if v is None else f(v)))(_t_px)
 
     if is_killed:
         t_verdict_final = "금지"
@@ -4083,32 +5635,38 @@ def synthesize_4tracks(
     disp_stage = tech_out.get("modules", {}).get("disparity", {}).get("stage", 0)
     is_st1_active = bool(setup_id == "ST-1" or disp_stage in [3, 4])
 
-    if is_killed or (price_qual_code == "VALUE_TRAP" and cyc_code != "CYC_T2"):
+    if is_killed:
         arch_code = "ARCH_8"
-        arch_title = "하드 킬 · 투자 부적격 (신규 진입 전면 금지 및 청산/동결)"
+        arch_title = "하드 킬 · 투자 부적격 (신규 진입 전면 금지 및 보유분 청산/동결)"
+    elif price_qual_code == "VALUE_TRAP" and cyc_code != "CYC_T2":
+        arch_code = "ARCH_8"
+        arch_title = f"가치 함정 경계 · 신규 진입 금지 (실적 {e_regime_display} 피크아웃 — 낮은 PER은 착시)"
     elif cyc_code == "CYC_T2" or c_code == "C3" or e_regime == "G4":
         arch_code = "ARCH_6"
-        arch_title = f"사이클·실적 피크아웃 경계 ({e_regime} / {cyc_code or '피크아웃'} · 저PER 착시 주의)"
+        arch_title = f"사이클·실적 피크아웃 경계 ({e_regime_display} / {cyc_code or '피크아웃'} · 저PER 착시 주의)"
     elif e_regime in ["G1", "G2"] and v_status_code in ["V_EXEC_FULL", "V_EXEC_HALF"] and (
         tech_state_code in ["STATE_B", "STATE_S", "STATE_H"] or t_status_code == "T_ENTRY"
     ):
         arch_code = "ARCH_1"
-        arch_title = f"밸류·모멘텀 동시 점화 (실적 {e_regime} + V 매수 집행 + 차트 추세/반전 동시 확인)"
+        arch_title = f"밸류·모멘텀 동시 점화 (실적 {e_regime_display} + V 매수 집행 + 차트 추세/반전 동시 확인)"
     elif is_st1_active:
         arch_code = "ARCH_4"
-        arch_title = f"투매 소진 반등주 (실적 {e_regime} + ST-1 과매도 반전 셋업)"
+        arch_title = f"투매 소진 반등주 (실적 {e_regime_display} + ST-1 과매도 반전 셋업)"
     elif price_qual_code in ["QUALIFIED", "CONDITIONAL"] and v_status_code == "V_DEFERRED_CHART":
         arch_code = "ARCH_3"
         arch_title = f"저평가 도달 · 차트 바닥 대기 (매수선 도달 완료 · {tech_state_code} 하락 멈춤 대기)"
     elif e_regime in ["G1", "G2"] and v_status_code == "V_WAIT_PRICE" and tech_state_code in ["STATE_S", "STATE_H"]:
         arch_code = "ARCH_2"
-        arch_title = f"고성장 추세 주도주 (실적 {e_regime} · V는 지정가 대기, T 추세 돌파·눌림 공략)"
+        arch_title = f"고성장 추세 주도주 (실적 {e_regime_display} · V는 지정가 대기, T 추세 돌파·눌림 공략)"
     elif c_code in ["C1", "C2"] and (rev_30d > 0 or tech_state_code in ["STATE_B", "STATE_S"]):
         arch_code = "ARCH_5"
         arch_title = f"사이클 바닥 턴어라운드 ({c_code} 실물 회복 + 바닥 전환)"
     else:
         arch_code = "ARCH_7"
-        arch_title = f"중립 · 박스권 관망 (실적 {e_regime} · {tech_state_code} · 지정가 및 박스 하단 대기)"
+        if price_qual_code in ("POOR_RISK_REWARD", "OVERVALUED"):
+            arch_title = f"중립 · 가치 기준 고평가 관망 (실적 {e_regime_display} · {tech_state_code} · V는 매수선까지 가격 대기)"
+        else:
+            arch_title = f"중립 · 박스권 관망 (실적 {e_regime_display} · {tech_state_code} · 지정가 및 박스 하단 대기)"
 
     # 🔥 최고 확신 배지: 거시 트랙 조건을 완전 배제하고 순수하게 ARCH_1일 때만 부여[cite: 6]
     high_conviction_badge = bool(arch_code == "ARCH_1")
@@ -4116,10 +5674,17 @@ def synthesize_4tracks(
     # =================================================================
     # Step 4 & 3장. 거시 오버레이 추출 및 직관적 3줄 브리핑 생성[cite: 6]
     # =================================================================
-    m_attr_13 = macro_out.get("attribution_13w", {}).get("13w", {"actual": -0.05, "market": -0.03, "macro_extra": -0.01, "idiosyncratic": -0.01})
-    ret_13w_act = float(m_attr_13.get("actual", 0.0))
-    ret_13w_mac_mkt = round(float(m_attr_13.get("market", 0.0)) + float(m_attr_13.get("macro_extra", 0.0)), 4)
-    ret_13w_idio = float(m_attr_13.get("idiosyncratic", 0.0))
+    # 거시 트랙이 보류되면 13주 분해가 없다 → None('데이터 없음'). 임의 기본값(-5% 등)을 넣지 않는다.
+    m_attr_13 = (macro_out.get("attribution_13w") or {}).get("13w")
+    if m_attr_13:
+        ret_13w_act = float(m_attr_13["actual"])
+        ret_13w_mac_mkt = round(float(m_attr_13["market"]) + float(m_attr_13["macro_extra"]), 4)
+        ret_13w_idio = float(m_attr_13["idiosyncratic"])
+        attr13_txt = (f"(최근 13주 주가 변화 {ret_13w_act*100:+.1f}% 중 시장·거시 몫 {ret_13w_mac_mkt*100:+.1f}%p, "
+                      f"기업 고유 몫 {ret_13w_idio*100:+.1f}%p)")
+    else:
+        ret_13w_act = ret_13w_mac_mkt = ret_13w_idio = None
+        attr13_txt = f"(13주 수익률 분해: 거시 트랙 보류로 {NO_DATA})"
 
     # 첫째 줄 [오늘의 행동 결론 — Action][cite: 6]
     if is_killed:
@@ -4132,10 +5697,18 @@ def synthesize_4tracks(
             v_act_str = f"오늘 V(가치)는 {active_tr_num}차 매수물량의 절반(50%, 총자산의 {rec_v_weight*100:.2f}%)을 집행하고"
         elif v_status_code == "V_DEFERRED_CHART":
             v_act_str = f"현재 V(가치)는 {active_tr_num}차 매수선({fmt_price(active_tr_price, is_krx)}) 도달 후 차트 바닥 확인 대기 중(이월)이며"
+        elif v_status_code == "V_WAIT_PRICE" and price_qual_code == "POOR_RISK_REWARD":
+            v_act_str = f"V(가치)는 현재가 기준 시나리오 기대수익({exp_txt})이 하락 위험 대비 부족(MDD Ratio {mdd_txt})해 신규 매수 없이 가격 대기이며"
         elif v_status_code == "V_WAIT_PRICE":
             v_act_str = f"V(가치) 기준으로는 아직 매수선 위여서 가격 대기(1차선 {fmt_price(t1_price, is_krx)}까지 {-dist_to_t1_pct*100:+.1f}% 필요) 구간이나"
+        elif v_status_code == "V_NA":
+            v_act_str = f"V(가치)는 목표 배수를 만들 데이터가 없어 가격 판정이 불가능({NO_DATA})하며"
         elif v_status_code == "V_PROFIT_TAKE":
-            v_act_str = f"현재 V(가치)는 매도목표가({fmt_price(sell_target_1y, is_krx)}) 권역에 도달해 분할 차익실현 구간이며"
+            if current_price > sell_target_1y:
+                v_act_str = (f"V(가치) 기준으로는 현재가가 이미 매도목표가({sell_txt})보다 {(current_price / max(sell_target_1y, 1e-9) - 1) * 100:+.1f}% 높아 "
+                             f"신규 매수는 없고 보유분만 분할 차익실현 구간이며")
+            else:
+                v_act_str = f"현재 V(가치)는 매도목표가({sell_txt}) 권역에 도달해 분할 차익실현 구간이며"
         else:
             v_act_str = f"현재 V(가치)는 {v_badge} 상태이며"
 
@@ -4152,10 +5725,10 @@ def synthesize_4tracks(
 
     # 둘째 줄 [핵심 근거 — Why][cite: 6]
     line_2_why = (
-        f"실적 국면은 [{e_regime} {earn_out['regime']['regime_label']}](RPO +{rpo_yoy*100:.0f}%, 증분OPM {inc_opm*100:.1f}%)이고, "
-        f"펀더멘탈은 자기 밴드 {f_tz.get('self_5y_z', 0.0):+.2f}σ · MDD Ratio {mdd_ratio:.2f}(기대수익 {exp_ret*100:+.1f}%)이며, "
+        f"실적 국면은 [{e_regime_display} {earn_out['regime']['regime_label']}]({rpo_txt}, {inc_opm_txt})이고, "
+        f"펀더멘탈은 자기 밴드 {self_z_txt} · MDD Ratio {mdd_txt}(기대수익 {exp_txt})이며, "
         f"차트는 [{tech_out['lifecycle_state']['state_label']}] 상태입니다. "
-        f"(최근 13주 주가 변화 {ret_13w_act*100:+.1f}% 중 시장·거시 몫 {ret_13w_mac_mkt*100:+.1f}%p, 기업 고유 몫 {ret_13w_idio*100:+.1f}%p)"
+        f"{attr13_txt}"
     )
 
     # 셋째 줄 [다음 방아쇠 및 종료 조건 — Trigger & Invalidation][cite: 6]
@@ -4164,15 +5737,19 @@ def synthesize_4tracks(
         v_cond_str = f"V {active_tr_num}차 본격 집행 조건: 쌍바닥 후보 또는 반등 양봉(RVOL≥1.5) 추가로 하락 멈춤(STATE_B) 진입 시"
     elif v_status_code == "V_EXEC_HALF":
         v_cond_str = f"V 잔여 50% 추가 집행: 차트 바닥 전환(STATE_B/S) 확정 또는 지수 레짐 🟢 상향 시"
+    elif v_status_code == "V_WAIT_PRICE" and price_qual_code == "POOR_RISK_REWARD":
+        v_cond_str = f"V 개방 조건: MDD Ratio 0.15 이상 회복(주가 조정 또는 이익 추정 상향) 및 1차 매수기준선({fmt_price(t1_price, is_krx)}) 도달 시"
     elif v_status_code == "V_WAIT_PRICE":
         v_cond_str = f"V 개방 조건: 주가가 1차 매수기준선({fmt_price(t1_price, is_krx)}) 이하로 조정 도달 시"
+    elif v_status_code == "V_NA":
+        v_cond_str = f"V 개방 조건: 목표 배수 근거 데이터({NO_DATA}) 확보 전까지 판정 보류 ｜ 핵심 드라이버 무효화 감시: {earn_out['thesis_driver']['invalidation_condition']}"
     else:
-        v_cond_str = f"V 매도목표가: {fmt_price(sell_target_1y, is_krx)} ｜ 핵심 드라이버 무효화 감시: {earn_out['thesis_driver']['invalidation_condition']}"
+        v_cond_str = f"V 매도목표가: {sell_txt} ｜ 핵심 드라이버 무효화 감시: {earn_out['thesis_driver']['invalidation_condition']}"
 
     line_3_trigger = f"{t_cond_str} ｜ {v_cond_str}"
 
     # 5장. 전 종목 상태 변화 감지 플래그 (홈 화면 app.py 기회 레이더 연동용)[cite: 6]
-    approaching_v = bool(e_regime in ["G1", "G2"] and 0.0 < dist_to_t1_pct <= 0.05)
+    approaching_v = bool(e_regime in ["G1", "G2"] and dist_to_t1_pct is not None and 0.0 < dist_to_t1_pct <= 0.05)
     approaching_t = bool(t_status_code == "T_READY")
     radar_flags = {
         "FLIP_V_EXEC": bool(v_status_code in ["V_EXEC_FULL", "V_EXEC_HALF"]),
@@ -4193,7 +5770,7 @@ def synthesize_4tracks(
     unified_watchlist.append({
         "priority": 1,
         "category": "실적 드라이버",
-        "item": f"{earn_out['thesis_driver']['invalidation_condition']} ({earn_out['thesis_driver']['current_status']})",
+        "item": with_paren(earn_out['thesis_driver']['invalidation_condition'], earn_out['thesis_driver']['current_status']),
         "d_day": "상시"
     })
     for m_c in macro_out.get("watch_calendar", [])[:2]:
@@ -4215,7 +5792,7 @@ def synthesize_4tracks(
             "ticker": ticker,
             "name": stock_name,
             "analyzed_at": datetime.now().strftime("%Y-%m-%d"),
-            "current_price": int(current_price),
+            "current_price": (int(current_price) if is_krx else round(float(current_price), 2)),   # 미국은 센트 유지
         },
         "hard_kill_gate": {
             "is_killed": is_killed,
@@ -4242,23 +5819,25 @@ def synthesize_4tracks(
             },
             "earnings": {
                 "icon": earn_out["verdict"]["grade"],
-                "label": f"{e_regime} · {earn_out['regime']['regime_label'][:10]}",
-                "state": f"RPO +{rpo_yoy*100:.0f}% · 증분OPM {inc_opm*100:.1f}% · 리비전 {rev_status}"
+                "label": f"{e_regime_display} · {earn_out['regime']['regime_label'][:10]}",
+                "state": f"{rpo_txt} · {inc_opm_txt} · 리비전 {rev_status}"
             },
             "fundamental": {
                 "icon": f_pq.get("grade_icon", "🟡"),
-                "label": f"{price_qual_code} (1차선 {fmt_price(t1_price, is_krx)})",
-                "state": f"MDD Ratio {mdd_ratio:.2f} · 자기 {f_tz.get('self_5y_z', 0.0):+.2f}σ"
+                "label": price_qual_label if v_na else f"{price_qual_label} (1차선 {fmt_price(t1_price, is_krx)})",
+                "state": f"MDD Ratio {mdd_txt} · 자기 밴드 {self_z_txt}"
             },
             "macro": {
                 "icon": macro_out["classification"]["grade_icon"],
-                "label": f"{macro_out['classification']['label'][:10]} (고유 R² {int(macro_out['classification']['r2_macro_own']*100)}%)",
+                "label": (f"{macro_out['classification']['label'][:10]} (고유 R² {int(macro_out['classification']['r2_macro_own']*100)}%)"
+                          if macro_out['classification'].get('r2_macro_own') is not None else macro_out['classification']['label']),
                 "state": f"{macro_out['macro_regime']['current_regime']} ({macro_out['residual_check'].get('status', '')})"
             },
         },
         "v_action_card": {
             "status_code": v_status_code,
             "price_qual_code": price_qual_code,
+            "price_qual_label": price_qual_label,
             "badge_text": v_badge,
             "active_tranche": active_tr_num,
             "tranche_price": active_tr_price,
@@ -4266,8 +5845,8 @@ def synthesize_4tracks(
             "execution_ratio": v_exec_ratio,
             "recommended_weight": rec_v_weight,
             "sell_target_1y": sell_target_1y,
-            "expected_return_weighted": exp_ret,
-            "mdd_ratio": mdd_ratio,
+            "expected_return_weighted": exp_ret if _exp is not None else None,
+            "mdd_ratio": mdd_ratio if _mdd is not None else None,
             "high_confidence_overlap": has_high_conf_overlap,
         },
         "t_action_card": {
@@ -4277,13 +5856,21 @@ def synthesize_4tracks(
             "setup_id": setup_id,
             "grade": t_grade,
             "risk_modifier_applied": t_risk_mod,
-            "entry_price": int(t_ticket.get("entry_price", current_price)),
-            "stop_price": int(t_ticket.get("stop_price", current_price * 0.95)),
-            "shares": int(t_ticket.get("shares", 0) * t_risk_mod),
-            "target_price": int(t_ticket.get("target_1", current_price * 1.10)),
-            "expected_r": float(t_ticket.get("expected_r", 0.0)),
-            "time_stop_rule": f"{t_ticket.get('time_stop_days', 5)}거래일째 {fmt_price(t_ticket.get('time_stop_min_price', 0), is_krx)} 미달 시 다음 날 시가 청산",
-            "invalidation_rule": t_ticket.get("invalidation", "손절가 종가 이탈 또는 S-EVT 악재 발생"),
+            # 티켓(셋업)이 실제로 계산된 경우에만 가격·수량을 싣는다. 셋업이 없으면 현재가로 만든
+            # 임의 기본값을 넣지 않고 None(화면 '데이터 없음')과 사유만 전달한다 (가짜 숫자 금지).
+            "has_ticket": _t_has,
+            "no_ticket_reason": None if _t_has else (t_ticket.get("reason") or t_banner.get("headline_reason") or "활성 셋업 없음"),
+            "next_condition": t_banner.get("next_or_end_condition"),
+            "entry_price": _t_px(t_ticket.get("entry_price")) if _t_has else None,
+            "stop_price": _t_px(t_ticket.get("stop_price")) if _t_has else None,
+            "shares": int(int(t_ticket.get("shares") or 0) * t_risk_mod) if _t_has else None,
+            "target_price": _t_px(t_ticket.get("target_1")) if _t_has else None,
+            "expected_r": (float(t_ticket["expected_r"]) if t_ticket.get("expected_r") is not None else None) if _t_has else None,
+            "time_stop_rule": (
+                f"{t_ticket['time_stop_days']}거래일째 {fmt_price(t_ticket['time_stop_min_price'], is_krx)} 미달 시 다음 날 시가 청산"
+                if _t_has and t_ticket.get("time_stop_days") is not None and t_ticket.get("time_stop_min_price") is not None
+                else None),
+            "invalidation_rule": t_ticket.get("invalidation") if _t_has else None,
             "earnings_hold_guide": earnings_hold_guide,
         },
         "macro_risk_overlay": {
@@ -4299,8 +5886,9 @@ def synthesize_4tracks(
             "earnings_edge": f"📈 [{earn_out['thesis_driver']['mispricing_type']}] {earn_out['thesis_driver']['mispricing_detail']}",
             "multiple_edge": f"📈 [멀티플 진단] {fund_out['mispricing_points']['undervalued_point']}",
             "macro_attribution": (
-                f"📊 [13주 수익률 분해 사실] 최근 13주 수익률({ret_13w_act*100:+.1f}%) 중 "
-                f"시장·거시 설명 몫은 {ret_13w_mac_mkt*100:+.1f}%p, 기업 고유 몫은 {ret_13w_idio*100:+.1f}%p"
+                (f"📊 [13주 수익률 분해 사실] 최근 13주 수익률({ret_13w_act*100:+.1f}%) 중 "
+                 f"시장·거시 설명 몫은 {ret_13w_mac_mkt*100:+.1f}%p, 기업 고유 몫은 {ret_13w_idio*100:+.1f}%p")
+                if ret_13w_act is not None else f"📊 [13주 수익률 분해] 거시 트랙 보류로 {NO_DATA}"
             ),
         },
         "unified_watchlist": unified_watchlist,
