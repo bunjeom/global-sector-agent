@@ -50,6 +50,13 @@ python check_macro_data.py NVDA
 python check_peer_data.py NVDA
 ```
 
+코드를 고친 뒤에는 회귀 테스트로 예전에 고친 문제가 다시 생기지 않았는지 확인합니다. 가짜 데이터로 돌아가며 인터넷 연결이나 API 키가 필요 없습니다.
+
+```bash
+python tests/run_all.py          # 전체 (약 1~2분)
+python tests/run_all.py --fast   # 화면 검사 제외
+```
+
 ## 구조
 
 ```
@@ -58,6 +65,7 @@ pages/1_🔎_종목_딥다이브.py   종목 딥다이브 (종합 + 4개 트랙 
 engine.py                   계산 엔진 (트랙별 분석, 데이터 수집층, 종합 판정)
 utils.py                    공통 스타일·사이드바
 check_*.py                  실제 데이터 수집 점검 스크립트
+tests/                      회귀 테스트 (가짜 데이터·오프라인, run_all.py로 실행)
 AGENTS.md                   설계 규칙과 변경 기록
 ```
 

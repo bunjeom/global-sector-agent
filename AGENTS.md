@@ -10,6 +10,7 @@
 - `utils.py` — 공통 CSS, 사이드바 메뉴(`init_session`)
 - `pages/1_🔎_종목_딥다이브.py` — 종목 딥다이브
 - `check_earnings_data.py` — 실적 트랙 실제 데이터 점검(PC에서 `python check_earnings_data.py AAPL 005930.KS`)
+- `tests/` — 회귀 테스트(가짜 데이터·오프라인). `python tests/run_all.py`로 한 번에 실행
 - `.streamlit/config.toml` — Streamlit 기본 페이지 메뉴 숨김(사이드바 메뉴는 utils.py의 st.page_link)
 
 ## 2. 데이터 무결성 규칙 (가장 중요)
@@ -61,6 +62,8 @@
 ## 7. 확인 방법
 - 문법: `python -c "import ast; ast.parse(open('app.py', encoding='utf-8').read())"`
 - 실행: `streamlit run app.py` 후 화면 맨 아래 "데이터 점검" 펼쳐서 확인
+- 회귀 테스트: `python tests/run_all.py` (Windows: `.venv\Scripts\python tests\run_all.py`, 약 1~2분, `--fast`는 화면 검사 제외). engine.py·딥다이브를 고친 뒤 반드시 실행하고, 실패하면 커밋하지 않는다. 테스트는 tests/_offline.py로 외부 연결을 막고 가짜 데이터만 쓴다.
+- 버그를 고치면 그 버그를 재현하는 검사를 tests/에 추가하고 run_all.py 목록에 등록한다. 기대값을 바꿔야 하면 왜 바뀌는지 변경 기록에 적는다.
 
 ## 변경 기록
 - 2026-11-08 (Claude): 4분면을 합성(난수) 데이터에서 실제 yfinance 3년 종가로 교체(`build_real_rrg_bundle`). 국면 게이트를 하드코딩 값(VIX 36.2 등)에서 홈 헤더 실제 데이터로 교체, 일부 결측 시 G2 고정 버그 수정(삼성전자 G2 표시 문제). 레이더 신호를 예시 데이터로 표시하고 기본 접힘. 장기 보유 예외(QLD·SCHD) 게이트 제외. 실적 리비전이 예시 데이터면 '실적 데이터 없음'으로 표시. 홈 제목을 "오늘의 결론"으로 교체, 섹션 이름 정리, 동결 신호 접기, 기본 페이지 메뉴 숨김, .gitignore 추가(.env 보호). 백업: `_backup_20261108/`.
@@ -91,3 +94,4 @@
 - 2026-11-10 (Claude): 자기 PER 밴드 신뢰 게이트 추가 — 실제 엔비디아는 로그 PER로도 기하평균 97배·+1σ 204배(2023~24년 후행 PER 150~500배)라 매도목표가 약 $880·Bull +222%였음. 밴드 기간 확정 EPS가 3배 넘게 변했거나 로그 σ > 0.5면 밴드 제외(사유 표시), 시나리오 폭은 피어 PER σ로 대체(engine scen_lsd, input_data.scenario_width_source), G2도 자기 밴드가 없으면 피어 중앙값 대체. 재현 테스트: 엔비디아형 → 목표 22.5배·Bull/Bear 26.2/16.6배·매도 약 $333, 안정형(로그σ 0.12)은 밴드 유지. 주의: 이익 변동이 큰 사이클주(예: 삼성전자 2023년 EPS 급감)도 밴드가 제외될 수 있음. 백업: *.bak_before_bandgate.
 - 2026-11-11 (Claude): 딥다이브 NaN 현재가 오류 수정 — 야후가 장 마감 후 종가가 빈 마지막 행을 붙여 보내 현재가가 NaN이 되어 종합 판정에서 `cannot convert float NaN to integer` 발생. 페이지 fetch_ohlcv_and_benchmark에서 _clean_ohlcv로 종가 없는 행 제거(시가·고가·저가 빈칸은 종가로), synthesize_4tracks는 NaN·0 현재가면 명확한 오류 메시지, 종합 출력 current_price는 미국 센트 유지. 화면 테스트에 빈 마지막 행(NANROW) 재현 추가. 백업: *.bak_before_nanfix.
 - 2026-11-11 (Claude): 가치 판정 표시 일관성 — 종합(synthesize_4tracks) 가격 자격이 가치 트랙의 '조건부'(자기 밴드 없음 등)를 '매수 자격 충족'으로 올리던 불일치 수정(가치 트랙 판정을 넘지 않음). 실적 국면 판정 보류(NA)면 목표 배수 규칙 문구를 'G3 성숙/현금회수' 대신 '실적 국면 판정 보류 → 중립 규칙'으로 표시. 백업: *.bak_before_consist.
+- 2026-11-11 (Claude): 회귀 테스트를 저장소에 추가 — tests/ (실적·V 입력층, G3·금리, 거시 실데이터, T 실행 카드, 종합 라벨, 피어, 로그 PER 밴드·G3 조건, 딥다이브 화면 7가지 데이터 상태) + tests/run_all.py 일괄 실행기 + tests/_offline.py 네트워크 차단(localhost만 허용). 실제 네트워크·API 키 없이 15개 통과 확인, 이전 엔진(라벨 수정 전)으로는 6개 실패해 회귀를 잡는 것도 확인. 실제 네트워크에 의존하던 옛 체인 테스트는 제외. 변경 기록의 중복 줄 정리.

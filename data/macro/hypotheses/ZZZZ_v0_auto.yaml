@@ -1,0 +1,15 @@
+hypothesis_id: ZZZZ_v0_auto
+ticker: ZZZZ
+industry_category: AI 반도체·네트워킹(팹리스)
+created_at: 2026-11-11T15:06:08.790726
+variables:
+  - var_id: DFII10
+    expected_sign: '-'
+    strength: '●●'
+  - var_id: BAMLC0A0CM
+    expected_sign: '-'
+    strength: '●●'
+  - var_id: NETLIQ
+    expected_sign: '+'
+    strength: '●●'
+sha256_lock: 6c9e2cf1de0e3f42
