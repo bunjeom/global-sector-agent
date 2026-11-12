@@ -81,6 +81,8 @@ def main():
         chk(f"1 {m} 바꾼 뒤에는 실제로 달라짐(검사가 의미 있음)", not eq_frames(base.loc[k:].iloc[1:], alt.loc[k:].iloc[1:]))
         chk(f"1 {m} 검사 구간에 단계 전환이 있음", base["level"].nunique() >= 3)
         print(f"   {m} 게이트:", base["level"].tolist(), flush=True)
+        if m == "US":
+            gate_us_syn = base
 
     # 2) 앱 히스테리시스 함수와 같은 결과 (데이터가 3년보다 짧아 앱과 같은 창)
     hist = engine.build_gate_history_state(pm, "US")["history"]
@@ -216,6 +218,78 @@ def main():
         front["period"]["end"] < "2014-01-01" <= back["period"]["start"] and front["n_days"] + back["n_days"] == 1000)
     whole_bh = engine.gate_exposure_backtest(g12[g12.index < "2014-01-01"], px12.loc[:"2013-12-31"])["strategies"]["매수 후 보유"]["total_return"]
     chk("12 앞 기간 매수 후 보유 = 앞 기간 가격만으로 계산", abs(front["exposure"]["매수 후 보유"]["total_return"] - whole_bh) < 1e-12)
+
+    # 13) 히스테리시스 함수(앱과 백테스트 공용): 강화 즉시, 완화는 2일 연속 확인 후 한 단계
+    hy = engine.apply_gate_hysteresis
+    chk("13 이전 기록 없음 → 그날 단계", hy(2, None) == (2, 0))
+    chk("13 강화는 즉시", hy(3, {"prev_level": 1, "cooling_counter": 1}) == (3, 0))
+    chk("13 완화 1일째는 유지", hy(1, {"prev_level": 3, "cooling_counter": 0}) == (3, 1))
+    chk("13 완화 2일째에 한 단계만 내려감", hy(0, {"prev_level": 3, "cooling_counter": 1}) == (2, 0))
+    chk("13 같은 단계면 확인 일수 초기화", hy(2, {"prev_level": 2, "cooling_counter": 1}) == (2, 0))
+
+    # 14) 후보 규칙의 그날 지표 단계: 손 계산
+    dv = pd.bdate_range("2024-01-01", periods=5)
+    gv = pd.DataFrame({"comp_regime": [3, 3, 1, np.nan, 3], "comp_vix": [0, 2, 3, np.nan, np.nan],
+                       "comp_macro": [1, 1, 3, np.nan, 3], "raw_level": 0, "level": 0}, index=dv)
+    chk("14 현재: 가장 나쁜 값 (모두 없으면 2)", engine.gate_variant_raw(gv, "현재").tolist() == [3, 3, 3, 2, 3])
+    chk("14 A: 레짐 위기만이면 G2, VIX·거시 3이면 G3", engine.gate_variant_raw(gv, "A 200일선 이탈 = G2").tolist() == [2, 2, 3, 2, 3])
+    chk("14 B: 레짐 위기 + 공포가 겹칠 때만 G3", engine.gate_variant_raw(gv, "B 추세 붕괴 + 공포 동시 = G3").tolist() == [2, 3, 2, 2, 3])
+
+    # 15) '현재' 후보를 저장된 구성 요소로 다시 계산 = 앱 게이트 결과 (지표 단계·최종 단계)
+    cur = engine.gate_variant_series(gate_us_syn, "현재")
+    chk("15 '현재' 후보 재계산 = 앱 게이트 (45일)", cur["raw_level"].tolist() == gate_us_syn["raw_level"].tolist()
+        and cur["level"].tolist() == gate_us_syn["level"].tolist())
+
+    # 16) 판정 로직: 앞 기간 기준 → 뒤 기간 확인
+    def row(share, vr, tim):
+        return {"g3_share": share, "vol_ratio": vr, "timing": tim}
+    fake = {"현재": {"US": {"앞 기간": row(45, 2.0, -0.2), "뒤 기간": row(30, 1.7, -0.4)}},
+            "A 200일선 이탈 = G2": {"US": {"앞 기간": row(25, 2.2, 0.1), "뒤 기간": row(15, 1.5, 0.0)}},
+            "B 추세 붕괴 + 공포 동시 = G3": {"US": {"앞 기간": row(12, 2.5, -0.1), "뒤 기간": row(10, 1.8, -0.3)}}}
+    vd = engine.select_gate_variant(fake)
+    chk("16 G3 비중 20% 초과 후보(A)는 탈락, B 채택 후보", vd["chosen"] == "B 추세 붕괴 + 공포 동시 = G3"
+        and not vd["checks"]["A 200일선 이탈 = G2"]["front_pass"])
+    fake["B 추세 붕괴 + 공포 동시 = G3"]["US"]["뒤 기간"] = row(10, 0.9, -0.3)
+    vd2 = engine.select_gate_variant(fake)
+    chk("16 뒤 기간 G3 변동성 비율 ≤ 1.0이면 현재 유지", vd2["chosen"] is None and "뒤 기간 확인 실패" in vd2["reason"])
+    fake["B 추세 붕괴 + 공포 동시 = G3"]["US"]["앞 기간"] = row(12, 1.2, 0.3)
+    chk("16 앞 기간 통과 후보가 없으면 현재 유지", engine.select_gate_variant(fake)["reason"] == "앞 기간 기준을 통과한 후보가 없음")
+
+    # 17) T 진입 크기 후보: ST-1을 G3에서 20% 허용
+    dg = pd.bdate_range("2013-12-02", periods=60)
+    gg = pd.DataFrame({"comp_regime": 3, "comp_vix": 0, "comp_macro": 1, "raw_level": 3, "level": 3}, index=dg)
+    tt = pd.DataFrame({"ticker": ["XLK", "XLK", "XLK", "XLK"], "group": ["ETF"] * 4,
+                       "date": ["2013-12-10", "2013-12-11", "2014-01-10", "2014-01-13"],
+                       "setup": ["ST-1", "ST-2", "ST-1", "ST-1"], "r_multiple": [1.0, 2.0, -1.0, 0.5]})
+    sv = engine.evaluate_setup_size_variants(tt, {"US": gg}, split="2014-01-01")
+    cur_f = sv["results"]["현재"]["현재"]["앞 기간"]["ETF"]
+    alt_f = sv["results"]["현재"]["ST-1 BNF 예외 20%"]["앞 기간"]["ETF"]
+    alt_b = sv["results"]["현재"]["ST-1 BNF 예외 20%"]["뒤 기간"]["ETF"]
+    chk("17 현재 규칙: G3에서는 진입 없음 (합계 0)", cur_f["sum_r"] == 0.0 and cur_f["n_taken"] == 0)
+    chk("17 ST-1 예외: 앞 기간 0.2×1.0 = +0.2R, 뒤 기간 0.2×(−1.0+0.5) = −0.1R",
+        alt_f["sum_r"] == 0.2 and alt_f["n_taken"] == 1 and alt_b["sum_r"] == -0.1)
+    chk("17 뒤 기간이 나빠져 채택 안 함", sv["verdict"]["현재"]["adopt_st1_exception"] is False)
+    chk("17 후보 B에선 레짐 위기만이라 G2 → 같은 결과", sv["results"]["B 추세 붕괴 + 공포 동시 = G3"]["ST-1 BNF 예외 20%"]["앞 기간"]["ETF"]["sum_r"] == 0.2)
+
+    # 18) 후보 비교 전체 실행 + 보고서 (기준일 앞·뒤 모두 260일 이상)
+    d18 = pd.bdate_range("2012-01-02", periods=1000)
+    r18 = np.random.default_rng(21)
+    g18 = pd.DataFrame({"comp_regime": r18.choice([0, 1, 3], 1000, p=[0.3, 0.4, 0.3]),
+                        "comp_vix": r18.choice([0, 1, 2, 3], 1000, p=[0.5, 0.2, 0.2, 0.1]),
+                        "comp_macro": r18.choice([0, 1, 3], 1000, p=[0.4, 0.4, 0.2])}, index=d18).rolling(3).max().fillna(0).astype(int)
+    g18["raw_level"] = g18.max(axis=1)
+    g18["level"] = g18["raw_level"]
+    px18 = pd.Series(100 * np.cumprod(1 + r18.normal(3e-4, 0.01, 1000)), index=d18)
+    va = engine.run_variant_analysis({"US": g18}, {"US": px18}, tt)
+    chk("18 후보 3개 × 앞·뒤 기간 계산", all(va["gate"]["results"][n]["US"]["앞 기간"].get("g3_share") is not None
+                                    and va["gate"]["results"][n]["US"]["뒤 기간"].get("g3_share") is not None for n in engine.GATE_VARIANTS))
+    rv = engine.render_variants_report(va, generated_at="테스트")
+    chk("18 보고서에 판정·T 진입 크기 표", "### 판정:" in rv and "## T 셋업 진입 크기 후보" in rv)
+    chk("18 후보 B의 G3 비중 ≤ 현재", va["gate"]["results"]["B 추세 붕괴 + 공포 동시 = G3"]["US"]["앞 기간"]["g3_share"]
+        <= va["gate"]["results"]["현재"]["US"]["앞 기간"]["g3_share"])
+    import json as _json
+    chk("18 결과는 JSON으로 저장 가능", len(_json.dumps(va, ensure_ascii=False, default=str)) > 100)
+    chk("18 전체 실행(run_rule_backtest) 결과에 후보 비교 포함", res9.get("variants") is not None and "gate" in res9["variants"])
 
     print("FAILS:", FAILS)
     sys.exit(1 if FAILS else 0)

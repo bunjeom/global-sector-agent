@@ -19,7 +19,7 @@ from .common import TECH_PARAMS
 from .technical_signals import compute_base_primitives
 from .backtest import _bt_summary, run_setup_backtest_validation
 from .home import NARRATIVE_BASKETS_SPEC, build_regime_vix_header
-from .gate import build_gate_inputs_from_header, evaluate_market_gate, gate_components
+from .gate import apply_gate_hysteresis, build_gate_inputs_from_header, evaluate_market_gate, gate_components
 
 BACKTEST_CONFIG: Dict[str, Any] = {
     "START": "2000-01-01",           # 다운로드 시작일 (VIX·SPY·QQQ·KOSPI가 모두 있는 시기)
@@ -439,6 +439,262 @@ def summarize_setup_trades_by_gate(trades: pd.DataFrame, size_map: Optional[Dict
 
 
 # ---------------------------------------------------------------------
+# 규칙 후보 비교 (2026-11-12 추가). 후보·판정 기준은 결과를 보기 전에 여기서 고정했다.
+# 앞 기간(SPLIT_DATE 전)으로만 고르고, 뒤 기간으로 확인한다. 통과하지 못하면 현재 규칙을 유지한다.
+# ---------------------------------------------------------------------
+GATE_VARIANTS: Dict[str, str] = {
+    "현재": "지수 < 200일 지수이동평균이면 즉시 위기(G3). 최종 = 레짐·VIX·거시 국면 중 가장 나쁜 값",
+    "A 200일선 이탈 = G2": "레짐 위기(지수 < EMA200)는 G2로 낮춤. G3는 VIX(90%ile·35 이상)나 거시 국면(VIX 80%ile 이상)에서만",
+    "B 추세 붕괴 + 공포 동시 = G3": "모든 요소의 단독 상한을 G2로 두고, 레짐 위기와 공포(VIX 75%ile·25 이상 또는 거시 국면 침체)가 같은 날 겹칠 때만 G3",
+}
+VARIANT_CRITERIA: Dict[str, float] = {
+    # 1) 위기는 드물어야 한다: 2001~2013의 큰 하락장(2001~03, 2008~09)이 대략 기간의 20% 안팎
+    "G3_MAX_SHARE_FRONT": 20.0,
+    # 2) G3는 여전히 고위험을 뜻해야 한다: G3 이후 20일 변동성 ≥ G0·G1 이후 변동성 × 1.5
+    "MIN_VOL_RATIO_FRONT": 1.5,
+    # 뒤 기간 확인: G3 변동성이 G0·G1보다 커야 하고(>1.0), 타이밍 효과가 현재 규칙보다 나빠지면 안 됨
+    "MIN_VOL_RATIO_BACK": 1.0,
+}
+# T 셋업 진입 크기 후보. 'ST-1 BNF 예외'는 과매도 반전(ST-1)을 앱의 BNF 예외처럼 G2·G3에서 20% 허용
+T_SIZE_VARIANTS: Dict[str, Dict[str, Dict[int, float]]] = {
+    "현재": {"ST-1": {0: 1.0, 1: 0.5, 2: 0.0, 3: 0.0}, "ST-2": {0: 1.0, 1: 0.5, 2: 0.0, 3: 0.0}},
+    "ST-1 BNF 예외 20%": {"ST-1": {0: 1.0, 1: 0.5, 2: 0.2, 3: 0.2}, "ST-2": {0: 1.0, 1: 0.5, 2: 0.0, 3: 0.0}},
+}
+
+
+def gate_variant_raw(gate_df: pd.DataFrame, variant: str) -> pd.Series:
+    """저장된 구성 요소 단계(comp_regime·comp_vix·comp_macro)로 후보 규칙의 그날 지표 단계를 다시 계산한다.
+    구성 요소가 모두 없으면 2 (calculate_single_gate의 방어 폴백과 같음)."""
+    r = gate_df["comp_regime"].astype(float)
+    v = gate_df["comp_vix"].astype(float)
+    mc = gate_df["comp_macro"].astype(float)
+    if variant == "현재":
+        raw = pd.concat([r, v, mc], axis=1).max(axis=1)
+    elif variant.startswith("A"):
+        raw = pd.concat([r.clip(upper=2), v, mc], axis=1).max(axis=1)
+    elif variant.startswith("B"):
+        base = pd.concat([r.clip(upper=2), v.clip(upper=2), mc.clip(upper=2)], axis=1).max(axis=1)
+        crisis = (r == 3) & ((v >= 2) | (mc == 3))
+        raw = base.where(~crisis, 3.0)
+    else:
+        raise ValueError(f"알 수 없는 후보: {variant}")
+    return raw.fillna(2.0).astype(int)
+
+
+def gate_variant_series(gate_df: pd.DataFrame, variant: str) -> pd.DataFrame:
+    """후보 규칙의 날짜별 지표 단계(raw_level)와 최종 단계(level). 히스테리시스는 앱과 같은 apply_gate_hysteresis."""
+    raw = gate_variant_raw(gate_df, variant)
+    levels, state = [], None
+    for x in raw.values:
+        lv, cc = apply_gate_hysteresis(int(x), state)
+        levels.append(lv)
+        state = {"prev_level": lv, "cooling_counter": cc}
+    out = gate_df.copy()
+    out["raw_level"] = raw.values
+    out["level"] = levels
+    return out
+
+
+def _vol_ratio(fw: Dict[str, Any]) -> Optional[float]:
+    """G3 이후 변동성 ÷ G0·G1 이후 변동성(일수 가중)."""
+    g3 = fw.get("G3", {})
+    lo = [fw.get(k, {}) for k in ("G0", "G1")]
+    n = sum(x.get("n_days", 0) for x in lo)
+    if not g3.get("n_days") or not g3.get("mean_vol") or n == 0:
+        return None
+    base = sum(x["mean_vol"] * x["n_days"] for x in lo if x.get("n_days")) / n
+    return float(g3["mean_vol"] / base) if base else None
+
+
+def evaluate_gate_variants(gate_by_market: Dict[str, pd.DataFrame], price_by_market: Dict[str, pd.Series]) -> Dict[str, Any]:
+    """후보 × 시장 × 기간별 지표와, 사전에 정한 기준에 따른 판정."""
+    res: Dict[str, Any] = {}
+    for name in GATE_VARIANTS:
+        res[name] = {}
+        for m, g in gate_by_market.items():
+            if g is None or len(g) == 0 or m not in price_by_market:
+                continue
+            gv = gate_variant_series(g, name)
+            sp = gate_split_stats(gv, price_by_market[m])
+            row = {}
+            for per in ("앞 기간", "뒤 기간"):
+                p = sp.get(per, {})
+                if not p.get("forward"):
+                    row[per] = {"n_days": p.get("n_days", 0)}
+                    continue
+                ex = p["exposure"]
+                gs, cs = ex["게이트(최종)"], ex["같은 평균 노출 고정"]
+                row[per] = {"n_days": p["n_days"], "period": p["period"], "g3_share": p["time_share"]["G3"],
+                            "time_share": p["time_share"], "vol_ratio": _vol_ratio(p["forward"]),
+                            "gate_sharpe": gs.get("sharpe"), "const_sharpe": cs.get("sharpe"),
+                            "timing": (gs["sharpe"] - cs["sharpe"]) if gs.get("sharpe") is not None and cs.get("sharpe") is not None else None,
+                            "gate_mdd": gs.get("mdd"), "const_mdd": cs.get("mdd"), "gate_cagr": gs.get("cagr"),
+                            "avg_exposure": gs.get("avg_exposure"), "switches_per_year": gs.get("switches_per_year")}
+            res[name][m] = row
+    return {"results": res, "verdict": select_gate_variant(res)}
+
+
+def select_gate_variant(res: Dict[str, Any]) -> Dict[str, Any]:
+    """사전에 정한 기준으로 후보를 고른다. 1단계: 앞 기간 기준(모든 시장) 통과 후보 중 앞 기간 타이밍 효과 평균이 가장 큰 것.
+    2단계: 뒤 기간에서 모든 시장 G3 변동성 비율 > 1.0이고 타이밍 효과가 현재 규칙 이상이면 채택 후보, 아니면 현재 유지."""
+    c = VARIANT_CRITERIA
+    checks: Dict[str, Any] = {}
+    passed = []
+    cur = res.get("현재", {})
+    for name, by_m in res.items():
+        if name == "현재" or not by_m:
+            continue
+        reasons, ok = [], True
+        for m, row in by_m.items():
+            f = row.get("앞 기간", {})
+            if f.get("g3_share") is None:
+                ok = False
+                reasons.append(f"{m} 앞 기간 데이터 없음")
+                continue
+            if f["g3_share"] > c["G3_MAX_SHARE_FRONT"]:
+                ok = False
+                reasons.append(f"{m} G3 비중 {f['g3_share']:.0f}% > {c['G3_MAX_SHARE_FRONT']:.0f}%")
+            if f.get("vol_ratio") is None or f["vol_ratio"] < c["MIN_VOL_RATIO_FRONT"]:
+                ok = False
+                vr = "없음" if f.get("vol_ratio") is None else f"{f['vol_ratio']:.2f}배"
+                reasons.append(f"{m} G3 변동성 비율 {vr} < {c['MIN_VOL_RATIO_FRONT']:.1f}배")
+        tims = [row.get("앞 기간", {}).get("timing") for row in by_m.values()]
+        score = float(np.mean(tims)) if tims and all(t is not None for t in tims) else None
+        checks[name] = {"front_pass": ok, "front_reasons": reasons, "front_timing_mean": score}
+        if ok and score is not None:
+            passed.append((score, name))
+    if not passed:
+        return {"chosen": None, "decision": "현재 규칙 유지", "reason": "앞 기간 기준을 통과한 후보가 없음", "checks": checks}
+    _, best = max(passed)
+    back_reasons, back_ok = [], True
+    for m, row in res[best].items():
+        b, bc = row.get("뒤 기간", {}), cur.get(m, {}).get("뒤 기간", {})
+        if b.get("vol_ratio") is None or b["vol_ratio"] <= c["MIN_VOL_RATIO_BACK"]:
+            back_ok = False
+            back_reasons.append(f"{m} 뒤 기간 G3 변동성 비율 {('없음' if b.get('vol_ratio') is None else format(b['vol_ratio'], '.2f') + '배')} ≤ {c['MIN_VOL_RATIO_BACK']:.1f}배")
+        if b.get("timing") is None or bc.get("timing") is None or b["timing"] < bc["timing"]:
+            back_ok = False
+            back_reasons.append(f"{m} 뒤 기간 타이밍 효과 {b.get('timing') if b.get('timing') is None else format(b['timing'], '+.2f')} < 현재 {bc.get('timing') if bc.get('timing') is None else format(bc['timing'], '+.2f')}")
+    checks[best]["back_pass"] = back_ok
+    checks[best]["back_reasons"] = back_reasons
+    if back_ok:
+        return {"chosen": best, "decision": f"채택 후보: {best}", "reason": "앞 기간 기준 통과, 뒤 기간 확인 통과", "checks": checks}
+    return {"chosen": None, "decision": "현재 규칙 유지", "reason": f"앞 기간에서 '{best}'를 골랐지만 뒤 기간 확인 실패", "checks": checks}
+
+
+def evaluate_setup_size_variants(trades: pd.DataFrame, gate_by_market: Dict[str, pd.DataFrame],
+                                 split: Optional[str] = None) -> Dict[str, Any]:
+    """게이트 후보 × T 진입 크기 후보 × 기간 × 종목 묶음별 결과. 거래의 게이트 단계는 후보 게이트로 다시 붙인다.
+    판정: 'ST-1 BNF 예외'는 앞 기간과 뒤 기간 모두 ETF 합계 R이 '현재'보다 클 때만 채택 후보."""
+    split_t = pd.Timestamp(split or BACKTEST_CONFIG["SPLIT_DATE"])
+    out: Dict[str, Any] = {"split_date": str(split_t.date()), "results": {}, "verdict": {}}
+    if trades is None or len(trades) == 0:
+        return out
+    base = trades[["ticker", "group", "date", "setup", "r_multiple"]].copy()
+    base["date"] = pd.to_datetime(base["date"])
+    for gname in GATE_VARIANTS:
+        gv = {m: gate_variant_series(g, gname) for m, g in gate_by_market.items() if g is not None and len(g)}
+        t = attach_gate_to_trades(base, gv)
+        t = t[t["gate_level"].notna()].copy()
+        t["gate_level"] = t["gate_level"].astype(int)
+        res_g: Dict[str, Any] = {}
+        for sname, smap in T_SIZE_VARIANTS.items():
+            w = pd.Series([smap.get(s, {}).get(int(lv), 0.0) for s, lv in zip(t["setup"], t["gate_level"])], index=t.index)
+            res_s: Dict[str, Any] = {}
+            for per, pmask in (("앞 기간", t["date"] < split_t), ("뒤 기간", t["date"] >= split_t), ("전체 기간", pd.Series(True, index=t.index))):
+                res_p: Dict[str, Any] = {}
+                for grp in ("ETF", "전체"):
+                    gm = pmask & ((t["group"] == grp) if grp != "전체" else True)
+                    r, ww = t.loc[gm, "r_multiple"].astype(float), w[gm]
+                    taken = ww > 0
+                    rt = r[taken]
+                    res_p[grp] = {"sum_r": round(float((ww * r).sum()), 2), "n_taken": int(taken.sum()), "n_all": int(gm.sum()),
+                                  "expectancy": round(float((ww * r).sum() / ww.sum()), 3) if ww.sum() > 0 else None,
+                                  "se": round(float(rt.std(ddof=1) / math.sqrt(len(rt))), 3) if len(rt) >= 2 else None}
+                res_s[per] = res_p
+            res_g[sname] = res_s
+        out["results"][gname] = res_g
+        cur, alt = res_g["현재"], res_g["ST-1 BNF 예외 20%"]
+        ok = all(alt[p]["ETF"]["sum_r"] > cur[p]["ETF"]["sum_r"] for p in ("앞 기간", "뒤 기간"))
+        out["verdict"][gname] = {"adopt_st1_exception": ok,
+                                 "front_delta_r": round(alt["앞 기간"]["ETF"]["sum_r"] - cur["앞 기간"]["ETF"]["sum_r"], 2),
+                                 "back_delta_r": round(alt["뒤 기간"]["ETF"]["sum_r"] - cur["뒤 기간"]["ETF"]["sum_r"], 2)}
+    return out
+
+
+def run_variant_analysis(gate_by_market: Dict[str, pd.DataFrame], price_by_market: Dict[str, pd.Series],
+                         trades: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    """게이트 후보 비교와 T 진입 크기 후보 비교를 한 번에. 저장된 게이트 시계열(CSV)만 있으면 몇 초 안에 끝난다."""
+    gv = evaluate_gate_variants(gate_by_market, price_by_market)
+    sv = evaluate_setup_size_variants(trades, gate_by_market) if trades is not None and len(trades) else None
+    return {"gate": gv, "setup": sv, "candidates": GATE_VARIANTS, "criteria": VARIANT_CRITERIA,
+            "t_size_variants": {k: {s: {f"G{lv}": w for lv, w in m.items()} for s, m in v.items()} for k, v in T_SIZE_VARIANTS.items()}}
+
+
+def render_variants_report(v: Dict[str, Any], generated_at: Optional[str] = None) -> str:
+    """후보 비교 보고서(마크다운)."""
+    L = ["# 판정 규칙 후보 비교", "", f"- 생성: {generated_at or '—'} · 기간 분할 기준일 {BACKTEST_CONFIG['SPLIT_DATE']}",
+         "- 후보와 판정 기준은 결과를 보기 전에 engine/rule_backtest.py(GATE_VARIANTS·VARIANT_CRITERIA·T_SIZE_VARIANTS)에 고정했습니다. "
+         "앞 기간으로 고르고 뒤 기간으로 확인하며, 통과하지 못하면 현재 규칙을 유지합니다.", "",
+         "## 국면 게이트 후보", ""]
+    for name, desc in v["candidates"].items():
+        L.append(f"- **{name}**: {desc}")
+    c = v["criteria"]
+    L += ["", f"판정 기준: 앞 기간에서 모든 시장의 G3 비중 ≤ {c['G3_MAX_SHARE_FRONT']:.0f}%, G3 이후 변동성 ≥ G0·G1의 {c['MIN_VOL_RATIO_FRONT']:.1f}배 → "
+          f"통과 후보 중 앞 기간 타이밍 효과(게이트 샤프 − 같은 평균 노출 고정 샤프)가 가장 큰 것 → 뒤 기간에서 G3 변동성 비율 > {c['MIN_VOL_RATIO_BACK']:.1f}배이고 "
+          f"타이밍 효과가 현재 이상이면 채택 후보.", ""]
+    res = v["gate"]["results"]
+    markets = sorted({m for by_m in res.values() for m in by_m})
+    for m in markets:
+        L += [f"### {MARKET_NAMES.get(m, m)}", "",
+              "| 후보 | 기간 | G3 비중 | G3 변동성 ÷ G0·G1 | 게이트 샤프 | 고정 비중 샤프 | 타이밍 효과 | 게이트 최대 낙폭 | 고정 비중 최대 낙폭 | 평균 노출 | 연간 비중 변경 |",
+              "|---|---|---|---|---|---|---|---|---|---|---|"]
+        for name in res:
+            for per in ("앞 기간", "뒤 기간"):
+                r = res[name].get(m, {}).get(per, {})
+                if r.get("g3_share") is None:
+                    L.append(f"| {name} | {per} | 데이터 부족 | | | | | | | | |")
+                    continue
+                pr = r.get("period") or {}
+                L.append(f"| {name} | {per} ({str(pr.get('start'))[:4]}~{str(pr.get('end'))[:4]}) | {r['g3_share']:.0f}% | "
+                         f"{'—' if r['vol_ratio'] is None else format(r['vol_ratio'], '.2f') + '배'} | {_num_txt(r['gate_sharpe'])} | {_num_txt(r['const_sharpe'])} | "
+                         f"{'—' if r['timing'] is None else format(r['timing'], '+.2f')} | {_pct(r['gate_mdd'])} | {_pct(r['const_mdd'])} | "
+                         f"{_pct(r['avg_exposure'], 0, sign=False)} | {_num_txt(r['switches_per_year'], 1)} |")
+        L.append("")
+    vd = v["gate"]["verdict"]
+    L += [f"### 판정: {vd['decision']}", "", f"- {vd['reason']}"]
+    for name, ck in vd["checks"].items():
+        front = "통과" if ck["front_pass"] else "탈락 — " + "; ".join(ck["front_reasons"])
+        L.append(f"- {name}: 앞 기간 {front}" + (f" (타이밍 효과 평균 {ck['front_timing_mean']:+.2f})" if ck.get("front_timing_mean") is not None else ""))
+        if "back_pass" in ck:
+            L.append(f"  - 뒤 기간 확인 {'통과' if ck['back_pass'] else '실패 — ' + '; '.join(ck['back_reasons'])}")
+    L.append("")
+    sv = v.get("setup")
+    if sv and sv.get("results"):
+        L += ["## T 셋업 진입 크기 후보", "",
+              "- **현재**: G0 100% · G1 50% · G2·G3 0% (ST-1·ST-2 같음)",
+              "- **ST-1 BNF 예외 20%**: 과매도 반전(ST-1)만 G2·G3에서 20% 허용 (앱의 BNF 예외와 같은 크기), ST-2는 현재와 같음",
+              "- 판정 기준: 앞 기간과 뒤 기간 모두 ETF 합계 R이 '현재'보다 커야 채택 후보 (대표 종목은 사후 선택 편향이 있어 판정에 쓰지 않음)", "",
+              "| 게이트 후보 | 진입 크기 | 기간 | ETF 합계 R | ETF 기대값 ±표준오차 (건수) | 전체 합계 R | 전체 기대값 (건수) |",
+              "|---|---|---|---|---|---|---|"]
+        for gname, res_g in sv["results"].items():
+            for sname, res_s in res_g.items():
+                for per in ("앞 기간", "뒤 기간"):
+                    e, a = res_s[per]["ETF"], res_s[per]["전체"]
+                    ex_e = "—" if e["expectancy"] is None else f"{e['expectancy']:+.2f}R" + (f" ±{e['se']:.2f}" if e.get("se") is not None else "")
+                    ex_a = "—" if a["expectancy"] is None else f"{a['expectancy']:+.2f}R"
+                    L.append(f"| {gname} | {sname} | {per} | {e['sum_r']:+.1f}R | {ex_e} ({e['n_taken']}/{e['n_all']}) | {a['sum_r']:+.1f}R | {ex_a} ({a['n_taken']}/{a['n_all']}) |")
+        L.append("")
+        for gname, vv in sv["verdict"].items():
+            L.append(f"- 게이트 '{gname}' 기준: ST-1 BNF 예외 {'채택 후보' if vv['adopt_st1_exception'] else '채택 안 함'} "
+                     f"(ETF 합계 R 변화 앞 기간 {vv['front_delta_r']:+.1f}R · 뒤 기간 {vv['back_delta_r']:+.1f}R)")
+        L.append("")
+    L += ["## 주의", "- 전체 기간 결과를 이미 본 뒤에 만든 후보라, 뒤 기간 확인도 완전히 독립적인 검증은 아닙니다. 채택 후보가 나와도 앱에 반영한 뒤 앞으로의 실제 결과로 다시 확인해야 합니다.",
+          "- T 셋업은 레이더 카드의 단순화 규칙이고, 노출 비중은 모델 가정입니다(REPORT.md의 주의 사항과 같음).", ""]
+    return "\n".join(L)
+
+
+# ---------------------------------------------------------------------
 # 전체 실행·요약·보고서 (run_backtest.py와 이후 화면에서 함께 쓴다)
 # ---------------------------------------------------------------------
 MARKET_NAMES = {"US": "미국", "KR": "한국"}
@@ -511,7 +767,9 @@ def run_rule_backtest(index_map: Dict[str, pd.DataFrame], setup_price_map: Optio
         summary["setups"]["base_cost"] = base_cost
         summary["setups"]["cost_sensitivity"] = summarize_setup_cost_sensitivity(
             {c: pd.DataFrame(r) for c, r in rows_by_cost.items()})
-    return {"summary": summary, "gate_series": gate_series, "equity": equity, "trades": trades_df}
+    prices = {m: _price_col(pm[BACKTEST_CONFIG["BENCH"][m]]) for m in gate_series}
+    variants = run_variant_analysis(gate_series, prices, trades_df) if gate_series else None
+    return {"summary": summary, "gate_series": gate_series, "equity": equity, "trades": trades_df, "variants": variants}
 
 
 def _pct(v: Any, nd: int = 1, sign: bool = True) -> str:

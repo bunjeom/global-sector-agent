@@ -145,6 +145,24 @@ def _gate_release_condition(comps: dict, level: int) -> str:
         return "데이터 없음"
     return " 그리고 ".join(parts) + f" ({GATE_CONFIG['COOLING_DAYS_REQUIRED']}거래일 연속)"
 
+def apply_gate_hysteresis(raw_level: int, history_state: dict = None) -> tuple[int, int]:
+    """히스테리시스: 강화는 즉시, 완화는 COOLING_DAYS_REQUIRED 거래일 연속 확인 후 한 단계씩.
+    반환 (최종 단계, 새 완화 확인 일수). history_state가 없으면 그날 지표 단계로 시작한다.
+    evaluate_market_gate와 백테스트 후보 게이트(rule_backtest)가 함께 쓰는 단일 출처."""
+    if history_state is None:
+        history_state = {"prev_level": raw_level, "cooling_counter": 0}
+    prev_level = history_state.get("prev_level", raw_level)
+    cooling_counter = history_state.get("cooling_counter", 0)
+    if raw_level > prev_level:
+        return raw_level, 0
+    if raw_level < prev_level:
+        new_cooling_counter = cooling_counter + 1
+        if new_cooling_counter >= GATE_CONFIG["COOLING_DAYS_REQUIRED"]:
+            return prev_level - 1, 0
+        return prev_level, new_cooling_counter
+    return prev_level, 0
+
+
 def evaluate_market_gate(market_type: str, us_data: dict, kr_data: dict, history_state: dict = None) -> dict:
     m_type = str(market_type).upper()
     target_data = kr_data if m_type == "KR" else us_data
@@ -168,21 +186,7 @@ def evaluate_market_gate(market_type: str, us_data: dict, kr_data: dict, history
         target_data.get("vix_value"), target_data.get("macro_phase")
     )
     history_used = history_state is not None
-    if history_state is None:
-        history_state = {"prev_level": raw_level, "cooling_counter": 0}
-    prev_level = history_state.get("prev_level", raw_level)
-    cooling_counter = history_state.get("cooling_counter", 0)
-
-    if raw_level > prev_level:
-        final_level, new_cooling_counter = raw_level, 0
-    elif raw_level < prev_level:
-        new_cooling_counter = cooling_counter + 1
-        if new_cooling_counter >= GATE_CONFIG["COOLING_DAYS_REQUIRED"]:
-            final_level, new_cooling_counter = prev_level - 1, 0
-        else:
-            final_level = prev_level
-    else:
-        final_level, new_cooling_counter = prev_level, 0
+    final_level, new_cooling_counter = apply_gate_hysteresis(raw_level, history_state)
 
     names = GATE_CONFIG["COMPONENT_NAMES"]
     binding = [names[k] for k, g in comps.items() if g is not None and g == raw_level]
