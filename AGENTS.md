@@ -54,6 +54,7 @@
 - 실제 4분면은 `build_real_rrg_bundle(etf_map, baskets)`(engine/rrg.py)로 만든다.
 - 백테스트(engine/rule_backtest.py)는 게이트를 따로 계산하지 않고 앱과 같은 함수(build_regime_vix_header → build_gate_inputs_from_header → evaluate_market_gate)를 날짜마다 그날 이전 3년 데이터로 호출한다(앱 period="3y"와 같게). 한국 게이트는 미국 당일 데이터(QQQ·VIX)를 쓰지 않는다. 게이트 함수를 고치면 백테스트도 자동으로 따라간다.
 - 백테스트 결과를 보고 같은 데이터로 임계값(GATE_CONFIG 등)을 다시 맞추지 않는다(과최적화). 바꿀 때는 기간을 나눠 앞 기간으로 정하고 뒤 기간으로 확인한다. 노출 비중(EXPOSURE_BY_GATE)은 모델 가정이다.
+- 백테스트로 확인된 사실(2026-11-12, data/backtest/REPORT.md): 게이트는 이후 변동성·낙폭을 구분하지만(미국 G3 변동성 G0의 약 2배) 이후 수익률은 구분하지 못한다. G3는 기간의 41~48%이며 주원인은 지수 < EMA200(레짐 ⚫ → 즉시 G3). 화면·문구에서 게이트를 수익 예측처럼 표현하지 않는다. T 셋업(레이더 과거 검증의 단순화 규칙)은 ETF 기준 우위가 확인되지 않았고, ST-1 신호 대부분이 G3에서 나와 'G3 신규 매수 동결'과 충돌한다.
 - 국면 게이트 입력은 `build_gate_inputs_from_header(macro_header, "US"|"KR")`로 홈 헤더의 실제 데이터에서 만든다.
 - 실적 트랙(analyze_earnings_track) 입력은 `fetch_real_earnings_inputs` 한 곳에서만 만든다(미국 yfinance, 한국 DART + yfinance 추정치). 못 받은 값은 None이고 화면에는 '데이터 없음'. 삼성전자식 기본값을 다시 넣지 않는다.
 - 실적 트랙은 판정 가능한 축만 점수에 반영한다(`verdict.coverage`). 근거가 부족하면 국면은 `NA`(판정 불가)이며, 계산에서만 G3로 중립 처리하고 화면에는 '판정 불가'로 표시한다.
