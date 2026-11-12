@@ -178,6 +178,45 @@ def main():
     import json
     chk("9 요약은 JSON으로 저장 가능", len(json.dumps(s9, ensure_ascii=False, default=str)) > 100)
 
+    chk("9 보고서에 원인 분해·비용 민감도 표", "### 무엇 때문에 그 단계였나" in rep and "### 비용 민감도" in rep)
+
+    # 10) 원인 분해: 손으로 만든 G3 4일
+    #   1일: 레짐만 3 · 2일: 거시만 3(VIX 2) · 3일: VIX·거시 3 · 4일: 지표는 2인데 완화 대기로 G3 유지
+    da = pd.bdate_range("2024-01-01", periods=4)
+    ga = pd.DataFrame({"level": [3, 3, 3, 3], "raw_level": [3, 3, 3, 2],
+                       "comp_regime": [3, 1, 0, 2], "comp_vix": [1, 2, 3, 1], "comp_macro": [1, 3, 3, 1],
+                       "reg_qqq": ["⚫", "🟡", "🟢", "🔴"], "reg_spy": ["🟡", "🟡", "🟢", "🔴"]}, index=da)
+    at10 = engine.gate_component_attribution(ga)["G3"]
+    chk("10 만든 요소 비중: 레짐 25% · VIX 25% · 거시 50%", at10["binding"] == {"regime": 25.0, "vix": 25.0, "macro": 50.0})
+    chk("10 하나 때문: 레짐만 25% · VIX만 0% · 거시만 25%", at10["only"] == {"regime": 25.0, "vix": 0.0, "macro": 25.0})
+    chk("10 완화 대기 25%", at10["held_by_hysteresis"] == 25.0)
+    rc = engine.gate_component_attribution(ga)["regime_crisis"]
+    chk("10 레짐 위기 1일 중 QQQ만 위기 100%", rc["n_days"] == 1 and rc["qqq_only_pct"] == 100.0)
+
+    # 11) 비용 인수: 기본값 = 지금과 같음, 비용 0이면 기대값이 커짐
+    prim = engine.compute_base_primitives(stock)
+    base_c = engine.TECH_PARAMS["ROUND_TRIP_COST"]
+    r_def = engine.run_setup_backtest_validation(prim)
+    r_same = engine.run_setup_backtest_validation(prim, cost=base_c)
+    r_zero = engine.run_setup_backtest_validation(prim, cost=0.0)
+    chk("11 비용 인수 생략 = 현재 비용 지정 (기존 결과 불변)", r_def["r_distribution"] == r_same["r_distribution"])
+    chk("11 비용 0의 평균 R > 현재 비용의 평균 R", np.mean(r_zero["r_distribution"]) > np.mean(r_def["r_distribution"]))
+    bc = engine.setup_trades_by_cost(stock, [0.0, base_c])
+    chk("11 비용별 거래 = 함수 직접 호출 결과", bc[base_c] == r_def["all_trades"] and bc[0.0] == r_zero["all_trades"])
+
+    # 12) 기간 분할: 각 기간 노출 전략은 그 기간 안에서만
+    ds = pd.bdate_range("2012-01-02", periods=1000)
+    rng12 = np.random.default_rng(8)
+    lv12 = pd.Series(rng12.integers(0, 4, 1000), index=ds).rolling(5).max().fillna(0).astype(int)
+    g12 = pd.DataFrame({"level": lv12, "raw_level": lv12}, index=ds)
+    px12 = pd.Series(100 * np.cumprod(1 + rng12.normal(3e-4, 0.01, 1000)), index=ds)
+    sp = engine.gate_split_stats(g12, px12, split="2014-01-01")
+    front, back = sp["앞 기간"], sp["뒤 기간"]
+    chk("12 앞 기간은 기준일 전, 뒤 기간은 기준일부터",
+        front["period"]["end"] < "2014-01-01" <= back["period"]["start"] and front["n_days"] + back["n_days"] == 1000)
+    whole_bh = engine.gate_exposure_backtest(g12[g12.index < "2014-01-01"], px12.loc[:"2013-12-31"])["strategies"]["매수 후 보유"]["total_return"]
+    chk("12 앞 기간 매수 후 보유 = 앞 기간 가격만으로 계산", abs(front["exposure"]["매수 후 보유"]["total_return"] - whole_bh) < 1e-12)
+
     print("FAILS:", FAILS)
     sys.exit(1 if FAILS else 0)
 

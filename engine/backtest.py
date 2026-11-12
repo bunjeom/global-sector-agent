@@ -2,7 +2,7 @@
 
 engine.py를 기능별로 나눈 모듈. 바깥에서는 `import engine` 후 `engine.이름`으로 쓴다(engine/__init__.py).
 """
-from typing import Dict, List, Any
+from typing import Dict, List, Optional, Any
 import numpy as np
 import pandas as pd
 
@@ -22,7 +22,7 @@ def _bt_summary(rs: List[float]) -> Dict[str, Any]:
             "expectancy_r": round(float(arr.mean()), 2), "se_r": None if se is None else round(se, 2)}
 
 
-def run_setup_backtest_validation(df: pd.DataFrame) -> Dict[str, Any]:
+def run_setup_backtest_validation(df: pd.DataFrame, cost: Optional[float] = None) -> Dict[str, Any]:
     """
     10장. 과거 일봉 데이터에서 ST-1(이격도 반전) 및 돌파/눌림 신호의 R 배수 성과를 검증[cite: 1]:
     E = p * W_R - (1 - p) * L_R (왕복 비용 TP-32 0.30% 차감 후 R 기준)
@@ -34,7 +34,8 @@ def run_setup_backtest_validation(df: pd.DataFrame) -> Dict[str, Any]:
     tag_list: List[str] = []
     trades: List[Dict[str, Any]] = []
     all_trades: List[Dict[str, Any]] = []   # 날짜가 붙은 전체 거래 (rule_backtest의 게이트별 집계용)
-    cost = TECH_PARAMS["ROUND_TRIP_COST"]
+    # 왕복 비용: 기본은 TP-32. 백테스트 비용 민감도(rule_backtest)에서만 다른 값을 넘긴다
+    cost = TECH_PARAMS["ROUND_TRIP_COST"] if cost is None else float(cost)
 
     i = 120
     while i < len(df) - 15:
