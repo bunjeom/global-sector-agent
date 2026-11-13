@@ -1,0 +1,380 @@
+From 41ad171698a5bc1b4b5056343a2686e5818ea75d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 12 Nov 2026 19:42:41 +0900
+Subject: [PATCH] =?UTF-8?q?feat:=20=EB=B0=B1=ED=85=8C=EC=8A=A4=ED=8A=B8=20?=
+ =?UTF-8?q?=EB=B3=B4=EA=B3=A0=EC=84=9C=EC=97=90=20=EA=B2=8C=EC=9D=B4?=
+ =?UTF-8?q?=ED=8A=B8=20=EC=9B=90=EC=9D=B8=20=EB=B6=84=ED=95=B4=C2=B7?=
+ =?UTF-8?q?=EA=B8=B0=EA=B0=84=20=EB=B6=84=ED=95=A0=C2=B7=EB=B9=84=EC=9A=A9?=
+ =?UTF-8?q?=20=EB=AF=BC=EA=B0=90=EB=8F=84=20=EC=B6=94=EA=B0=80?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- 단계별로 레짐·VIX·거시 국면 중 무엇 때문이었는지, 완화 대기 비중,
+  미국 레짐 위기 중 QQQ만 위기였던 비중
+- 2014-01-01 기준 앞·뒤 기간을 따로 계산 (노출 전략은 기간 안에서만)
+- 게이트 전략 비용 0 비교, T 셋업 왕복 비용 0%·0.10%·0.30% × 시장별
+- run_setup_backtest_validation에 cost 인수 추가 (생략 시 기존과 동일)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KgRCC7vtZ6h9q9fonpWvqH
+---
+ engine/backtest.py      |   7 +-
+ engine/rule_backtest.py | 192 ++++++++++++++++++++++++++++++++++++++--
+ tests/test_backtest.py  |  39 ++++++++
+ 3 files changed, 230 insertions(+), 8 deletions(-)
+
+diff --git a/engine/backtest.py b/engine/backtest.py
+index f4505a4..92e72a6 100644
+--- a/engine/backtest.py
++++ b/engine/backtest.py
+@@ -2,7 +2,7 @@
+ 
+ engine.py를 기능별로 나눈 모듈. 바깥에서는 `import engine` 후 `engine.이름`으로 쓴다(engine/__init__.py).
+ """
+-from typing import Dict, List, Any
++from typing import Dict, List, Optional, Any
+ import numpy as np
+ import pandas as pd
+ 
+@@ -22,7 +22,7 @@ def _bt_summary(rs: List[float]) -> Dict[str, Any]:
+             "expectancy_r": round(float(arr.mean()), 2), "se_r": None if se is None else round(se, 2)}
+ 
+ 
+-def run_setup_backtest_validation(df: pd.DataFrame) -> Dict[str, Any]:
++def run_setup_backtest_validation(df: pd.DataFrame, cost: Optional[float] = None) -> Dict[str, Any]:
+     """
+     10장. 과거 일봉 데이터에서 ST-1(이격도 반전) 및 돌파/눌림 신호의 R 배수 성과를 검증[cite: 1]:
+     E = p * W_R - (1 - p) * L_R (왕복 비용 TP-32 0.30% 차감 후 R 기준)
+@@ -34,7 +34,8 @@ def run_setup_backtest_validation(df: pd.DataFrame) -> Dict[str, Any]:
+     tag_list: List[str] = []
+     trades: List[Dict[str, Any]] = []
+     all_trades: List[Dict[str, Any]] = []   # 날짜가 붙은 전체 거래 (rule_backtest의 게이트별 집계용)
+-    cost = TECH_PARAMS["ROUND_TRIP_COST"]
++    # 왕복 비용: 기본은 TP-32. 백테스트 비용 민감도(rule_backtest)에서만 다른 값을 넘긴다
++    cost = TECH_PARAMS["ROUND_TRIP_COST"] if cost is None else float(cost)
+ 
+     i = 120
+     while i < len(df) - 15:
+diff --git a/engine/rule_backtest.py b/engine/rule_backtest.py
+index cc8130f..1e585bd 100644
+--- a/engine/rule_backtest.py
++++ b/engine/rule_backtest.py
+@@ -44,6 +44,10 @@ BACKTEST_CONFIG: Dict[str, Any] = {
+                     + ["005930.KS", "000660.KS", "005380.KS", "035420.KS", "051910.KS"],
+     },
+     "SETUP_MIN_BARS": 150,           # run_setup_backtest_validation 최소 길이
++    # 기간 분할: 앞 기간과 뒤 기간 결과를 따로 본다(규칙을 바꿀 때 앞으로 정하고 뒤로 확인하기 위함). 2001~2026의 대략 절반
++    "SPLIT_DATE": "2014-01-01",
++    # 비용 민감도: T 셋업 왕복 비용 (0.30% = 현재 TP-32). 국내 증권사로 미국 주식을 사면 수수료·환전으로 0.30% 안팎이 될 수 있다
++    "SETUP_COST_SCENARIOS": [0.0, 0.001, 0.003],
+ }
+ 
+ 
+@@ -84,7 +88,10 @@ def gate_inputs_on(price_map: Dict[str, pd.DataFrame], market: str, t: Any) -> D
+     else:
+         hdr = build_regime_vix_header(_bt_window(qqq, t), _bt_window(spy, t), None, _bt_window(vix, t))
+     inp = build_gate_inputs_from_header(hdr, m)
+-    return {"date": t, "inputs": inp}
++    # 지수별 레짐 아이콘 (원인 분해용). 데이터가 없어 기본값으로 채운 레짐은 None
++    icons = {k: (r.get("icon") if "기본값" not in str(r.get("label", "")) else None)
++             for k, r in (("QQQ", hdr["qqq_regime"]), ("SPY", hdr["spy_regime"]), ("KOSPI", hdr["kospi_regime"]))}
++    return {"date": t, "inputs": inp, "icons": icons}
+ 
+ 
+ _BT_WORKER: Dict[str, Any] = {}
+@@ -152,6 +159,7 @@ def compute_gate_series(price_map: Dict[str, pd.DataFrame], market: str, start:
+             "vix_percentile": inp.get("vix_percentile"), "macro_phase": inp.get("macro_phase"),
+             "comp_regime": comps["regime"], "comp_vix": comps["vix"], "comp_macro": comps["macro"],
+             "raw_level": g["raw_level"], "level": g["level"], "cooling_counter": g["cooling_counter"],
++            "reg_qqq": r["icons"]["QQQ"], "reg_spy": r["icons"]["SPY"], "reg_kospi": r["icons"]["KOSPI"],
+         })
+         state = {"prev_level": g["level"], "cooling_counter": g["cooling_counter"]}
+     return pd.DataFrame(out).set_index("date")
+@@ -280,6 +288,90 @@ def gate_exposure_backtest(gate_df: pd.DataFrame, price: pd.Series, exposure_map
+     }
+ 
+ 
++GATE_COMPONENTS = ("regime", "vix", "macro")
++
++
++def gate_component_attribution(gate_df: pd.DataFrame) -> Dict[str, Any]:
++    """단계별로 '무엇 때문에 그 단계였나'를 나눈다.
++    - binding: 그 단계와 같은 값을 낸 구성 요소 비중(여럿이 동시에 낼 수 있어 합이 100%를 넘을 수 있음)
++    - only: 그 구성 요소 하나만 그 단계를 냈던 날 비중
++    - held_by_hysteresis: 그날 지표는 이미 낮아졌지만 완화 확인(2일) 때문에 단계가 유지된 날 비중
++    미국은 레짐이 위기(⚫)였던 날 중 QQQ만 위기(SPY는 아님)였던 비중도 계산한다."""
++    out: Dict[str, Any] = {}
++    total = len(gate_df)
++    for k in range(4):
++        d = gate_df[gate_df["level"] == k]
++        n = len(d)
++        if n == 0:
++            out[f"G{k}"] = {"n_days": 0}
++            continue
++        held = d["raw_level"] < k
++        live = d[~held]
++        binding = {c: float((live[f"comp_{c}"] == k).sum() / n * 100.0) for c in GATE_COMPONENTS}
++        only = {}
++        for c in GATE_COMPONENTS:
++            mask = live[f"comp_{c}"] == k
++            for o in GATE_COMPONENTS:
++                if o != c:
++                    mask &= live[f"comp_{o}"].fillna(-1) < k
++            only[c] = float(mask.sum() / n * 100.0)
++        out[f"G{k}"] = {"n_days": n, "share_of_time": float(n / total * 100.0) if total else 0.0,
++                        "binding": binding, "only": only, "held_by_hysteresis": float(held.mean() * 100.0)}
++    reg3 = gate_df[gate_df["comp_regime"] == 3]
++    if len(reg3) and "reg_spy" in reg3 and reg3["reg_spy"].notna().any():
++        out["regime_crisis"] = {"n_days": int(len(reg3)),
++                                "qqq_only_pct": float(((reg3["reg_qqq"] == "⚫") & (reg3["reg_spy"] != "⚫")).mean() * 100.0),
++                                "spy_crisis_pct": float((reg3["reg_spy"] == "⚫").mean() * 100.0)}
++    return out
++
++
++def gate_split_stats(gate_df: pd.DataFrame, price: pd.Series, split: Optional[str] = None,
++                     horizon: Optional[int] = None) -> Dict[str, Any]:
++    """앞 기간(SPLIT_DATE 전)과 뒤 기간(이후)을 따로 계산한다. 노출 전략은 각 기간 안에서만 굴린다."""
++    split_t = pd.Timestamp(split or BACKTEST_CONFIG["SPLIT_DATE"])
++    h = int(horizon or BACKTEST_CONFIG["MAIN_HORIZON"])
++    px = price.dropna().astype(float)
++    px.index = pd.to_datetime(px.index)
++    out: Dict[str, Any] = {"split_date": str(split_t.date()), "horizon": h}
++    for name, sub in (("앞 기간", gate_df[gate_df.index < split_t]), ("뒤 기간", gate_df[gate_df.index >= split_t])):
++        if len(sub) < 260:
++            out[name] = {"n_days": int(len(sub))}
++            continue
++        fw = gate_forward_stats(sub, px, horizons=[h])
++        ex = gate_exposure_backtest(sub, px.loc[:sub.index[-1]])
++        out[name] = {"n_days": int(len(sub)), "period": fw["period"], "time_share": fw["time_share"],
++                     "forward": fw[str(h)],
++                     "exposure": {k: ex["strategies"][k] for k in ("게이트(최종)", "같은 평균 노출 고정", "매수 후 보유")}}
++    return out
++
++
++def setup_trades_by_cost(df: pd.DataFrame, costs: List[float]) -> Dict[float, List[Dict[str, Any]]]:
++    """한 종목의 T 셋업 거래를 왕복 비용별로 다시 계산한다(지표는 한 번만 계산). 비용은 목표가·손절 단위에도 들어가 거래 결과 자체가 달라진다."""
++    d = _bt_naive(df)
++    if d is None or len(d) < int(BACKTEST_CONFIG["SETUP_MIN_BARS"]):
++        return {c: [] for c in costs}
++    prim = compute_base_primitives(d)
++    return {c: list(run_setup_backtest_validation(prim, cost=c).get("all_trades") or []) for c in costs}
++
++
++def summarize_setup_cost_sensitivity(trades_by_cost: Dict[float, pd.DataFrame]) -> Dict[str, Any]:
++    """비용별 × 종목 묶음(ETF·대표 종목) × 시장(미국·한국) 기대값. 게이트와 무관하게 전체 거래로 계산한다."""
++    out: Dict[str, Any] = {}
++    for c, t in trades_by_cost.items():
++        key = f"{c * 100:.2f}%"
++        block: Dict[str, Any] = {}
++        if t is None or len(t) == 0:
++            out[key] = block
++            continue
++        mk = t["ticker"].map(_ticker_market)
++        for grp in ["전체"] + sorted(t["group"].dropna().unique().tolist()):
++            g_mask = (t["group"] == grp) if grp != "전체" else pd.Series(True, index=t.index)
++            block[grp] = {m: _bt_summary(t.loc[g_mask & ((mk == m) if m != "전체" else True), "r_multiple"].tolist())
++                          for m in ("전체", "US", "KR")}
++        out[key] = block
++    return out
++
++
+ def setup_trades_for_ticker(df: pd.DataFrame) -> List[Dict[str, Any]]:
+     """한 종목의 과거 T 셋업 거래 목록(날짜·셋업·R 배수). 레이더 카드의 과거 검증과 같은 함수를 쓴다."""
+     d = _bt_naive(df)
+@@ -395,19 +487,30 @@ def run_rule_backtest(index_map: Dict[str, pd.DataFrame], setup_price_map: Optio
+             "exposure": {"strategies": expo["strategies"], "assumptions": expo["assumptions"]},
+             "equity_weekly": _weekly_equity(expo["equity"]),
+             "current": {"level": int(g["level"].iloc[-1]), "raw_level": int(g["raw_level"].iloc[-1])},
++            "attribution": gate_component_attribution(g),
++            "split": gate_split_stats(g, price),
++            "exposure_no_cost": {k: v for k, v in gate_exposure_backtest(g, price, cost_one_way=0.0)["strategies"].items()
++                                 if k in ("게이트(최종)", "게이트(즉시)", "같은 평균 노출 고정")},
+         }
+ 
+     trades_df = pd.DataFrame()
+     if setup_price_map:
+-        rows = []
++        base_cost = float(TECH_PARAMS["ROUND_TRIP_COST"])
++        costs = sorted(set([float(c) for c in BACKTEST_CONFIG["SETUP_COST_SCENARIOS"]] + [base_cost]))
++        rows, rows_by_cost = [], {c: [] for c in costs}
+         groups = {s: grp for grp, syms in BACKTEST_CONFIG["SETUP_UNIVERSE"].items() for s in syms}
+         for sym, df in setup_price_map.items():
+-            for tr in setup_trades_for_ticker(df):
+-                rows.append({"ticker": sym, "group": groups.get(sym, "추가 종목"), **tr})
++            grp = groups.get(sym, "추가 종목")
++            for c, trs in setup_trades_by_cost(df, costs).items():
++                rows_by_cost[c].extend({"ticker": sym, "group": grp, **tr} for tr in trs)
++        rows = rows_by_cost[base_cost]
+         trades_df = attach_gate_to_trades(pd.DataFrame(rows), gate_series) if rows else pd.DataFrame()
+         summary["setups"] = summarize_setup_trades_by_gate(trades_df) if len(trades_df) else {"n_trades": 0}
+         summary["setups"]["tickers_requested"] = len(setup_price_map)
+         summary["setups"]["period"] = {"start": str(trades_df["date"].min().date()), "end": str(trades_df["date"].max().date())} if len(trades_df) else None
++        summary["setups"]["base_cost"] = base_cost
++        summary["setups"]["cost_sensitivity"] = summarize_setup_cost_sensitivity(
++            {c: pd.DataFrame(r) for c, r in rows_by_cost.items()})
+     return {"summary": summary, "gate_series": gate_series, "equity": equity, "trades": trades_df}
+ 
+ 
+@@ -431,6 +534,76 @@ def _r_cell(s: Dict[str, Any], min_n: int = 5) -> str:
+     return f"{s['expectancy_r']:+.2f}R{se} · 승률 {s['win_rate']:.0f}% · n={n}"
+ 
+ 
++COMPONENT_LABELS = {"regime": "지수 레짐", "vix": "VIX", "macro": "거시 국면(VIX·레짐으로 만든 값)"}
++
++
++def _render_attribution(att: Dict[str, Any]) -> List[str]:
++    """단계별 원인 분해 표."""
++    if not att:
++        return []
++    L = ["", "### 무엇 때문에 그 단계였나",
++         "| 단계 | 일수 | 지수 레짐 | VIX | 거시 국면 | 레짐만 | VIX만 | 거시 국면만 | 완화 대기 |",
++         "|---|---|---|---|---|---|---|---|---|"]
++    for k in ("G1", "G2", "G3"):
++        a = att.get(k, {})
++        if not a.get("n_days"):
++            continue
++        b, o = a["binding"], a["only"]
++        L.append(f"| {k} | {a['n_days']:,} ({a['share_of_time']:.0f}%) | {b['regime']:.0f}% | {b['vix']:.0f}% | {b['macro']:.0f}% | "
++                 f"{o['regime']:.0f}% | {o['vix']:.0f}% | {o['macro']:.0f}% | {a['held_by_hysteresis']:.0f}% |")
++    L.append("- 앞 세 칸은 그 단계를 만든 요소의 비중(동시에 여럿일 수 있어 합이 100%를 넘음), '~만'은 그 요소 하나 때문이었던 날, "
++             "'완화 대기'는 지표는 이미 내려왔지만 2일 확인 때문에 단계가 유지된 날입니다.")
++    g3 = att.get("G3", {})
++    if g3.get("n_days"):
++        L.append(f"- G3 중 거시 국면만 G3였던 날 {g3['only']['macro']:.0f}%: 거시 국면은 VIX 1년 백분위 80% 이상이면 '침체'(G3)가 되므로, "
++                 f"VIX 자체 기준(90%ile·35)에는 못 미친 날이 여기에 들어갑니다.")
++    rc = att.get("regime_crisis")
++    if rc:
++        L.append(f"- 레짐이 위기(지수가 200일 지수이동평균 아래)였던 {rc['n_days']:,}일 중 QQQ만 위기였던 날 {rc['qqq_only_pct']:.0f}% "
++                 f"(SPY도 위기 {rc['spy_crisis_pct']:.0f}%). 미국 게이트는 QQQ·SPY 중 나쁜 쪽을 씁니다.")
++    return L
++
++
++def _render_split(sp: Dict[str, Any], market_name: str) -> List[str]:
++    """앞 기간·뒤 기간 비교 표."""
++    if not sp:
++        return []
++    h = sp.get("horizon")
++    L = ["", f"### 기간을 나눠 보기 (기준일 {sp.get('split_date')})",
++         f"| 기간 | G0 {h}일 수익률 | G3 {h}일 수익률 | G3 / G0 변동성 | G3 시간 비중 | 게이트 샤프 | 고정 비중 샤프 | 게이트 최대 낙폭 | 고정 비중 최대 낙폭 |",
++         "|---|---|---|---|---|---|---|---|---|"]
++    for name in ("앞 기간", "뒤 기간"):
++        r = sp.get(name, {})
++        if not r.get("forward"):
++            L.append(f"| {name} | 데이터 부족 ({r.get('n_days', 0)}일) | | | | | | | |")
++            continue
++        fw, ex = r["forward"], r["exposure"]
++        g0, g3 = fw.get("G0", {}), fw.get("G3", {})
++        vr = (f"{g3['mean_vol'] / g0['mean_vol']:.1f}배" if g0.get("mean_vol") and g3.get("mean_vol") else "—")
++        gate, const = ex.get("게이트(최종)", {}), ex.get("같은 평균 노출 고정", {})
++        per = r.get("period") or {}
++        L.append(f"| {name} ({str(per.get('start'))[:4]}~{str(per.get('end'))[:4]}) | "
++                 f"{_pct(g0.get('mean_ret')) if g0.get('n_days') else '—'} | {_pct(g3.get('mean_ret')) if g3.get('n_days') else '—'} | {vr} | "
++                 f"{r['time_share']['G3']:.0f}% | {_num_txt(gate.get('sharpe'))} | {_num_txt(const.get('sharpe'))} | "
++                 f"{_pct(gate.get('mdd'))} | {_pct(const.get('mdd'))} |")
++    L.append(f"- 두 기간에서 같은 방향이면 우연보다는 규칙의 성질에 가깝습니다. 규칙을 바꿀 때는 앞 기간으로 정하고 뒤 기간으로 확인합니다({market_name}).")
++    return L
++
++
++def _render_cost_sensitivity(cs: Dict[str, Any], base_cost: Optional[float]) -> List[str]:
++    """T 셋업 비용 민감도 표."""
++    if not cs:
++        return []
++    L = ["", "### 비용 민감도 (왕복 비용별 기대값, 게이트와 무관하게 전체 거래)",
++         "| 왕복 비용 | ETF 미국 | ETF 한국 | 대표 종목 미국 | 대표 종목 한국 |", "|---|---|---|---|---|"]
++    for key, block in cs.items():
++        mark = " (현재)" if base_cost is not None and key == f"{base_cost * 100:.2f}%" else ""
++        cell = lambda grp, m: _r_cell((block.get(grp) or {}).get(m) or {})
++        L.append(f"| {key}{mark} | {cell('ETF', 'US')} | {cell('ETF', 'KR')} | {cell('대표 종목', 'US')} | {cell('대표 종목', 'KR')} |")
++    L.append("- 비용은 목표가·손절 단위 계산에도 들어가므로 비용을 바꾸면 거래 결과 자체가 다시 계산됩니다. 비용 0%에서도 음수면 비용이 아니라 신호 자체에 우위가 없다는 뜻입니다.")
++    return L
++
++
+ def render_backtest_report(summary: Dict[str, Any]) -> str:
+     """요약(dict) → 마크다운 보고서. 숫자를 사실대로 비교만 하고, 좋고 나쁨의 결론은 한계와 함께 적는다."""
+     L: List[str] = ["# 판정 규칙 백테스트 결과", ""]
+@@ -504,6 +677,13 @@ def render_backtest_report(summary: Dict[str, Any]) -> str:
+                      f"연간 비중 변경 {gi.get('switches_per_year', 0):.1f}회 → {gf.get('switches_per_year', 0):.1f}회.")
+         a = r["exposure"]["assumptions"]["exposure_by_gate"]
+         L.append("- 노출 비중 가정: " + " · ".join(f"{k} {v * 100:.0f}%" for k, v in a.items()) + " (모델 가정, 실제 게이트는 신규 진입만 제한)")
++        nc = r.get("exposure_no_cost") or {}
++        if nc.get("게이트(최종)", {}).get("sharpe") is not None and nc.get("같은 평균 노출 고정", {}).get("sharpe") is not None:
++            g_nc, c_nc = nc["게이트(최종)"], nc["같은 평균 노출 고정"]
++            L.append(f"- 비용 0일 때: 게이트 샤프 {g_nc['sharpe']:.2f} · 연수익률 {_pct(g_nc['cagr'])} vs 같은 평균 노출 고정 샤프 {c_nc['sharpe']:.2f} · "
++                     f"{_pct(c_nc['cagr'])} → 비용을 빼도 타이밍 효과 샤프 {g_nc['sharpe'] - c_nc['sharpe']:+.2f}.")
++        L += _render_attribution(r.get("attribution") or {})
++        L += _render_split(r.get("split") or {}, name)
+         L.append("")
+ 
+     s = summary.get("setups")
+@@ -514,7 +694,8 @@ def render_backtest_report(summary: Dict[str, Any]) -> str:
+         else:
+             per = s.get("period") or {}
+             L.append(f"종목 {s['n_tickers']}개 (요청 {s.get('tickers_requested')}) · 거래 {s['n_trades']:,}건 · {per.get('start')} ~ {per.get('end')} · "
+-                     f"게이트 시작 전 거래 {s.get('excluded_no_gate', 0)}건 제외. R = 손절폭 1단위 대비 손익(비용 0.30% 차감).")
++                     f"게이트 시작 전 거래 {s.get('excluded_no_gate', 0)}건 제외. R = 손절폭 1단위 대비 손익"
++                     f"(왕복 비용 {float(s.get('base_cost') or TECH_PARAMS['ROUND_TRIP_COST']) * 100:.2f}% 차감).")
+             sz = cfg.get("T_SIZE_BY_GATE", {})
+             L.append("게이트 적용 = 진입 크기 " + " · ".join(f"{k} {v * 100:.0f}%" for k, v in sz.items()) + " (GATE_CONFIG 규칙)")
+             for grp, block in s["by_group"].items():
+@@ -527,6 +708,7 @@ def render_backtest_report(summary: Dict[str, Any]) -> str:
+                     L.append(f"| {setup} | {_r_cell(row['전체'])} | {_r_cell(row['G0'])} | {_r_cell(row['G1'])} | {_r_cell(row['G2'])} | {_r_cell(row['G3'])} | "
+                              f"{ga['sum_r_gated']:+.1f}R · {_num_txt(ga['expectancy_gated'])}R ({ga['trades_taken']}건) | "
+                              f"{ga['sum_r_ungated']:+.1f}R · {_num_txt(ga['expectancy_ungated'])}R ({ga['trades_all']}건) |")
++        L += _render_cost_sensitivity(s.get("cost_sensitivity") or {}, s.get("base_cost"))   # 게이트와 무관한 전체 거래
+         L.append("")
+ 
+     L += ["## 이 결과를 읽을 때 주의할 점",
+diff --git a/tests/test_backtest.py b/tests/test_backtest.py
+index 4da4ab2..f9c9e67 100644
+--- a/tests/test_backtest.py
++++ b/tests/test_backtest.py
+@@ -178,6 +178,45 @@ def main():
+     import json
+     chk("9 요약은 JSON으로 저장 가능", len(json.dumps(s9, ensure_ascii=False, default=str)) > 100)
+ 
++    chk("9 보고서에 원인 분해·비용 민감도 표", "### 무엇 때문에 그 단계였나" in rep and "### 비용 민감도" in rep)
++
++    # 10) 원인 분해: 손으로 만든 G3 4일
++    #   1일: 레짐만 3 · 2일: 거시만 3(VIX 2) · 3일: VIX·거시 3 · 4일: 지표는 2인데 완화 대기로 G3 유지
++    da = pd.bdate_range("2024-01-01", periods=4)
++    ga = pd.DataFrame({"level": [3, 3, 3, 3], "raw_level": [3, 3, 3, 2],
++                       "comp_regime": [3, 1, 0, 2], "comp_vix": [1, 2, 3, 1], "comp_macro": [1, 3, 3, 1],
++                       "reg_qqq": ["⚫", "🟡", "🟢", "🔴"], "reg_spy": ["🟡", "🟡", "🟢", "🔴"]}, index=da)
++    at10 = engine.gate_component_attribution(ga)["G3"]
++    chk("10 만든 요소 비중: 레짐 25% · VIX 25% · 거시 50%", at10["binding"] == {"regime": 25.0, "vix": 25.0, "macro": 50.0})
++    chk("10 하나 때문: 레짐만 25% · VIX만 0% · 거시만 25%", at10["only"] == {"regime": 25.0, "vix": 0.0, "macro": 25.0})
++    chk("10 완화 대기 25%", at10["held_by_hysteresis"] == 25.0)
++    rc = engine.gate_component_attribution(ga)["regime_crisis"]
++    chk("10 레짐 위기 1일 중 QQQ만 위기 100%", rc["n_days"] == 1 and rc["qqq_only_pct"] == 100.0)
++
++    # 11) 비용 인수: 기본값 = 지금과 같음, 비용 0이면 기대값이 커짐
++    prim = engine.compute_base_primitives(stock)
++    base_c = engine.TECH_PARAMS["ROUND_TRIP_COST"]
++    r_def = engine.run_setup_backtest_validation(prim)
++    r_same = engine.run_setup_backtest_validation(prim, cost=base_c)
++    r_zero = engine.run_setup_backtest_validation(prim, cost=0.0)
++    chk("11 비용 인수 생략 = 현재 비용 지정 (기존 결과 불변)", r_def["r_distribution"] == r_same["r_distribution"])
++    chk("11 비용 0의 평균 R > 현재 비용의 평균 R", np.mean(r_zero["r_distribution"]) > np.mean(r_def["r_distribution"]))
++    bc = engine.setup_trades_by_cost(stock, [0.0, base_c])
++    chk("11 비용별 거래 = 함수 직접 호출 결과", bc[base_c] == r_def["all_trades"] and bc[0.0] == r_zero["all_trades"])
++
++    # 12) 기간 분할: 각 기간 노출 전략은 그 기간 안에서만
++    ds = pd.bdate_range("2012-01-02", periods=1000)
++    rng12 = np.random.default_rng(8)
++    lv12 = pd.Series(rng12.integers(0, 4, 1000), index=ds).rolling(5).max().fillna(0).astype(int)
++    g12 = pd.DataFrame({"level": lv12, "raw_level": lv12}, index=ds)
++    px12 = pd.Series(100 * np.cumprod(1 + rng12.normal(3e-4, 0.01, 1000)), index=ds)
++    sp = engine.gate_split_stats(g12, px12, split="2014-01-01")
++    front, back = sp["앞 기간"], sp["뒤 기간"]
++    chk("12 앞 기간은 기준일 전, 뒤 기간은 기준일부터",
++        front["period"]["end"] < "2014-01-01" <= back["period"]["start"] and front["n_days"] + back["n_days"] == 1000)
++    whole_bh = engine.gate_exposure_backtest(g12[g12.index < "2014-01-01"], px12.loc[:"2013-12-31"])["strategies"]["매수 후 보유"]["total_return"]
++    chk("12 앞 기간 매수 후 보유 = 앞 기간 가격만으로 계산", abs(front["exposure"]["매수 후 보유"]["total_return"] - whole_bh) < 1e-12)
++
+     print("FAILS:", FAILS)
+     sys.exit(1 if FAILS else 0)
+ 
+-- 
+2.43.0
+
