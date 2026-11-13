@@ -17,9 +17,9 @@ import pandas as pd
 
 from .common import TECH_PARAMS
 from .technical_signals import compute_base_primitives
-from .backtest import _bt_summary, run_setup_backtest_validation
+from .backtest import _bt_summary, _setup_arrays, _simulate_setup_trade, run_setup_backtest_validation
 from .home import NARRATIVE_BASKETS_SPEC, build_regime_vix_header
-from .gate import apply_gate_hysteresis, build_gate_inputs_from_header, evaluate_market_gate, gate_components
+from .gate import GATE_CONFIG, apply_gate_hysteresis, build_gate_inputs_from_header, evaluate_market_gate, gate_components
 
 BACKTEST_CONFIG: Dict[str, Any] = {
     "START": "2000-01-01",           # 다운로드 시작일 (VIX·SPY·QQQ·KOSPI가 모두 있는 시기)
@@ -446,7 +446,11 @@ GATE_VARIANTS: Dict[str, str] = {
     "현재": "지수 < 200일 지수이동평균이면 즉시 위기(G3). 최종 = 레짐·VIX·거시 국면 중 가장 나쁜 값",
     "A 200일선 이탈 = G2": "레짐 위기(지수 < EMA200)는 G2로 낮춤. G3는 VIX(90%ile·35 이상)나 거시 국면(VIX 80%ile 이상)에서만",
     "B 추세 붕괴 + 공포 동시 = G3": "모든 요소의 단독 상한을 G2로 두고, 레짐 위기와 공포(VIX 75%ile·25 이상 또는 거시 국면 침체)가 같은 날 겹칠 때만 G3",
+    # 2026-11-13 추가 (한국만). 한국 게이트가 미국 데이터(VIX·QQQ 레짐)를 대용으로 쓰는 문제를 원칙으로 고친 안. 기준은 위와 같다.
+    "C 한국: KOSPI 자체 변동성": "한국 게이트에서 미국 VIX 자리를 KOSPI 실현 변동성(ATR% 1년 백분위 VOLA_PCTL250)으로, 거시 국면 판단의 QQQ 레짐을 KOSPI 레짐으로 바꿈. "
+                                 "백분위 기준(90·75·60%ile)은 그대로, VIX 절대값 기준(35·25·20)은 해당 없음. 지수 레짐 요소는 그대로",
 }
+VARIANT_MARKETS: Dict[str, List[str]] = {"C 한국: KOSPI 자체 변동성": ["KR"]}   # 없으면 모든 시장
 VARIANT_CRITERIA: Dict[str, float] = {
     # 1) 위기는 드물어야 한다: 2001~2013의 큰 하락장(2001~03, 2008~09)이 대략 기간의 20% 안팎
     "G3_MAX_SHARE_FRONT": 20.0,
@@ -462,9 +466,26 @@ T_SIZE_VARIANTS: Dict[str, Dict[str, Dict[int, float]]] = {
 }
 
 
-def gate_variant_raw(gate_df: pd.DataFrame, variant: str) -> pd.Series:
+def kospi_vol_components(gate_df: pd.DataFrame, vola_pctl: pd.Series) -> pd.DataFrame:
+    """후보 C: KOSPI 실현 변동성 백분위로 VIX 요소와 거시 국면 요소를 다시 만든다.
+    - VIX 요소: GATE_CONFIG VIX_THRESHOLDS의 백분위 기준(90·75·60)만 사용
+    - 거시 국면: build_regime_vix_header와 같은 문턱(65·80%ile)에 QQQ 레짐 대신 KOSPI 레짐(reg_kospi)
+      골디락스(0) = KOSPI 레짐 🟢·🟡 이고 백분위 < 65, 침체(3) = 백분위 ≥ 80, 그 외 금리 민감(1). 백분위가 없으면 1"""
+    th = GATE_CONFIG["VIX_THRESHOLDS"]
+    mm = GATE_CONFIG["MACRO_MAP"]
+    vp = vola_pctl.reindex(gate_df.index, method="ffill").astype(float)
+    vix_c = pd.Series(np.select([vp >= th["G3_PERCENTILE"], vp >= th["G2_PERCENTILE"], vp >= th["G1_PERCENTILE"]], [3.0, 2.0, 1.0], 0.0),
+                      index=gate_df.index).where(vp.notna())
+    reg_ok = gate_df["reg_kospi"].isin(["🟢", "🟡"])
+    macro_c = pd.Series(float(mm["SLOWDOWN"]), index=gate_df.index)
+    macro_c = macro_c.where(~(reg_ok & (vp < 65)), float(mm["GOLDILOCKS"]))
+    macro_c = macro_c.where(~(vp >= 80), float(mm["CREDIT_CRUNCH"]))
+    return pd.DataFrame({"comp_vix": vix_c, "comp_macro": macro_c, "vola_pctl": vp})
+
+
+def gate_variant_raw(gate_df: pd.DataFrame, variant: str, extra: Optional[Dict[str, Any]] = None) -> pd.Series:
     """저장된 구성 요소 단계(comp_regime·comp_vix·comp_macro)로 후보 규칙의 그날 지표 단계를 다시 계산한다.
-    구성 요소가 모두 없으면 2 (calculate_single_gate의 방어 폴백과 같음)."""
+    구성 요소가 모두 없으면 2 (calculate_single_gate의 방어 폴백과 같음). 후보 C는 extra["vola_pctl"](KOSPI 변동성 백분위)이 필요."""
     r = gate_df["comp_regime"].astype(float)
     v = gate_df["comp_vix"].astype(float)
     mc = gate_df["comp_macro"].astype(float)
@@ -476,14 +497,19 @@ def gate_variant_raw(gate_df: pd.DataFrame, variant: str) -> pd.Series:
         base = pd.concat([r.clip(upper=2), v.clip(upper=2), mc.clip(upper=2)], axis=1).max(axis=1)
         crisis = (r == 3) & ((v >= 2) | (mc == 3))
         raw = base.where(~crisis, 3.0)
+    elif variant.startswith("C"):
+        if not extra or extra.get("vola_pctl") is None:
+            raise ValueError("후보 C에는 KOSPI 변동성 백분위(extra['vola_pctl'])가 필요합니다")
+        kc = kospi_vol_components(gate_df, extra["vola_pctl"])
+        raw = pd.concat([r, kc["comp_vix"], kc["comp_macro"]], axis=1).max(axis=1)
     else:
         raise ValueError(f"알 수 없는 후보: {variant}")
     return raw.fillna(2.0).astype(int)
 
 
-def gate_variant_series(gate_df: pd.DataFrame, variant: str) -> pd.DataFrame:
+def gate_variant_series(gate_df: pd.DataFrame, variant: str, extra: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
     """후보 규칙의 날짜별 지표 단계(raw_level)와 최종 단계(level). 히스테리시스는 앱과 같은 apply_gate_hysteresis."""
-    raw = gate_variant_raw(gate_df, variant)
+    raw = gate_variant_raw(gate_df, variant, extra)
     levels, state = [], None
     for x in raw.values:
         lv, cc = apply_gate_hysteresis(int(x), state)
@@ -506,15 +532,32 @@ def _vol_ratio(fw: Dict[str, Any]) -> Optional[float]:
     return float(g3["mean_vol"] / base) if base else None
 
 
-def evaluate_gate_variants(gate_by_market: Dict[str, pd.DataFrame], price_by_market: Dict[str, pd.Series]) -> Dict[str, Any]:
-    """후보 × 시장 × 기간별 지표와, 사전에 정한 기준에 따른 판정."""
+def variant_extras(ohlc_by_market: Optional[Dict[str, pd.DataFrame]]) -> Dict[str, Dict[str, Any]]:
+    """후보 C용 시장별 추가 입력: 기준 지수 일봉으로 계산한 실현 변동성 백분위(VOLA_PCTL250, 그날 이전 250일 기준)."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for m, df in (ohlc_by_market or {}).items():
+        d = _bt_naive(df)
+        if d is None or len(d) < 260 or not {"High", "Low", "Close"} <= set(d.columns):
+            continue
+        out[m] = {"vola_pctl": compute_base_primitives(d)["VOLA_PCTL250"]}
+    return out
+
+
+def evaluate_gate_variants(gate_by_market: Dict[str, pd.DataFrame], price_by_market: Dict[str, pd.Series],
+                           ohlc_by_market: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Any]:
+    """후보 × 시장 × 기간별 지표와, 사전에 정한 기준에 따른 판정. 시장이 정해진 후보(VARIANT_MARKETS)는 그 시장만."""
+    extras = variant_extras(ohlc_by_market)
     res: Dict[str, Any] = {}
     for name in GATE_VARIANTS:
         res[name] = {}
         for m, g in gate_by_market.items():
             if g is None or len(g) == 0 or m not in price_by_market:
                 continue
-            gv = gate_variant_series(g, name)
+            if name in VARIANT_MARKETS and m not in VARIANT_MARKETS[name]:
+                continue
+            if name.startswith("C") and (m not in extras or "reg_kospi" not in g):
+                continue
+            gv = gate_variant_series(g, name, extras.get(m))
             sp = gate_split_stats(gv, price_by_market[m])
             row = {}
             for per in ("앞 기간", "뒤 기간"):
@@ -593,6 +636,8 @@ def evaluate_setup_size_variants(trades: pd.DataFrame, gate_by_market: Dict[str,
     base = trades[["ticker", "group", "date", "setup", "r_multiple"]].copy()
     base["date"] = pd.to_datetime(base["date"])
     for gname in GATE_VARIANTS:
+        if gname in VARIANT_MARKETS:   # 한 시장 전용 후보는 T 진입 크기 비교에서 제외 (거래가 두 시장에 걸쳐 있음)
+            continue
         gv = {m: gate_variant_series(g, gname) for m, g in gate_by_market.items() if g is not None and len(g)}
         t = attach_gate_to_trades(base, gv)
         t = t[t["gate_level"].notna()].copy()
@@ -623,9 +668,10 @@ def evaluate_setup_size_variants(trades: pd.DataFrame, gate_by_market: Dict[str,
 
 
 def run_variant_analysis(gate_by_market: Dict[str, pd.DataFrame], price_by_market: Dict[str, pd.Series],
-                         trades: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+                         trades: Optional[pd.DataFrame] = None,
+                         ohlc_by_market: Optional[Dict[str, pd.DataFrame]] = None) -> Dict[str, Any]:
     """게이트 후보 비교와 T 진입 크기 후보 비교를 한 번에. 저장된 게이트 시계열(CSV)만 있으면 몇 초 안에 끝난다."""
-    gv = evaluate_gate_variants(gate_by_market, price_by_market)
+    gv = evaluate_gate_variants(gate_by_market, price_by_market, ohlc_by_market)
     sv = evaluate_setup_size_variants(trades, gate_by_market) if trades is not None and len(trades) else None
     return {"gate": gv, "setup": sv, "candidates": GATE_VARIANTS, "criteria": VARIANT_CRITERIA,
             "t_size_variants": {k: {s: {f"G{lv}": w for lv, w in m.items()} for s, m in v.items()} for k, v in T_SIZE_VARIANTS.items()}}
@@ -640,7 +686,7 @@ def render_variants_report(v: Dict[str, Any], generated_at: Optional[str] = None
     for name, desc in v["candidates"].items():
         L.append(f"- **{name}**: {desc}")
     c = v["criteria"]
-    L += ["", f"판정 기준: 앞 기간에서 모든 시장의 G3 비중 ≤ {c['G3_MAX_SHARE_FRONT']:.0f}%, G3 이후 변동성 ≥ G0·G1의 {c['MIN_VOL_RATIO_FRONT']:.1f}배 → "
+    L += ["", f"판정 기준: 앞 기간에서 후보가 적용되는 모든 시장(C는 한국만)의 G3 비중 ≤ {c['G3_MAX_SHARE_FRONT']:.0f}%, G3 이후 변동성 ≥ G0·G1의 {c['MIN_VOL_RATIO_FRONT']:.1f}배 → "
           f"통과 후보 중 앞 기간 타이밍 효과(게이트 샤프 − 같은 평균 노출 고정 샤프)가 가장 큰 것 → 뒤 기간에서 G3 변동성 비율 > {c['MIN_VOL_RATIO_BACK']:.1f}배이고 "
           f"타이밍 효과가 현재 이상이면 채택 후보.", ""]
     res = v["gate"]["results"]
@@ -650,6 +696,8 @@ def render_variants_report(v: Dict[str, Any], generated_at: Optional[str] = None
               "| 후보 | 기간 | G3 비중 | G3 변동성 ÷ G0·G1 | 게이트 샤프 | 고정 비중 샤프 | 타이밍 효과 | 게이트 최대 낙폭 | 고정 비중 최대 낙폭 | 평균 노출 | 연간 비중 변경 |",
               "|---|---|---|---|---|---|---|---|---|---|---|"]
         for name in res:
+            if name in VARIANT_MARKETS and m not in VARIANT_MARKETS[name]:
+                continue   # 다른 시장 전용 후보
             for per in ("앞 기간", "뒤 기간"):
                 r = res[name].get(m, {}).get(per, {})
                 if r.get("g3_share") is None:
@@ -691,6 +739,134 @@ def render_variants_report(v: Dict[str, Any], generated_at: Optional[str] = None
         L.append("")
     L += ["## 주의", "- 전체 기간 결과를 이미 본 뒤에 만든 후보라, 뒤 기간 확인도 완전히 독립적인 검증은 아닙니다. 채택 후보가 나와도 앱에 반영한 뒤 앞으로의 실제 결과로 다시 확인해야 합니다.",
           "- T 셋업은 레이더 카드의 단순화 규칙이고, 노출 비중은 모델 가정입니다(REPORT.md의 주의 사항과 같음).", ""]
+    return "\n".join(L)
+
+
+# ---------------------------------------------------------------------
+# T 셋업 진단 (2026-11-13): 실제 신호 vs 같은 매매 방식의 무작위 진입. 판정 기준은 결과를 보기 전에 고정.
+# ---------------------------------------------------------------------
+SETUP_DIAG_CRITERIA: Dict[str, Any] = {
+    # ETF(생존 편향이 작음)에서 '신호 평균 R − 무작위 진입 평균 R'이 표준오차의 2배 이상이어야 '통과'.
+    # 미통과 셋업은 레이더 카드에 '과거 검증 미통과'로 표시한다(반영은 결과 확인 후).
+    "GROUP": "ETF", "MIN_Z": 2.0,
+}
+
+
+def setup_signals_and_baseline(df: pd.DataFrame, cost: Optional[float] = None) -> Dict[str, List[Dict[str, Any]]]:
+    """한 종목의 실제 셋업 거래와, 같은 매매 방식으로 매 보유 기간마다 진입한 무작위(비교용) 거래.
+    무작위 진입은 신호 조건 없이 i = 120부터 보유 기간(ST-1 5봉, ST-2 15봉) 간격으로 진입해 거래끼리 겹치지 않는다."""
+    d = _bt_naive(df)
+    if d is None or len(d) < int(BACKTEST_CONFIG["SETUP_MIN_BARS"]):
+        return {"signals": [], "baseline": []}
+    c = TECH_PARAMS["ROUND_TRIP_COST"] if cost is None else float(cost)
+    prim = compute_base_primitives(d)
+    signals = list(run_setup_backtest_validation(prim, cost=c).get("all_trades") or [])
+    arr = _setup_arrays(prim)
+    base = []
+    for setup, st1, step in (("ST-1", True, 5), ("ST-2", False, 15)):
+        for i in range(120, len(prim) - 15, step):
+            sim = _simulate_setup_trade(arr, i, st1, c)
+            if np.isfinite(sim["r"]):
+                base.append({"date": str(prim.index[i])[:10], "setup": setup, "r_multiple": round(float(sim["r"]), 2), "exit_type": sim["exit_type"]})
+    return {"signals": signals, "baseline": base}
+
+
+def _r_stats(r: pd.Series) -> Dict[str, Any]:
+    r = r.astype(float)
+    n = len(r)
+    if n == 0:
+        return {"n": 0}
+    return {"n": n, "mean": float(r.mean()), "se": float(r.std(ddof=1) / math.sqrt(n)) if n >= 2 else None,
+            "win_rate": float((r > 0).mean() * 100.0)}
+
+
+def summarize_setup_diag(signals: pd.DataFrame, baseline: pd.DataFrame) -> Dict[str, Any]:
+    """묶음(ETF·대표 종목·전체) × 셋업별: 신호와 무작위 진입의 평균 R, 차이와 z, 청산 이유별 비중·평균 R, 사전 기준 판정."""
+    crit = SETUP_DIAG_CRITERIA
+    out: Dict[str, Any] = {"criteria": crit, "by_group": {}, "verdict": {}}
+    if signals is None or len(signals) == 0:
+        return out
+    for grp in ["ETF", "대표 종목", "전체"]:
+        sg = signals if grp == "전체" else signals[signals["group"] == grp]
+        bg = baseline if grp == "전체" else baseline[baseline["group"] == grp]
+        block = {}
+        for setup in ("ST-1", "ST-2"):
+            ss, bb = sg[sg["setup"] == setup], bg[bg["setup"] == setup]
+            s_st, b_st = _r_stats(ss["r_multiple"]), _r_stats(bb["r_multiple"])
+            diff = z = None
+            if s_st.get("n", 0) >= 2 and b_st.get("n", 0) >= 2:
+                diff = s_st["mean"] - b_st["mean"]
+                se_d = math.sqrt(s_st["se"] ** 2 + b_st["se"] ** 2)
+                z = diff / se_d if se_d > 0 else None
+            exits = {}
+            for et in ("목표", "손절", "기간 만료"):
+                e_s, e_b = ss[ss["exit_type"] == et], bb[bb["exit_type"] == et]
+                exits[et] = {"signal_share": float(len(e_s) / len(ss) * 100.0) if len(ss) else None,
+                             "signal_mean": float(e_s["r_multiple"].mean()) if len(e_s) else None,
+                             "baseline_share": float(len(e_b) / len(bb) * 100.0) if len(bb) else None,
+                             "baseline_mean": float(e_b["r_multiple"].mean()) if len(e_b) else None}
+            block[setup] = {"signal": s_st, "baseline": b_st, "diff": diff, "z": z, "exits": exits}
+        out["by_group"][grp] = block
+    for setup in ("ST-1", "ST-2"):
+        b = out["by_group"].get(crit["GROUP"], {}).get(setup, {})
+        z = b.get("z")
+        out["verdict"][setup] = {"passed": bool(z is not None and z >= crit["MIN_Z"]), "z": z, "diff": b.get("diff")}
+    return out
+
+
+def run_setup_diag(setup_price_map: Dict[str, pd.DataFrame], cost: Optional[float] = None) -> Dict[str, Any]:
+    """T 셋업 진단 전체 실행 (게이트 계산 없음)."""
+    groups = {s: grp for grp, syms in BACKTEST_CONFIG["SETUP_UNIVERSE"].items() for s in syms}
+    sig_rows, base_rows = [], []
+    for sym, df in (setup_price_map or {}).items():
+        r = setup_signals_and_baseline(df, cost)
+        g = groups.get(sym, "추가 종목")
+        sig_rows += [{"ticker": sym, "group": g, **x} for x in r["signals"]]
+        base_rows += [{"ticker": sym, "group": g, **x} for x in r["baseline"]]
+    sig, base = pd.DataFrame(sig_rows), pd.DataFrame(base_rows)
+    summ = summarize_setup_diag(sig, base)
+    summ["n_tickers"] = int(sig["ticker"].nunique()) if len(sig) else 0
+    summ["cost"] = TECH_PARAMS["ROUND_TRIP_COST"] if cost is None else float(cost)
+    return {"summary": summ, "signals": sig, "baseline": base}
+
+
+def render_setup_diag_report(s: Dict[str, Any], generated_at: Optional[str] = None) -> str:
+    """T 셋업 진단 보고서(마크다운)."""
+    crit = s.get("criteria", SETUP_DIAG_CRITERIA)
+    L = ["# T 셋업 진단: 실제 신호 vs 무작위 진입", "",
+         f"- 생성: {generated_at or '—'} · 종목 {s.get('n_tickers', 0)}개 · 왕복 비용 {float(s.get('cost') or 0) * 100:.2f}%",
+         "- 무작위 진입: 신호 조건 없이 같은 매매 방식(다음 날 시가 진입, 손절은 종가 기준, 목표는 장중 고가, ST-1 최대 5일·ST-2 최대 15일)으로 보유 기간마다 진입. "
+         "신호가 무작위 진입보다 낫지 않으면 신호 조건이 더해 주는 것이 없다는 뜻입니다.",
+         f"- 판정 기준(결과 보기 전 고정): {crit['GROUP']}에서 (신호 평균 R − 무작위 평균 R) ≥ 표준오차 × {crit['MIN_Z']:.0f} 이면 통과. "
+         "미통과 셋업은 레이더 카드에 '과거 검증 미통과'로 표시합니다.", ""]
+    for setup in ("ST-1", "ST-2"):
+        v = s.get("verdict", {}).get(setup, {})
+        if v:
+            z = v.get("z")
+            L.append(f"**{setup} 판정: {'통과' if v['passed'] else '미통과'}** (ETF 차이 "
+                     f"{'—' if v.get('diff') is None else format(v['diff'], '+.2f') + 'R'}, z {'—' if z is None else format(z, '+.1f')})")
+    L.append("")
+    L += ["| 묶음 | 셋업 | 신호 평균 R ±표준오차 (승률·건수) | 무작위 평균 R ±표준오차 (승률·건수) | 차이 | z |", "|---|---|---|---|---|---|"]
+
+    def cell(x):
+        if not x.get("n"):
+            return "표본 없음"
+        se = f" ±{x['se']:.2f}" if x.get("se") is not None else ""
+        return f"{x['mean']:+.2f}R{se} ({x['win_rate']:.0f}% · {x['n']:,}건)"
+    for grp, block in s.get("by_group", {}).items():
+        for setup, b in block.items():
+            L.append(f"| {grp} | {setup} | {cell(b['signal'])} | {cell(b['baseline'])} | "
+                     f"{'—' if b['diff'] is None else format(b['diff'], '+.2f') + 'R'} | {'—' if b['z'] is None else format(b['z'], '+.1f')} |")
+    L += ["", "### 청산 이유별 (ETF)", "| 셋업 | 청산 | 신호 비중 · 평균 R | 무작위 비중 · 평균 R |", "|---|---|---|---|"]
+    for setup, b in s.get("by_group", {}).get("ETF", {}).items():
+        for et, e in b["exits"].items():
+            sig = "—" if e["signal_share"] is None else f"{e['signal_share']:.0f}% · " + ("—" if e["signal_mean"] is None else f"{e['signal_mean']:+.2f}R")
+            bas = "—" if e["baseline_share"] is None else f"{e['baseline_share']:.0f}% · " + ("—" if e["baseline_mean"] is None else f"{e['baseline_mean']:+.2f}R")
+            L.append(f"| {setup} | {et} | {sig} | {bas} |")
+    L += ["", "## 주의",
+          "- 레이더 카드 과거 검증과 같은 단순화 규칙입니다(실제 셋업 스캐너의 모든 조건을 재현하지 않음).",
+          "- 같은 날 여러 종목이 함께 움직이므로 거래끼리 완전히 독립이 아니고, 표준오차는 실제보다 작게 나올 수 있습니다.",
+          "- '대표 종목'은 사후 선택 편향이 있어 판정에 쓰지 않습니다.", ""]
     return "\n".join(L)
 
 
@@ -768,7 +944,8 @@ def run_rule_backtest(index_map: Dict[str, pd.DataFrame], setup_price_map: Optio
         summary["setups"]["cost_sensitivity"] = summarize_setup_cost_sensitivity(
             {c: pd.DataFrame(r) for c, r in rows_by_cost.items()})
     prices = {m: _price_col(pm[BACKTEST_CONFIG["BENCH"][m]]) for m in gate_series}
-    variants = run_variant_analysis(gate_series, prices, trades_df) if gate_series else None
+    ohlc = {m: pm[BACKTEST_CONFIG['BENCH'][m]] for m in gate_series}
+    variants = run_variant_analysis(gate_series, prices, trades_df, ohlc) if gate_series else None
     return {"summary": summary, "gate_series": gate_series, "equity": equity, "trades": trades_df, "variants": variants}
 
 

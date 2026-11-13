@@ -281,8 +281,8 @@ def main():
     g18["level"] = g18["raw_level"]
     px18 = pd.Series(100 * np.cumprod(1 + r18.normal(3e-4, 0.01, 1000)), index=d18)
     va = engine.run_variant_analysis({"US": g18}, {"US": px18}, tt)
-    chk("18 후보 3개 × 앞·뒤 기간 계산", all(va["gate"]["results"][n]["US"]["앞 기간"].get("g3_share") is not None
-                                    and va["gate"]["results"][n]["US"]["뒤 기간"].get("g3_share") is not None for n in engine.GATE_VARIANTS))
+    chk("18 공통 후보(현재·A·B) × 앞·뒤 기간 계산", all(va["gate"]["results"][n]["US"]["앞 기간"].get("g3_share") is not None
+                                    and va["gate"]["results"][n]["US"]["뒤 기간"].get("g3_share") is not None for n in engine.GATE_VARIANTS if n not in engine.VARIANT_MARKETS))
     rv = engine.render_variants_report(va, generated_at="테스트")
     chk("18 보고서에 판정·T 진입 크기 표", "### 판정:" in rv and "## T 셋업 진입 크기 후보" in rv)
     chk("18 후보 B의 G3 비중 ≤ 현재", va["gate"]["results"]["B 추세 붕괴 + 공포 동시 = G3"]["US"]["앞 기간"]["g3_share"]
@@ -290,6 +290,54 @@ def main():
     import json as _json
     chk("18 결과는 JSON으로 저장 가능", len(_json.dumps(va, ensure_ascii=False, default=str)) > 100)
     chk("18 전체 실행(run_rule_backtest) 결과에 후보 비교 포함", res9.get("variants") is not None and "gate" in res9["variants"])
+
+    # 19) 후보 C(한국): KOSPI 변동성 백분위로 VIX·거시 국면 요소를 다시 만듦
+    dc = pd.bdate_range("2024-01-01", periods=5)
+    gc = pd.DataFrame({"comp_regime": [0, 1, 3, 0, 2], "comp_vix": 0, "comp_macro": 0, "raw_level": 0, "level": 0,
+                       "reg_kospi": ["🟢", "🟡", "⚫", "🟢", "🔴"]}, index=dc)
+    vp = pd.Series([50.0, 70.0, 95.0, 85.0, np.nan], index=dc)
+    kc = engine.kospi_vol_components(gc, vp)
+    chk("19 VIX 요소: 50→0 · 70→1 · 95→3 · 85→2 · 없음→없음",
+        kc["comp_vix"].iloc[:4].tolist() == [0.0, 1.0, 3.0, 2.0] and np.isnan(kc["comp_vix"].iloc[4]))
+    chk("19 거시 국면: 🟢+50→골디락스 0 · 🟡+70→1 · 95→침체 3 · 85→3 · 없음→1", kc["comp_macro"].tolist() == [0.0, 1.0, 3.0, 3.0, 1.0])
+    chk("19 C 지표 단계 = max(레짐, 새 VIX, 새 거시)",
+        engine.gate_variant_raw(gc, "C 한국: KOSPI 자체 변동성", {"vola_pctl": vp}).tolist() == [0, 1, 3, 3, 2])
+
+    # 20) 후보 C는 한국에만, KOSPI 가격이 없으면 건너뜀
+    g18k = g18.copy()
+    g18k["reg_kospi"] = "🟡"
+    ks = make_ohlc(d18, 2e-4, 0.012, 2500, 31)
+    va2 = engine.run_variant_analysis({"US": g18, "KR": g18k}, {"US": px18, "KR": ks["Close"]}, None, {"KR": ks})
+    cres = va2["gate"]["results"]["C 한국: KOSPI 자체 변동성"]
+    chk("20 C는 한국만 계산", list(cres.keys()) == ["KR"] and cres["KR"]["앞 기간"].get("g3_share") is not None)
+    va3 = engine.run_variant_analysis({"KR": g18k}, {"KR": ks["Close"]}, None, None)
+    chk("20 KOSPI 일봉이 없으면 C 건너뜀", va3["gate"]["results"]["C 한국: KOSPI 자체 변동성"] == {})
+    rv2 = engine.render_variants_report(va2)
+    us_tbl = rv2.split("### 미국")[1].split("###")[0] if "### 미국" in rv2 else ""
+    chk("20 미국 표에 C 줄 없음", "C 한국" not in us_tbl and "C 한국" in rv2)
+
+    # 21) T 셋업 진단: 신호 = 기존 함수 결과, 무작위 진입은 보유 기간 간격(겹치지 않음)
+    sb = engine.setup_signals_and_baseline(stock)
+    chk("21 신호 = run_setup_backtest_validation 거래", [x["r_multiple"] for x in sb["signals"]] == r_def["r_distribution"])
+    b1 = pd.DataFrame([x for x in sb["baseline"] if x["setup"] == "ST-1"])
+    b2 = pd.DataFrame([x for x in sb["baseline"] if x["setup"] == "ST-2"])
+    gap1 = pd.Series(pd.to_datetime(b1["date"])).map(lambda d: stock.index.get_loc(d)).diff().dropna().unique()
+    gap2 = pd.Series(pd.to_datetime(b2["date"])).map(lambda d: stock.index.get_loc(d)).diff().dropna().unique()
+    chk("21 무작위 진입 간격 ST-1 5봉 · ST-2 15봉", list(gap1) == [5] and list(gap2) == [15])
+    chk("21 모든 거래에 청산 이유", all(x["exit_type"] in ("목표", "손절", "기간 만료") for x in sb["signals"] + sb["baseline"]))
+
+    # 22) 진단 요약·판정: 손으로 만든 거래
+    sig = pd.DataFrame({"ticker": "XLK", "group": "ETF", "setup": "ST-1", "r_multiple": [1.0, 1.2, 0.8, 1.1, 0.9], "exit_type": "목표"})
+    bas = pd.DataFrame({"ticker": "XLK", "group": "ETF", "setup": "ST-1", "r_multiple": [0.0, 0.1, -0.1, 0.05, -0.05], "exit_type": "기간 만료"})
+    sd = engine.summarize_setup_diag(sig, bas)
+    st1 = sd["by_group"]["ETF"]["ST-1"]
+    chk("22 차이 = 1.0 − 0.0 = +1.0R, z가 커서 통과", abs(st1["diff"] - 1.0) < 1e-12 and st1["z"] > 2 and sd["verdict"]["ST-1"]["passed"])
+    sd2 = engine.summarize_setup_diag(sig.assign(r_multiple=[0.0, 0.1, -0.1, 0.05, -0.05]), bas)
+    chk("22 차이 0이면 미통과", sd2["verdict"]["ST-1"]["passed"] is False)
+    chk("22 청산 이유 비중: 신호 목표 100%", st1["exits"]["목표"]["signal_share"] == 100.0 and st1["exits"]["기간 만료"]["baseline_share"] == 100.0)
+    rd = engine.run_setup_diag({"XLK": stock, "069500.KS": make_ohlc(long_idx, 2e-4, 0.02, 30000, 13)})
+    rep_d = engine.render_setup_diag_report(rd["summary"], generated_at="테스트")
+    chk("22 진단 보고서에 판정·청산 이유 표", "판정:" in rep_d and "### 청산 이유별 (ETF)" in rep_d and rd["summary"]["n_tickers"] >= 1)
 
     print("FAILS:", FAILS)
     sys.exit(1 if FAILS else 0)

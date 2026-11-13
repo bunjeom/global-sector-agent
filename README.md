@@ -63,6 +63,7 @@ python tests/run_all.py --fast   # 화면 검사 제외
 python run_backtest.py                # 미국·한국 국면 게이트 + T 셋업 (실제 야후 데이터, 수 분)
 python run_backtest.py --skip-setups  # 게이트만
 python run_backtest.py --variants     # 규칙 후보 비교만 (저장된 결과 사용, 1분 안팎) → data/backtest/VARIANTS.md
+python run_backtest.py --setup-diag   # T 셋업 진단: 실제 신호 vs 무작위 진입 → data/backtest/SETUP_DIAG.md
 ```
 
 - 국면 게이트를 2000년부터 날짜마다 앱과 같은 함수로 다시 계산합니다(그날 이전 데이터만 사용). 게이트 단계별 이후 지수 성과와, 게이트대로 노출을 줄인 전략을 매수 후 보유·같은 평균 노출 고정 비중과 비교합니다.
