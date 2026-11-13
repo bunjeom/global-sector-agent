@@ -39,10 +39,11 @@
 | `rrg.py` | 4분면(RRG_CONFIG, `build_real_rrg_bundle`) |
 | `radar.py` | 실행 레이더(RADAR_CONFIG, 종목 선정·T 신호) |
 | `rule_backtest.py` | 판정 규칙 백테스트(BACKTEST_CONFIG): 국면 게이트 재현·선행 성과·노출 전략, T 셋업 × 게이트 |
+| `t_backtest.py` | T 트랙 검증(TBT_CONFIG): 실제 스캐너 날짜별 재현·티켓 청산, 재설계 후보 T-A 추세 추종·T-B 눌림목(관행값 고정, 해외 국가 ETF로 판정) |
 
 ### 패키지 규칙
 - 새 함수는 기능이 맞는 모듈에 넣는다. `engine.py` 파일을 다시 만들지 않는다(폴더 `engine/`이 우선 로드되어 새 파일은 무시됨).
-- 다른 모듈 이름을 쓰면 파일 위쪽에 `from .모듈 import 이름`을 추가한다. 의존 방향은 아래 순서의 **앞쪽 모듈만** 가져다 쓴다(거꾸로 가져오면 순환 import 오류): common → technical_signals → backtest → technical → earnings → macro → fundamental → synthesis → home → gate → rrg → radar → rule_backtest.
+- 다른 모듈 이름을 쓰면 파일 위쪽에 `from .모듈 import 이름`을 추가한다. 의존 방향은 아래 순서의 **앞쪽 모듈만** 가져다 쓴다(거꾸로 가져오면 순환 import 오류): common → technical_signals → backtest → technical → earnings → macro → fundamental → synthesis → home → gate → rrg → radar → rule_backtest → t_backtest.
 - 바깥(app.py·페이지·테스트)은 `engine.이름`으로만 쓴다. 새 이름도 `engine/__init__.py`가 자동으로 내보낸다(따로 등록할 필요 없음).
 - 테스트에서 `engine.이름 = 가짜함수`로 바꿔 끼우면 그 이름을 쓰는 모든 모듈에 같이 적용되고, `importlib.reload(engine)`은 모든 모듈을 처음부터 다시 읽는다(한 파일이던 시절과 같은 동작, `engine/__init__.py`의 _EngineModule).
 - 같은 이름을 두 모듈에서 따로 정의하면 import 시 오류로 멈춘다(단일 출처 보호).
@@ -58,6 +59,7 @@
 - 규칙 후보 비교(2026-11-13, data/backtest/VARIANTS.md): 게이트 후보 A·B는 사전 기준(앞 기간 G3 비중 ≤20%)에서 탈락해 현재 규칙 유지, ST-1의 G2·G3 20% 예외도 기각. 결과를 본 뒤 기준(20% 등)을 풀거나 뒤 기간 성적으로 후보를 다시 고르지 않는다. 새 후보를 시험하려면 GATE_VARIANTS에 먼저 추가하고 기준을 바꾸지 않은 채 run_backtest.py --variants로 판정한다.
 - 한국 후보 C(KOSPI 자체 변동성)도 사전 기준 탈락(2026-11-13). 뒤 기간(2014~2026)을 여러 번 봐서 더는 깨끗한 검증 데이터가 아니므로 게이트 후보를 더 추가해 고르지 않는다. 게이트를 바꾸려면 앞으로 쌓이는 데이터(2026-11 이후)로 검증한다.
 - T 셋업 장기 검증(data/backtest/setup_diag.json, run_backtest.py --setup-diag): ST-1·ST-2 모두 '같은 매매 방식의 무작위 진입'보다 낫지 않음(미통과). 레이더 카드는 engine.load_setup_validation으로 이 파일을 읽어 표시하며 숫자를 코드에 적지 않는다. 파일이 없으면 표시하지 않는다.
+- T 트랙 재설계(2026-11-13~): 실제 스캐너는 run_backtest.py --scanner(앱 레이더와 같은 입력으로 날짜별 재현, 캐시 data/backtest/scanner_cache/), 재설계 후보는 --redesign. 후보 규칙·매개변수(55·20일, 2×ATR(20), RSI(2)<10, 5일선)와 판정 기준(TBT_CRITERIA)은 결과를 보기 전에 고정했으므로 결과를 보고 바꾸지 않는다. HOLDOUT_UNIVERSE(해외 국가 ETF)는 판정 전용이라 다른 분석에 쓰지 않는다.
 - 국면 게이트 입력은 `build_gate_inputs_from_header(macro_header, "US"|"KR")`로 홈 헤더의 실제 데이터에서 만든다.
 - 실적 트랙(analyze_earnings_track) 입력은 `fetch_real_earnings_inputs` 한 곳에서만 만든다(미국 yfinance, 한국 DART + yfinance 추정치). 못 받은 값은 None이고 화면에는 '데이터 없음'. 삼성전자식 기본값을 다시 넣지 않는다.
 - 실적 트랙은 판정 가능한 축만 점수에 반영한다(`verdict.coverage`). 근거가 부족하면 국면은 `NA`(판정 불가)이며, 계산에서만 G3로 중립 처리하고 화면에는 '판정 불가'로 표시한다.

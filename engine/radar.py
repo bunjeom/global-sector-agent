@@ -38,6 +38,13 @@ RADAR_CONFIG = {
 }
 
 
+def radar_neutral_value() -> Dict[str, Any]:
+    """레이더는 V(가치) 트랙을 계산하지 않으므로 T 엔진에 넘기는 중립 가치 입력. T 백테스트(t_backtest)도 같은 값을 쓴다."""
+    return {"thesis_status": "미확인", "kill_flags": [], "buy_tranches": [], "sell_target": None,
+            "position_cap": TECH_PARAMS["MAX_POS_RATIO_TOTAL"], "real_signal": "중립",
+            "macro_regime_override": None}
+
+
 def load_setup_validation(path: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """장기 검증 결과(실제 신호 vs 같은 매매 방식의 무작위 진입, ETF 기준)를 읽는다. 없거나 형식이 다르면 None.
     반환: {"generated_at", "group", "setups": {"ST-1": {passed, z, diff, signal_mean, baseline_mean, signal_n}, ...}}"""
@@ -240,9 +247,7 @@ def build_radar_signal(item: Dict[str, Any], df: Optional[pd.DataFrame], bench_d
         if mkt == "US" and (not fx_usdkrw or float(fx_usdkrw) <= 0):
             return {**base, "kind": "error", "as_of": as_of, "reason": "USD/KRW 환율 데이터 없음"}
         px = df.dropna(subset=["Open", "High", "Low", "Close"])
-        neutral_value = {"thesis_status": "미확인", "kill_flags": [], "buy_tranches": [], "sell_target": None,
-                         "position_cap": TECH_PARAMS["MAX_POS_RATIO_TOTAL"], "real_signal": "중립",
-                         "macro_regime_override": None}
+        neutral_value = radar_neutral_value()
         days_to_earn = trading_days_until(as_of, item.get("next_earnings"))
         blackout = is_earnings_blackout(days_to_earn)
         cfg = {**(account_cfg or {}), "is_krx": mkt == "KR", "fx_to_krw": 1.0 if mkt == "KR" else float(fx_usdkrw),
