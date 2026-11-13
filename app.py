@@ -619,6 +619,9 @@ def render_signal(a: dict, key_prefix: str):
     st.caption(f"근거: {a.get('headline', '')} · 상태: {a.get('state_label', '')}")
     if not is_def and a.get("setup_id"):
         st.caption(bt_text(a))
+        _vt = engine.setup_validation_text(a.get("bt_validation"))
+        if _vt:
+            st.caption(_vt)
     if a.get("next_cond"):
         st.caption(a["next_cond"])
     st.caption(f"게이트: {a.get('reason', '')}")
@@ -662,7 +665,8 @@ def render_radar():
 st.caption(f"대상: '지금 강한 곳'·'다음 후보' 섹터 ETF의 상위 구성 종목 중 추세(50일선 위)·3개월 상대강도 상위 {len(radar_universe)}개 · "
            "T(추세매매) 신호만 표시 — V(가치 분할매수)는 종목 딥다이브에서 확인하세요.")
 st.caption("과거 검증은 엔진의 단순화된 검증(이격 반등·돌파만, 다음 날 시가 진입, 왕복 비용 0.3% 반영)입니다. "
-           "합산 대상은 '지금 강한 종목'만 모은 것이라 과거 성적이 실제보다 좋게 나올 수 있습니다. ± 는 평균의 오차(1 표준오차).")
+           "합산 대상은 '지금 강한 종목'만 모은 것이라 과거 성적이 실제보다 좋게 나올 수 있습니다. ± 는 평균의 오차(1 표준오차). "
+           "'장기 검증'은 섹터 ETF 2001년~ 결과로, 신호가 같은 매매 방식으로 아무 날에나 들어간 것보다 나은지 본 것입니다(data/backtest/SETUP_DIAG.md).")
 if radar_res.get("selection_log"):
     with st.expander("종목 선정 과정 보기", expanded=False):
         st.dataframe(pd.DataFrame(radar_res["selection_log"]), width="stretch", hide_index=True)

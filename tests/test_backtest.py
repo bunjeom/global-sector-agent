@@ -9,6 +9,7 @@
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))   # 프로젝트 폴더의 engine 패키지를 불러오기 위해
 import _offline  # noqa: F401  외부 네트워크 차단 (tests/_offline.py)
+import os
 import sys
 import numpy as np
 import pandas as pd
@@ -338,6 +339,19 @@ def main():
     rd = engine.run_setup_diag({"XLK": stock, "069500.KS": make_ohlc(long_idx, 2e-4, 0.02, 30000, 13)})
     rep_d = engine.render_setup_diag_report(rd["summary"], generated_at="테스트")
     chk("22 진단 보고서에 판정·청산 이유 표", "판정:" in rep_d and "### 청산 이유별 (ETF)" in rep_d and rd["summary"]["n_tickers"] >= 1)
+
+    # 23) 레이더 카드 장기 검증 표시: setup_diag.json 읽기 (없으면 표시 안 함)
+    import tempfile, json as _j
+    chk("23 파일이 없으면 None", engine.load_setup_validation(os.path.join(tempfile.gettempdir(), "없는_파일.json")) is None)
+    tmpf = os.path.join(tempfile.gettempdir(), "setup_diag_test.json")
+    with open(tmpf, "w", encoding="utf-8") as f:
+        _j.dump({"generated_at": "2026-11-13 10:59", **sd}, f, ensure_ascii=False, default=str)
+    lv = engine.load_setup_validation(tmpf)
+    chk("23 판정·평균 읽기 (ST-1 통과 예제)", lv["setups"]["ST-1"]["passed"] is True and abs(lv["setups"]["ST-1"]["signal_mean"] - 1.0) < 1e-12)
+    t_ok = engine.setup_validation_text({**lv["setups"]["ST-1"], "generated_at": lv["generated_at"], "group": lv["group"]})
+    t_ng = engine.setup_validation_text({"passed": False, "signal_mean": -0.14, "baseline_mean": -0.11, "signal_n": 760, "group": "ETF"})
+    chk("23 통과/미통과 문구", t_ok.startswith("장기 검증 통과") and "2026-11-13" in t_ok and t_ng.startswith("⚠ 장기 검증 미통과") and "-0.14R" in t_ng)
+    chk("23 판정이 없으면 문구 없음", engine.setup_validation_text(None) is None)
 
     print("FAILS:", FAILS)
     sys.exit(1 if FAILS else 0)

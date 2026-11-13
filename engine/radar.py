@@ -2,6 +2,8 @@
 
 engine.py를 기능별로 나눈 모듈. 바깥에서는 `import engine` 후 `engine.이름`으로 쓴다(engine/__init__.py).
 """
+import json
+import os
 from typing import Dict, List, Optional, Any
 import pandas as pd
 
@@ -30,8 +32,41 @@ RADAR_CONFIG = {
     "DEFENSE_STATES": ["K", "D"],
     "BT_MIN_SAMPLE": 5,            # 과거 검증 표본이 이보다 적으면 숫자 대신 '표본 부족'
     # 엔진 셋업 → 과거 검증(run_setup_backtest_validation) 항목. 없는 셋업은 검증 대상 아님
-    "BT_SETUP_FAMILY": {"ST-1": "ST-1", "ST-2a": "ST-2", "ST-2b": "ST-2"},  # 붕괴 경계·하락 진행 → 보유자 방어 신호 (방어가 공격보다 우선)
+    "BT_SETUP_FAMILY": {"ST-1": "ST-1", "ST-2a": "ST-2", "ST-2b": "ST-2"},
+    # 장기 검증(run_backtest.py --setup-diag 결과). 파일이 없으면 표시하지 않는다(숫자를 코드에 적지 않음)
+    "SETUP_VALIDATION_PATH": os.path.join("data", "backtest", "setup_diag.json"),  # 붕괴 경계·하락 진행 → 보유자 방어 신호 (방어가 공격보다 우선)
 }
+
+
+def load_setup_validation(path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """장기 검증 결과(실제 신호 vs 같은 매매 방식의 무작위 진입, ETF 기준)를 읽는다. 없거나 형식이 다르면 None.
+    반환: {"generated_at", "group", "setups": {"ST-1": {passed, z, diff, signal_mean, baseline_mean, signal_n}, ...}}"""
+    p = path or RADAR_CONFIG["SETUP_VALIDATION_PATH"]
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        grp = (d.get("criteria") or {}).get("GROUP", "ETF")
+        setups = {}
+        for fam, v in (d.get("verdict") or {}).items():
+            b = ((d.get("by_group") or {}).get(grp) or {}).get(fam) or {}
+            setups[fam] = {"passed": bool(v.get("passed")), "z": v.get("z"), "diff": v.get("diff"),
+                           "signal_mean": (b.get("signal") or {}).get("mean"), "baseline_mean": (b.get("baseline") or {}).get("mean"),
+                           "signal_n": (b.get("signal") or {}).get("n")}
+        return {"generated_at": d.get("generated_at"), "group": grp, "setups": setups} if setups else None
+    except Exception:
+        return None
+
+
+def setup_validation_text(v: Optional[Dict[str, Any]]) -> Optional[str]:
+    """레이더 카드용 장기 검증 한 줄. v는 load_setup_validation()["setups"][셋업]에 generated_at·group을 더한 것."""
+    if not v:
+        return None
+    sm, bm = v.get("signal_mean"), v.get("baseline_mean")
+    nums = f" (신호 {sm:+.2f}R vs 무작위 {bm:+.2f}R, {v.get('signal_n', 0):,}건)" if sm is not None and bm is not None else ""
+    when = f" · {str(v.get('generated_at'))[:10]} 검증" if v.get("generated_at") else ""
+    if v.get("passed"):
+        return f"장기 검증 통과({v.get('group', 'ETF')} 2001~): 같은 매매 방식의 무작위 진입보다 나음{nums}{when}"
+    return f"⚠ 장기 검증 미통과({v.get('group', 'ETF')} 2001~): 같은 매매 방식의 무작위 진입보다 낫지 않음{nums}{when}"
 
 
 def select_radar_baskets(evaluation: dict) -> List[Dict[str, str]]:
@@ -277,8 +312,12 @@ def build_radar_signals(universe: List[Dict[str, Any]], price_map: Dict[str, pd.
     for fam in ("ST-1", "ST-2"):
         rs = [v for x in evaluated for v in (x.get("bt_r_by_setup") or {}).get(fam, [])]
         pooled[fam] = {**_bt_summary(rs), "n_tickers": len(evaluated)}
+    val = load_setup_validation()
     for x in evaluated:
         x.pop("bt_r_by_setup", None)
         x["bt_pooled"] = pooled.get(x.get("bt_family")) if x.get("bt_family") else None
+        fv = (val or {}).get("setups", {}).get(x.get("bt_family")) if x.get("bt_family") else None
+        x["bt_validation"] = {**fv, "generated_at": val.get("generated_at"), "group": val.get("group")} if fv else None
     res["bt_pooled"] = pooled
+    res["setup_validation"] = val
     return res
