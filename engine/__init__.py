@@ -20,6 +20,7 @@
     radar              실행 레이더
     rule_backtest      판정 규칙 백테스트(국면 게이트·T 셋업), PC 실행은 run_backtest.py
     t_backtest         T 트랙 검증(실제 스캐너 재현)과 재설계 후보(T-A 추세 추종·T-B 눌림목)
+    snapshot           컨센서스·목표가 날짜별 기록(data/snapshots/), 매일 snapshot_daily.py가 실행
 
 테스트에서 `engine.이름 = 가짜함수`로 바꿔 끼우면, 그 이름을 쓰는 모든 하위 모듈에도
 같이 반영된다(아래 _EngineModule). 한 파일이던 시절과 똑같이 동작하게 하려는 장치다.
@@ -35,10 +36,10 @@ if "_SUBMODULES" in globals():
         _importlib.reload(_m)
 
 from . import common, technical_signals, backtest, technical, earnings, macro, fundamental
-from . import synthesis, home, gate, rrg, radar, rule_backtest, t_backtest
+from . import synthesis, home, gate, rrg, radar, rule_backtest, t_backtest, snapshot
 
 _SUBMODULES = (common, technical_signals, backtest, technical, earnings, macro, fundamental,
-               synthesis, home, gate, rrg, radar, rule_backtest, t_backtest)
+               synthesis, home, gate, rrg, radar, rule_backtest, t_backtest, snapshot)
 _SUBMODULE_NAMES = {m.__name__.rsplit(".", 1)[1] for m in _SUBMODULES}
 
 # 하위 모듈의 모든 이름(밑줄로 시작하는 내부 함수 포함)을 engine.이름으로 내보낸다.
