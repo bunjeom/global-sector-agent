@@ -33,6 +33,7 @@ ENGINE_TESTS = [
     ("T 트랙 검증·재설계 후보 (스캐너 재현·청산 손 계산)", "test_t_backtest.py", [], {}),
     ("컨센서스·목표가 날짜별 기록 (가짜 yfinance)", "test_snapshot.py", [], {}),
     ("틀 A 추세반등 검증 (미래 데이터 미사용·거래 손 계산)", "test_frame_backtest.py", [], {}),
+    ("틀 B 저평가 매수 검증 (SEC 공시일 기준 EPS·거래 손 계산)", "test_frame_b.py", [], {}),
 ]
 
 PAGE_TESTS = [

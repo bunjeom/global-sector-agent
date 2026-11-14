@@ -15,5 +15,7 @@ docs_cache/
 # 백테스트 날짜별 결과(용량 큼). REPORT.md·summary.json은 커밋
 data/backtest/*.csv
 data/backtest/scanner_cache/
+# SEC 원자료 캐시(다시 받을 수 있음)
+data/sec_cache/
 *.zip
 *.patch

@@ -10,6 +10,8 @@
     .venv\\Scripts\\python run_backtest.py --scanner       실제 T 스캐너 재현 (ETF 19개, 2014년~, 몇 시간, 끊겨도 이어서 계산)
     .venv\\Scripts\\python run_backtest.py --redesign      T 트랙 재설계 후보 검증 (해외 국가 ETF 포함, 수 분)
     .venv\\Scripts\\python run_backtest.py --frame-a       틀 A(추세반등) 개별 종목 검증 (약 150종목 받기 포함 5~10분)
+    .venv\\Scripts\\python run_backtest.py --frame-b       틀 B(저평가 매수) 미국 개별 종목 검증, SEC 공시일 기준 EPS (첫 실행 10분 안팎)
+                                                     .env에 SEC_USER_AGENT=이름 이메일 필요 (SEC 접속 규칙)
 
 결과 (data/backtest/):
     REPORT.md          사람이 읽는 보고서 (커밋해 두면 다른 AI도 결과를 읽을 수 있음)
@@ -18,6 +20,7 @@
     SCANNER.md         실제 T 스캐너 검증 + scanner.json (계산 캐시: scanner_cache/, .gitignore)
     REDESIGN.md        T 트랙 재설계 후보 검증 + redesign.json
     FRAME_A.md         틀 A(추세반등) 개별 종목 검증 + frame_a.json (거래 목록 frame_a_trades.csv)
+    FRAME_B.md         틀 B(저평가 매수) 검증 + frame_b.json (거래 목록 frame_b_trades.csv, SEC 원자료 캐시 data/sec_cache/)
     summary.json       숫자 요약 + 주간 누적 수익 곡선 (이후 화면 표시용)
     *.csv              날짜별 게이트·누적 수익·거래 목록 (용량이 커서 .gitignore로 커밋 제외)
 계산은 engine/rule_backtest.py에 있고, 이 파일은 데이터 다운로드와 저장만 한다.
@@ -240,6 +243,89 @@ def run_frame_a_only(engine, args, t0):
     print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'FRAME_A.md')}")
 
 
+def download_splits(symbols):
+    """야후 액면분할 기록 (틀 B: 분할 전 보고서의 EPS를 지금 주식 단위로 맞추는 데 씀)."""
+    import yfinance as yf
+    out = {}
+    for sym in symbols:
+        try:
+            s = yf.Ticker(sym).splits
+            out[sym] = s if s is not None else pd.Series(dtype=float)
+        except Exception:   # 분할 기록을 못 받으면 분할 없음으로 본다(보고서에 종목 표시)
+            out[sym] = None
+    return out
+
+
+def run_frame_b_only(engine, args, t0):
+    """틀 B(저평가 매수): 미국 대표 종목 + HOLDOUT(새 미국 종목), SEC 공시일 기준 EPS."""
+    cfg = engine.FRAME_B_CONFIG
+    ua = engine.sec_user_agent()
+    if not ua:
+        print("SEC는 접속할 때 연락처(User-Agent)를 요구합니다. 프로젝트 폴더의 .env 파일에 아래 한 줄을 추가한 뒤 다시 실행해 주세요.")
+        print("   SEC_USER_AGENT=이름 이메일주소      (예: SEC_USER_AGENT=hong research@example.com)")
+        return
+    dev_uni, ho_uni = list(cfg["DEV_UNIVERSE"]), list(cfg["HOLDOUT_UNIVERSE"])
+    uni = dev_uni + ho_uni
+    print(f"[1/4] 가격 받기: 개발 묶음 {len(dev_uni)}개 + HOLDOUT {len(ho_uni)}개 ({cfg['PRICE_START']}~)", flush=True)
+    pm, fail_px = download(uni, cfg["PRICE_START"])
+    print("[2/4] 액면분할 기록 받기", flush=True)
+    splits = download_splits(list(pm))
+    print("[3/4] SEC EPS 받기 (처음에는 몇 분, 다음부터는 7일 동안 캐시 사용)", flush=True)
+    try:
+        cik = engine.load_cik_map(ua)
+    except Exception as e:
+        print(f"   SEC 티커 목록을 받지 못했습니다 ({type(e).__name__}: {e}). 인터넷 연결과 SEC_USER_AGENT를 확인해 주세요.")
+        return
+    events, sec_note = {}, {}
+    for i, sym in enumerate(pm, 1):
+        c = cik.get(sym.upper())
+        if c is None:
+            sec_note[sym] = "SEC 티커 목록에 없음"
+            continue
+        r = engine.fetch_eps_concept(sym, c, ua)
+        if not r.get("tag"):
+            sec_note[sym] = r.get("error", "받기 실패")
+            continue
+        events[sym] = engine.pit_eps_events(engine.parse_eps_facts(r["data"]), splits.get(sym))
+        if r["tag"] != "EarningsPerShareDiluted":
+            sec_note[sym] = f"{r['tag']} 사용"
+        if i % 20 == 0:
+            print(f"   {i}/{len(pm)}개", flush=True)
+    if fail_px:
+        print(f"   가격 못 받음: {', '.join(fail_px)}")
+    if sec_note:
+        print("   SEC 참고: " + "; ".join(f"{k} {v}" for k, v in sec_note.items()))
+    # 자료 점검: 가장 최근 SEC TTM EPS와 야후 trailingEps 비교 (파싱이 맞는지 사람이 확인)
+    check = []
+    try:
+        import yfinance as yf
+        for sym in [x for x in ("AAPL", "MSFT", "JPM", "KO", "WMT", "NVDA", "ADP", "TJX") if x in events][:6]:
+            ev = events[sym].dropna(subset=["ttm"])
+            if not len(ev):
+                continue
+            last = ev.iloc[-1]
+            try:
+                yv = yf.Ticker(sym).info.get("trailingEps")
+            except Exception:
+                yv = None
+            check.append({"ticker": sym, "sec_ttm": float(last["ttm"]), "ttm_end": str(pd.Timestamp(last["ttm_end"]).date()),
+                          "filed": str(pd.Timestamp(last["filed"]).date()), "yahoo_trailing_eps": yv})
+    except Exception:
+        pass
+    print("[4/4] 거래 계산 · 같은 날 다른 종목과 비교", flush=True)
+    dm = {k: v for k, v in pm.items() if k in dev_uni}
+    hm = {k: v for k, v in pm.items() if k in ho_uni}
+    out = engine.evaluate_frame_b(dm, hm, events)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    summ = {**out["summary"], "failed_downloads": fail_px, "sec_notes": sec_note, "eps_check": check}
+    rep = engine.render_frame_b_report(summ, generated_at=now)
+    _save("FRAME_B.md", "frame_b.json", rep, {"generated_at": now, **summ})
+    if len(out["trades"]):
+        out["trades"].to_csv(os.path.join(OUT_DIR, "frame_b_trades.csv"), index=False, encoding="utf-8-sig")
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'FRAME_B.md')}")
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8")   # Windows 콘솔에서 한글 깨짐 방지
@@ -258,6 +344,7 @@ def main():
     ap.add_argument("--scanner", action="store_true", help="실제 T 스캐너 재현 (ETF, 2014년~)")
     ap.add_argument("--redesign", action="store_true", help="T 트랙 재설계 후보 검증")
     ap.add_argument("--frame-a", action="store_true", help="틀 A(추세반등) 개별 종목 검증")
+    ap.add_argument("--frame-b", action="store_true", help="틀 B(저평가 매수) 미국 개별 종목 검증 (SEC)")
     args = ap.parse_args()
     t0 = time.time()
     if args.variants:
@@ -274,6 +361,9 @@ def main():
         return
     if args.frame_a:
         run_frame_a_only(engine, args, t0)
+        return
+    if args.frame_b:
+        run_frame_b_only(engine, args, t0)
         return
 
     print(f"[1/4] 지수 데이터 받기 (시작 {args.start})", flush=True)
