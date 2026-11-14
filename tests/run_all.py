@@ -35,6 +35,7 @@ ENGINE_TESTS = [
     ("틀 A 추세반등 검증 (미래 데이터 미사용·거래 손 계산)", "test_frame_backtest.py", [], {}),
     ("틀 B 저평가 매수 검증 (SEC 공시일 기준 EPS·거래 손 계산)", "test_frame_b.py", [], {}),
     ("매매 틀 v2 판정 (추세 상태·근거 저울·틀 B 단계)", "test_playbook.py", [], {}),
+    ("신호 기록 장부 (하루 기록·중복 없음·채점 손 계산)", "test_ledger.py", [], {}),
 ]
 
 PAGE_TESTS = [

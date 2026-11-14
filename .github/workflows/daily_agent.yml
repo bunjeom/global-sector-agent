@@ -47,11 +47,19 @@ jobs:
           TZ: Asia/Seoul
         run: python snapshot_daily.py
 
+      # 신호 기록 장부: 매매 틀 v2(틀 A) 판정을 매일 data/ledger/에 쌓는다 (컨센서스 기록 다음 — 같은 날 추정치 건수를 씀)
+      - name: 4-3. 매매 틀 판정 기록 (신호 기록 장부)
+        continue-on-error: true
+        env:
+          TZ: Asia/Seoul
+        run: python ledger_daily.py
+
       - name: 5. 최신 리포트 JSON과 컨센서스 기록을 저장소에 자동 Commit & Push (Streamlit 대시보드 자동 갱신용)
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add latest_global_report.json
           if ls data/snapshots/consensus_*.csv >/dev/null 2>&1; then git add data/snapshots/consensus_*.csv; fi
+          if ls data/ledger/frame_a_*.csv >/dev/null 2>&1; then git add data/ledger/frame_a_*.csv; fi
           git diff --staged --quiet || git commit -m "chore: auto-update daily global report [skip ci]"
           git push

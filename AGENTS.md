@@ -10,6 +10,7 @@
 - `utils.py` — 공통 CSS, 사이드바 메뉴(`init_session`)
 - `pages/1_🔎_종목_딥다이브.py` — 종목 딥다이브
 - `check_earnings_data.py` — 실적 트랙 실제 데이터 점검(PC에서 `python check_earnings_data.py AAPL 005930.KS`)
+- `ledger_daily.py` — 신호 기록 장부: 오늘의 틀 A v2 판정 기록(매일 GitHub Actions가 컨센서스 기록 다음에 실행, 결과 `data/ledger/frame_a_<연도>.csv`). 채점은 `run_backtest.py --ledger-eval`
 - `check_playbook.py` — 매매 틀 v2(틀 A) 판정 실제 데이터 점검(PC에서 `python check_playbook.py NVDA 005930.KS --gate 1`)
 - `run_backtest.py` — 판정 규칙 백테스트(PC에서 실제 야후 데이터로 실행, 결과 `data/backtest/REPORT.md`·`summary.json`)
 - `snapshot_daily.py` — 컨센서스·목표가 날짜별 기록 실행(매일 GitHub Actions `daily_agent.yml`이 실행, 결과 `data/snapshots/consensus_<연도>.csv`). 관심 종목은 `data/snapshots/watchlist.txt`에 한 줄에 하나씩 추가
@@ -45,11 +46,12 @@
 | `snapshot.py` | 컨센서스·목표가 날짜별 기록(SNAPSHOT_CONFIG·SNAPSHOT_COLUMNS): 야후에서 받아 연도별 CSV에 붙임, `load_snapshots`로 읽음 |
 | `sec_facts.py` | SEC 공시일 기준 TTM EPS(SEC_CONFIG): 티커→CIK, EPS 개념 받기·캐시(data/sec_cache/), 4분기 = 연간 − 9개월, 정정 값은 제출일부터, 액면분할 단위 맞춤 |
 | `playbook.py` | 매매 틀 v2 판정(PLAYBOOK_CONFIG): `frame_a_evaluate`(추세 상태·근거 저울 7항목·전환 가능성·의견·청산), `frame_b_evaluate`(적용 범위·단계), `fetch_frame_a_live`(실제 데이터), 점검은 check_playbook.py |
+| `ledger.py` | 신호 기록 장부(LEDGER_CONFIG·LEDGER_COLUMNS·LEDGER_EVAL): `run_daily_ledger`(판정+원자료 기록), `load_ledger`, `evaluate_frame_a_ledger`(미리 정한 방법으로 채점) |
 | `frame_backtest.py` | 매매 틀 검증. 틀 A(FRAME_A_CONFIG·FRAME_A_CRITERIA): 개별 종목, 보유 기간 맞춘 무작위와 비교. 틀 B(FRAME_B_CONFIG·FRAME_B_CRITERIA): 미국 개별 종목, SEC EPS로 만든 자기 PER 밴드, 같은 날 다른 종목 평균과 비교. 둘 다 월 묶음 표준오차 |
 
 ### 패키지 규칙
 - 새 함수는 기능이 맞는 모듈에 넣는다. `engine.py` 파일을 다시 만들지 않는다(폴더 `engine/`이 우선 로드되어 새 파일은 무시됨).
-- 다른 모듈 이름을 쓰면 파일 위쪽에 `from .모듈 import 이름`을 추가한다. 의존 방향은 아래 순서의 **앞쪽 모듈만** 가져다 쓴다(거꾸로 가져오면 순환 import 오류): common → technical_signals → backtest → technical → earnings → macro → fundamental → synthesis → home → gate → rrg → radar → rule_backtest → t_backtest → snapshot → sec_facts → frame_backtest → playbook.
+- 다른 모듈 이름을 쓰면 파일 위쪽에 `from .모듈 import 이름`을 추가한다. 의존 방향은 아래 순서의 **앞쪽 모듈만** 가져다 쓴다(거꾸로 가져오면 순환 import 오류): common → technical_signals → backtest → technical → earnings → macro → fundamental → synthesis → home → gate → rrg → radar → rule_backtest → t_backtest → snapshot → sec_facts → frame_backtest → playbook → ledger.
 - 바깥(app.py·페이지·테스트)은 `engine.이름`으로만 쓴다. 새 이름도 `engine/__init__.py`가 자동으로 내보낸다(따로 등록할 필요 없음).
 - 테스트에서 `engine.이름 = 가짜함수`로 바꿔 끼우면 그 이름을 쓰는 모든 모듈에 같이 적용되고, `importlib.reload(engine)`은 모든 모듈을 처음부터 다시 읽는다(한 파일이던 시절과 같은 동작, `engine/__init__.py`의 _EngineModule).
 - 같은 이름을 두 모듈에서 따로 정의하면 import 시 오류로 멈춘다(단일 출처 보호).
@@ -66,6 +68,8 @@
 - 한국 후보 C(KOSPI 자체 변동성)도 사전 기준 탈락(2026-11-13). 뒤 기간(2014~2026)을 여러 번 봐서 더는 깨끗한 검증 데이터가 아니므로 게이트 후보를 더 추가해 고르지 않는다. 게이트를 바꾸려면 앞으로 쌓이는 데이터(2026-11 이후)로 검증한다.
 - T 셋업 장기 검증(data/backtest/setup_diag.json, run_backtest.py --setup-diag): ST-1·ST-2 모두 '같은 매매 방식의 무작위 진입'보다 낫지 않음(미통과). 레이더 카드는 engine.load_setup_validation으로 이 파일을 읽어 표시하며 숫자를 코드에 적지 않는다. 파일이 없으면 표시하지 않는다.
 - T 트랙 재설계(2026-11-13~): 실제 스캐너는 run_backtest.py --scanner(앱 레이더와 같은 입력으로 날짜별 재현, 캐시 data/backtest/scanner_cache/), 재설계 후보는 --redesign. 후보 규칙·매개변수(55·20일, 2×ATR(20), RSI(2)<10, 5일선)와 판정 기준(TBT_CRITERIA)은 결과를 보기 전에 고정했으므로 결과를 보고 바꾸지 않는다. HOLDOUT_UNIVERSE(해외 국가 ETF)는 판정 전용이라 다른 분석에 쓰지 않는다. 결과와 이후 방향은 4번 '검증 상태'·'다음 작업 순서' 참고.
+- pandas 2·3 모두에서 돌아가게 쓴다(PC는 Python 3.14 + pandas 3, GitHub Actions는 Python 3.11). pandas 3은 문자열 열의 None을 NaN으로 바꾸므로 '값 없음'을 None으로 다뤄야 하는 열은 `dtype=object`로 만들고, 비교는 `is None` 대신 `pd.isna`(또는 playbook의 `_isna`)로 한다. 날짜 열을 합칠 때(merge_asof 등)는 정밀도(초·마이크로초·나노초)를 먼저 맞춘다.
+- 신호 기록 장부(engine/ledger.py, 2026-11-15~): 컨센서스 기록과 같은 규칙(원자료도 함께 저장, 빈칸은 빈칸, 열 순서 고정·새 열은 맨 뒤, 손으로 고치거나 지우지 않음). 줄마다 판정 규칙 버전(`PLAYBOOK_VERSION`)을 저장하고 채점도 버전별로 한다 — **engine/playbook.py의 규칙이나 숫자를 바꾸면 PLAYBOOK_VERSION을 반드시 올린다.** 채점 방법(LEDGER_EVAL)은 결과를 보고 바꾸지 않는다.
 - 컨센서스 기록(engine/snapshot.py, 2026-11-14~): 판정 결과가 아니라 원자료를 저장한다. 못 받은 값은 빈칸(전날 값·추정으로 채우지 않음). `snapshot_date`는 받은 날(한국 날짜), `price_as_of`는 가격 데이터의 날짜. 열은 SNAPSHOT_COLUMNS 순서로 고정이며 새 열은 맨 뒤에만 추가한다(이미 쌓인 CSV와 어긋나지 않게). 쌓인 CSV는 손으로 고치거나 지우지 않는다 — 다시 만들 수 없는 자료다. daily_agent.yml은 Python 3.11로 돌므로 engine/ 코드는 3.11 문법을 지킨다.
 - 틀 A 검증(engine/frame_backtest.py, run_backtest.py --frame-a): 규칙·매개변수(6·12개월 상대강도, 200·50일선, RSI(2)<10, 60일 최저가)와 판정 기준(FRAME_A_CRITERIA)은 실제 데이터 결과를 보기 전에 고정했다. 결과를 보고 바꾸지 않는다. 무작위 비교는 반드시 **보유 기간을 맞춘다**(주가는 평균적으로 오르므로, 같은 청산 규칙을 무작위 날짜에 쓰면 보유가 짧아져 우위가 없는 가짜 가격에서도 통과로 나온다 — tests/test_frame_backtest.py 4-7이 이를 막는다). HOLDOUT_UNIVERSE(새 개별 종목)는 판정 전용이다.
 - 틀 B 검증(run_backtest.py --frame-b, .env에 `SEC_USER_AGENT=이름 이메일` 필요): 규칙(자기 5년 로그 PER 밴드 ±1σ, TTM EPS 전년 대비, 배수·이익 분해)과 판정 기준(FRAME_B_CRITERIA)은 실제 데이터 결과를 보기 전에 고정했다. EPS는 제출일 다음 거래일부터 쓴다. 보유가 수백 일인 틀은 '같은 종목 무작위 날짜 + 같은 보유일' 비교가 치우치므로(보유일이 그 종목 경로에 달림, 가짜 가격에서 −6%p) **같은 날 사서 같은 날 판 같은 묶음 다른 종목 평균**과 로그 수익률로 비교한다 — tests/test_frame_b.py 6-1·6-2가 우위 없는/있는 가짜 가격으로 이를 확인한다. FRAME_B_CONFIG HOLDOUT_UNIVERSE는 판정 전용이다.
@@ -179,12 +183,12 @@
 | 레이더 T 신호 | 기존 셋업 스캐너(ST-1~4) 그대로 — 장기 검증 미통과 표시 중 |
 | 종합 판정 | 기존 결정 트리(ARCH_1~8) 그대로 — '어느 틀의 어느 단계인지, 무효화 조건이 무엇인지'로 개편 예정 |
 | 컨센서스·목표가 날짜별 저장 | 있음(2026-11-14~) — engine/snapshot.py, 매일 자동 실행. 화면에는 아직 쓰지 않음 |
-| 신호 기록 장부 | 없음 — 틀 v2 판정 모듈과 함께 만든다 |
+| 신호 기록 장부 | 있음(2026-11-15~) — engine/ledger.py, 매일 자동 실행(daily_agent.yml 4-3). 틀 A만 기록(틀 B는 가치·실적 결과가 필요해 화면 개편 때 추가) |
 
 ### 다음 작업 순서
 1. ~~틀 v2 정의~~ (2026-11-14, 위 표): 결과를 보고 숫자를 맞추지 않고, v1 검증에서 드러난 원인에 맞춰 정의와 역할을 바꿨다.
 2. ~~틀 판정 모듈~~ 완료(2026-11-14, engine/playbook.py): 종목 하나에 대해 틀 A v2(추세 상태·근거 저울 항목별 근거·전환 가능성·의견 단계·청산 조건)와 틀 B v2(적용 범위·진입 조건·경고·손절·매도)를 판정하고, 각 항목의 검증 상태를 함께 돌려준다. 가짜 데이터 테스트 포함.
-3. 신호 기록 장부(data/ledger/): 매일 대표 종목·관심 종목의 틀 판정을 원자료처럼 쌓는다(스냅샷과 같은 규칙: 손으로 고치지 않음, 열 고정). 평가 방법(몇 주 뒤 무엇과 비교할지)은 장부를 시작하기 전에 고정한다. 앞으로 쌓이는 기록이 유일하게 깨끗한 검증 자료다.
+3. ~~신호 기록 장부~~ 시작(2026-11-15, engine/ledger.py): 매일 대표 종목·관심 종목의 틀 A v2 판정과 원자료를 data/ledger/에 쌓는다. 채점 방법은 기록 전에 LEDGER_EVAL로 고정했다 — ① 하락·횡보 상태의 전환 가능성 표시(우세·팽팽·실패 우세)별 20·60거래일 초과 수익(같은 날 다른 종목 대비)과 상승 추세 도달 비율, ② 진입 의견 거래(다음 날 시가 매수, 하락 쪽 근거가 많아진 다음 날 시가 매도)의 초과 수익. 판정은 기록 12개월·의견 30건 이상에서 평균 > 0, 월 묶음 z ≥ 2. 그 전에는 '판정 보류'.
 4. 종합 화면 개편(어느 틀의 어느 단계, 의견 단계·근거 목록, 무효화·매도 조건, 검증 상태) 후 Streamlit Cloud 배포.
 5. 이후: 한국 틀 B 재현 시험(DART 공시일 기준, v1 규칙 그대로 — 새 독립 검증), 한국 종목 피어·수급.
 

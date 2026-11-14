@@ -23,6 +23,8 @@ import pandas as pd
 from .fundamental import FUND_DATA_PARAMS, _annual_pairs, _band_unreliable_reasons, _lagged_ratio_stats, _month_end_prices
 from .rule_backtest import BACKTEST_CONFIG, _bt_naive
 
+# 판정 규칙 버전. 규칙(숫자 포함)을 바꾸면 반드시 올린다 — 신호 기록 장부(engine/ledger.py)가 줄마다 저장해 버전끼리 섞지 않는다
+PLAYBOOK_VERSION = "A v2.1 (2026-11-15 스윙 추세)"
 PLAYBOOK_CONFIG: Dict[str, Any] = {
     "TREND_MA": 200, "MID_MA": 50, "SHORT_MA": 20,
     "MID_SLOPE_DAYS": 20,           # 50일선 기울기: 20거래일 전과 비교
@@ -86,7 +88,9 @@ def trend_indicators(df: pd.DataFrame, bench: Optional[pd.DataFrame] = None) -> 
     up = (close > out["SMA50"]) & (out["SMA50"] > out["SMA200"]) & (out["slope50"] > 0)
     dn = (close < out["SMA50"]) & (out["SMA50"] < out["SMA200"]) & (out["slope50"] < 0)
     ready = out[["SMA200", "slope50"]].notna().all(axis=1)
-    out["ma_state"] = np.where(~ready, None, np.where(up, STATE_UP, np.where(dn, STATE_DOWN, STATE_SIDE)))
+    # object 열로 둔다: pandas 3은 문자열 열의 None을 NaN으로 바꾸므로 '판정 없음'을 None으로 유지하려면 필요
+    out["ma_state"] = pd.Series(np.where(~ready, None, np.where(up, STATE_UP, np.where(dn, STATE_DOWN, STATE_SIDE))),
+                                index=out.index, dtype=object)
     _swing_state(out, hi.to_numpy(dtype=float), low.to_numpy(dtype=float))
     return out
 
@@ -133,6 +137,11 @@ def swing_points(high: np.ndarray, low: np.ndarray, atr: np.ndarray, k_atr: Opti
     return out
 
 
+def _isna(x: Any) -> bool:
+    """None 또는 NaN (pandas 3은 문자열 열의 빈 값을 NaN으로 준다)."""
+    return x is None or (isinstance(x, float) and math.isnan(x))
+
+
 def _line(a: Dict[str, Any], b: Dict[str, Any], t: int) -> float:
     """두 스윙 점을 잇는 추세선(로그 가격)의 t일 값."""
     la, lb = math.log(a["price"]), math.log(b["price"])
@@ -157,8 +166,9 @@ def _swing_state(out: pd.DataFrame, high: np.ndarray, low: np.ndarray) -> None:
             (lows if pts[p]["kind"] == "L" else highs).append(pts[p])
             p += 1
         if len(lows) < 2 or len(highs) < 2:
-            states[t] = ma[t]
-            details[t] = None if ma[t] is None else f"{ma[t]} (스윙 부족 — 이동평근 배열 기준)".replace("이동평근", "이동평균")
+            m = None if _isna(ma[t]) else ma[t]
+            states[t] = m
+            details[t] = None if m is None else f"{m} (스윙 부족 — 이동평균 배열 기준)"
             continue
         L1, L2, H1, H2 = lows[-2], lows[-1], highs[-2], highs[-1]
         lo_line, hi_line = _line(L1, L2, t), _line(H1, H2, t)
@@ -179,7 +189,8 @@ def _swing_state(out: pd.DataFrame, high: np.ndarray, low: np.ndarray) -> None:
                 dt = "횡보 (저점·고점 방향이 엇갈림)"
         states[t], details[t] = st, dt
         la[t], lb[t], ha[t], hb[t], lline[t], hline[t] = L1, L2, H1, H2, lo_line, hi_line
-    out["state"], out["state_detail"] = states, details
+    out["state"] = pd.Series(states, index=out.index, dtype=object)
+    out["state_detail"] = pd.Series(details, index=out.index, dtype=object)
     out["sw_L1"], out["sw_L2"], out["sw_H1"], out["sw_H2"] = la, lb, ha, hb
     out["line_low"], out["line_high"] = lline, hline
 
@@ -314,7 +325,7 @@ def frame_a_evaluate(df: pd.DataFrame, bench: Optional[pd.DataFrame] = None, con
         ind = ind.loc[:pd.Timestamp(at)]
     row = ind.iloc[-1]
     state = row.get("state")
-    if state is None:
+    if _isna(state):
         return {"frame": "A v2", "available": False, "as_of": str(ind.index[-1].date()),
                 "reason": "가격 이력 부족(스윙 고점·저점이 2개씩 확정되지 않았고 200일선도 계산할 수 없음)", "verification": VERIFICATION["frame_a"]}
     items = frame_a_items(row, consensus, band_z)
@@ -354,7 +365,7 @@ def frame_a_evaluate(df: pd.DataFrame, bench: Optional[pd.DataFrame] = None, con
                "rule": "하락 쪽 근거 합(실패·하락 전환)이 상승 쪽 근거 합보다 많으면 다음 날 시가에 청산"}
     words = (("유지 근거", "하락 전환 근거") if state == STATE_UP else ("전환 근거", "실패 근거"))
     basis = state_basis(row, ind)
-    return {"frame": "A v2", "available": True, "as_of": str(ind.index[-1].date()), "state": state,
+    return {"frame": "A v2", "version": PLAYBOOK_VERSION, "available": True, "as_of": str(ind.index[-1].date()), "state": state,
             "pos_word": words[0], "neg_word": words[1], "state_basis": basis, "state_detail": basis["detail"],
             "close": close, "atr": atr, "items": items, "support": support, "against": against, "diff": diff,
             "lean": lean, "opinion": opinion, "position": pos, "verification": VERIFICATION["frame_a"]}

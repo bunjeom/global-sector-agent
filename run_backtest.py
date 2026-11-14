@@ -12,6 +12,7 @@
     .venv\\Scripts\\python run_backtest.py --frame-a       틀 A(추세반등) 개별 종목 검증 (약 150종목 받기 포함 5~10분)
     .venv\\Scripts\\python run_backtest.py --frame-b       틀 B(저평가 매수) 미국 개별 종목 검증, SEC 공시일 기준 EPS (첫 실행 10분 안팎)
                                                      .env에 SEC_USER_AGENT=이름 이메일 필요 (SEC 접속 규칙)
+    .venv\\Scripts\\python run_backtest.py --ledger-eval   신호 기록 장부 채점 (data/ledger/ 기록이 쌓인 뒤, 방법은 engine/ledger.py에 고정)
 
 결과 (data/backtest/):
     REPORT.md          사람이 읽는 보고서 (커밋해 두면 다른 AI도 결과를 읽을 수 있음)
@@ -21,6 +22,7 @@
     REDESIGN.md        T 트랙 재설계 후보 검증 + redesign.json
     FRAME_A.md         틀 A(추세반등) 개별 종목 검증 + frame_a.json (거래 목록 frame_a_trades.csv)
     FRAME_B.md         틀 B(저평가 매수) 검증 + frame_b.json (거래 목록 frame_b_trades.csv, SEC 원자료 캐시 data/sec_cache/)
+    LEDGER_EVAL.md     신호 기록 장부 채점 + ledger_eval.json
     summary.json       숫자 요약 + 주간 누적 수익 곡선 (이후 화면 표시용)
     *.csv              날짜별 게이트·누적 수익·거래 목록 (용량이 커서 .gitignore로 커밋 제외)
 계산은 engine/rule_backtest.py에 있고, 이 파일은 데이터 다운로드와 저장만 한다.
@@ -326,6 +328,27 @@ def run_frame_b_only(engine, args, t0):
     print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'FRAME_B.md')}")
 
 
+def run_ledger_eval_only(engine, args, t0):
+    """신호 기록 장부 채점: data/ledger/ 기록 + 기록된 종목들의 가격(같은 날 다른 종목 비교용)."""
+    lg = engine.load_ledger()
+    if not len(lg):
+        print("기록이 아직 없습니다(data/ledger/). 매일 자동 기록(ledger_daily.py)이 쌓인 뒤 실행해 주세요.")
+        return
+    tickers = sorted(lg["ticker"].dropna().unique().tolist())
+    start = (lg["as_of"].min() - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+    print(f"[1/2] 가격 받기: {len(tickers)}종목 ({start}~) · 기록 {len(lg):,}줄 {lg['as_of'].min().date()}~{lg['as_of'].max().date()}", flush=True)
+    pm, fail = download(tickers, start)
+    if fail:
+        print(f"   받지 못함: {', '.join(fail)}")
+    print("[2/2] 채점 (방법은 engine/ledger.py LEDGER_EVAL에 고정)", flush=True)
+    res = engine.evaluate_frame_a_ledger(lg, pm)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    rep = engine.render_ledger_report(res, generated_at=now)
+    _save("LEDGER_EVAL.md", "ledger_eval.json", rep, {"generated_at": now, **res})
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'LEDGER_EVAL.md')}")
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8")   # Windows 콘솔에서 한글 깨짐 방지
@@ -345,6 +368,7 @@ def main():
     ap.add_argument("--redesign", action="store_true", help="T 트랙 재설계 후보 검증")
     ap.add_argument("--frame-a", action="store_true", help="틀 A(추세반등) 개별 종목 검증")
     ap.add_argument("--frame-b", action="store_true", help="틀 B(저평가 매수) 미국 개별 종목 검증 (SEC)")
+    ap.add_argument("--ledger-eval", action="store_true", help="신호 기록 장부 채점")
     args = ap.parse_args()
     t0 = time.time()
     if args.variants:
@@ -364,6 +388,9 @@ def main():
         return
     if args.frame_b:
         run_frame_b_only(engine, args, t0)
+        return
+    if args.ledger_eval:
+        run_ledger_eval_only(engine, args, t0)
         return
 
     print(f"[1/4] 지수 데이터 받기 (시작 {args.start})", flush=True)
