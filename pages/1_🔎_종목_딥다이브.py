@@ -2,6 +2,7 @@
 from datetime import datetime
 import numpy as np
 import pandas as pd
+import html as _html
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import math
@@ -422,6 +423,110 @@ def cached_next_earnings(t: str):
     return engine.fetch_next_earnings_date(t)
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_playbook_bench(market: str):
+    """매매 틀 v2 상대강도용 시장 지수(미국 SPY·한국 KOSPI) — 신호 기록 장부와 같은 기준."""
+    try:
+        return _clean_ohlcv(yf.Ticker(engine.PLAYBOOK_CONFIG["BENCH"][market]).history(period="4y", auto_adjust=False))
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def cached_consensus(t: str) -> dict:
+    """오늘 컨센서스(추정치 상향·하향 건수 등). 못 받은 항목은 None."""
+    try:
+        r = engine.fetch_consensus_row(t, yf=yf)
+        r.pop("_notes", None)
+        return r
+    except Exception:
+        return {}
+
+
+def _esc(x) -> str:
+    return _html.escape(str(x)) if x is not None else engine.NO_DATA
+
+
+def render_frame_a_card(fa: dict) -> None:
+    """틀 A v2 — 추세 판단과 전환 가능성 (트레이딩 의견) 카드."""
+    head = f'{utils.line_icon("activity", 18)} <b>틀 A · 추세 판단과 전환 가능성</b> <span class="term-badge">트레이딩 · 의견</span>'
+    if not fa.get("available"):
+        html_md(f'<div class="term-card">{head}<div style="margin-top:8px;">판정 불가 — {_esc(fa.get("reason"))}</div></div>')
+        return
+    lean = fa["lean"]
+    lab = lean["label"]
+    col = "#16a34a" if lab in ("전환 가능성 우세", "상승 추세 유지 우세") else ("#dc2626" if lab in ("실패 가능성 우세", "하락 전환 가능성 우세") else "#64748b")
+    op = fa["opinion"]
+    rows = []
+    for it in fa["items"]:
+        if it["no_data"]:
+            mark, c = "데이터 없음", "#94a3b8"
+        elif it["sign"] > 0:
+            mark, c = f'{fa["pos_word"]} +{it["points"]}', "#16a34a"
+        elif it["sign"] < 0:
+            mark, c = f'{fa["neg_word"]} {it["points"]}', "#dc2626"
+        else:
+            mark, c = "중립", "#64748b"
+        rows.append(f'<li><span class="term-badge">{_esc(it["track"])}</span> <b>{_esc(it["label"])}</b> '
+                    f'<span style="color:{c};font-weight:700;">{_esc(mark)}</span> — {_esc(it["text"])}</li>')
+    op_txt = _esc(op["label"]) + (f' · 크기 {op["size_mult"]:.1f}배' if op["entry"] else "")
+    if op.get("unit_risk_pct"):
+        op_txt += f' · 변동성 단위(2×ATR) {op["unit_risk_pct"] * 100:.1f}%'
+    notes = "".join(f'<div style="font-size:0.85rem;color:#92400e;">· {_esc(n)}</div>' for n in op["notes"])
+    html_md(f"""
+    <div class="term-card">
+        <div>{head}</div>
+        <div style="margin-top:8px;font-size:1.02rem;"><span class="term-badge-inv">{_esc(fa["state"])}</span> {_esc(fa.get("state_detail"))}</div>
+        <div style="margin-top:6px;"><b>{_esc(lean["direction"])}:</b> <span style="color:{col};font-weight:700;">{_esc(lab)}</span>
+            ({_esc(fa["pos_word"])} {fa["support"]} · {_esc(fa["neg_word"])} {fa["against"]}, 차이 {fa["diff"]:+d})</div>
+        <ul class="term-list" style="margin-top:6px;">{"".join(rows)}</ul>
+        <div><b>의견:</b> {op_txt}</div>
+        {notes}
+        <div style="font-size:0.82rem;color:#64748b;margin-top:6px;">청산 규칙: 하락 쪽 근거 합이 상승 쪽보다 많아지면 다음 날 시가(손실이면 손절, 이익이면 매도). 가격 폭 손절 없음 · 크기는 변동성 기준</div>
+        <div style="font-size:0.82rem;color:#64748b;">검증 상태: {_esc(fa["verification"])} · 규칙 {_esc(fa.get("version"))}</div>
+    </div>
+    """)
+    sb = fa.get("state_basis") or {}
+    with st.expander("추세 판단 근거 (스윙 고점·저점, 연결선)", expanded=False):
+        for cnd in sb.get("conditions", []):
+            st.write(f"- {cnd['name']}: {cnd['text']}")
+        if sb.get("ma_note"):
+            st.caption(sb["ma_note"])
+        st.caption("스윙은 직전 극점에서 3×ATR(20) 이상 되돌린 날 확정합니다. 상승 = 저점이 높아지며 저점 연결선 위, "
+                   "하락 = 그 선을 깨고 고점이 낮아지며 고점 연결선 아래. 근거 개수 비교이며 확률이 아닙니다.")
+
+
+_STAGE_COLOR = {"손절 조건": "#dc2626", "매도 조건": "#ea580c", "경고": "#d97706", "진입 가능": "#16a34a",
+                "조건부 진입": "#65a30d", "재평가 보유": "#2563eb", "대기": "#64748b"}
+
+
+def render_frame_b_card(fb: dict) -> None:
+    """틀 B v2 — 저평가 매수 (투자 판단) 카드."""
+    c = _STAGE_COLOR.get(fb["stage"], "#64748b")
+    rows = []
+    for ck in fb["checks"]:
+        mark, mc = (("✓", "#16a34a") if ck["ok"] is True else (("✗", "#dc2626") if ck["ok"] is False else ("—", "#94a3b8")))
+        rows.append(f'<li><span style="color:{mc};font-weight:800;">{mark}</span> <b>{_esc(ck["label"])}</b> — {_esc(ck["text"])} '
+                    f'<span style="font-size:0.78rem;color:#94a3b8;">({_esc(ck["status"])})</span></li>')
+    sell = ("고평가 아님" if not fb["rich"] else
+            ("고평가 · " + ({True: "배수 주도", False: "이익 주도(재평가)", None: "분해 자료 없음"}[fb["mult_driven"]])
+             + f' ({_esc(fb["decomposition_basis"])} 기준)'))
+    tech = f'<div style="font-size:0.88rem;">기술(보조): {_esc(fb["technical_note"])}</div>' if fb.get("technical_note") else ""
+    html_md(f"""
+    <div class="term-card">
+        <div>{utils.line_icon("target", 18)} <b>틀 B · 저평가 매수</b> <span class="term-badge">투자 판단</span></div>
+        <div style="margin-top:8px;"><span class="term-badge-inv" style="background:{c};border-color:{c};">{_esc(fb["stage"])}</span>
+            <span style="font-weight:600;">{_esc(fb["action"])}</span></div>
+        <div style="margin-top:6px;font-size:0.9rem;">적용 범위: {_esc(fb["scope"])}</div>
+        <ul class="term-list" style="margin-top:6px;">{"".join(rows)}</ul>
+        <div style="font-size:0.9rem;">매도 판정: {sell}</div>
+        {tech}
+        <div style="font-size:0.82rem;color:#64748b;margin-top:6px;">우선순위: 손절 &gt; 매도 &gt; 경고 &gt; 재평가 보유 &gt; 진입</div>
+        <div style="font-size:0.82rem;color:#64748b;">검증 상태: {_esc(fb["verification"])} · 매도 규칙: {_esc(fb["sell_verification"])}</div>
+    </div>
+    """)
+
+
 # 실적 발표까지 남은 거래일: 실제 일정 사용(모르면 None = 일정 미확인). 시뮬레이션을 고르면 D-2로 가정.
 next_earn_date = cached_next_earnings(ticker_input)
 days_to_earn_real = engine.trading_days_until(str(stock_df_raw.index[-1])[:10], next_earn_date)
@@ -504,6 +609,14 @@ synth_out = engine.synthesize_4tracks(
     }
 )
 
+# 6) 매매 틀 v2 판정 (AGENTS.md 4번) — 틀 A: 추세 판단·근거 저울(의견), 틀 B: 저평가 매수 단계
+pb_bench = fetch_playbook_bench("KR" if is_krx_ticker else "US")
+pb_cs = cached_consensus(ticker_input)
+pb_ind = engine.trend_indicators(stock_df_raw, pb_bench)
+frame_a = engine.frame_a_evaluate(stock_df_raw, pb_bench, pb_cs, (fund_out.get("triple_z_score") or {}).get("self_5y_z"), ind=pb_ind)
+frame_b = engine.frame_b_evaluate(fund_out, synth_out, pb_cs, trend_row=(pb_ind.iloc[-1].to_dict() if len(pb_ind) else None),
+                                  eps_change_12m=(fund_out.get("multiple_decomposition") or {}).get("eps_contribution_12m"))
+
 pq_info = fund_out["price_qualification"]
 m_cls = macro_out["classification"]
 arch_info = synth_out["archetype"]
@@ -556,6 +669,17 @@ with tab_syn:
             드라이버 붕괴 없는 단발성 실적 하회이므로 영구 하드 킬(G5)로 차단하지 않고, 발표 후 5거래일 냉각기 경과 뒤 바닥 확인 시 매수를 재개방합니다.
         </div>
         """)
+
+    # 1-1. 매매 틀 v2 (개편된 판단 틀 — 검증 상태 함께 표시)
+    chart_heading("매매 틀 v2 — 추세 판단(트레이딩 의견)과 저평가 매수(투자 판단)")
+    st.caption("두 틀 모두 과거 자료로 우위가 확인되지 않았습니다(미검증). 틀 A 판정은 매일 신호 기록 장부(data/ledger/)에 쌓아 앞으로 채점합니다. "
+               "자기 PER 밴드 위치는 V 트랙 값을 쓰므로 장부(야후 연간 EPS로 간이 계산)와 조금 다를 수 있습니다.")
+    pb_c1, pb_c2 = st.columns(2)
+    with pb_c1:
+        render_frame_a_card(frame_a)
+    with pb_c2:
+        render_frame_b_card(frame_b)
+    chart_heading("기존 종합 판정 (ARCH 결정 트리 — 개편 전 방식, 장기 검증 없음)")
 
     # 2. 아키타입 헤더 & 직관적 3줄 결론 템플릿 (3장 명세)[cite: 6]
     hc_badge = (

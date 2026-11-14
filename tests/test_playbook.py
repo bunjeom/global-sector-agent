@@ -195,6 +195,9 @@ r = fb(fund("NA", z=None), None, None, None, None)
 chk("5-11 자료 부족 → 대기 + 빠진 항목 목록", r["stage"] == "대기" and len(r["missing"]) >= 3)
 chk("5-12 추정치 하향 우세 정의(건수와 값 둘 다)", engine.estimates_down(dn_cs) is True
     and engine.estimates_down({**dn_cs, "eps_fy1_avg": 5.1}) is False and engine.estimates_down({"eps_fy1_up_30d": 1}) is None)
+chk("5-14 TTM이 없으면 확정 EPS 1년 변화(로그)로 판정", fb(fund(), {}, ok_cs, eps_change_12m=0.1)["stage"] == "진입 가능"
+    and fb(fund(), {}, ok_cs, eps_change_12m=-0.05)["stage"] == "손절 조건"
+    and "1년 전 대비 +10.5%" in fb(fund(), {}, ok_cs, eps_change_12m=0.1)["checks"][1]["text"])
 r = fb(fund(), {}, ok_cs, 5.0, 4.5, trend_row={"Close": 90.0, "SMA200": 100.0, "slope50": -1.0})
 chk("5-13 하락 추세 중이면 분할 간격을 넓힘(수익 신호 아님)", r["technical_note"].startswith("하락 추세 중") and r["stage"] == "진입 가능")
 

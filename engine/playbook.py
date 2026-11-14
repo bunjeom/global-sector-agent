@@ -390,9 +390,11 @@ def estimates_down(consensus: Optional[Dict[str, Any]]) -> Optional[bool]:
 def frame_b_evaluate(fund_out: Optional[Dict[str, Any]], synth_out: Optional[Dict[str, Any]] = None,
                      consensus: Optional[Dict[str, Any]] = None, ttm_eps: Optional[float] = None,
                      ttm_eps_prev: Optional[float] = None, trend_row: Optional[Dict[str, Any]] = None,
-                     position: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                     position: Optional[Dict[str, Any]] = None, eps_change_12m: Optional[float] = None) -> Dict[str, Any]:
     """틀 B v2 판정. fund_out = analyze_fundamental_track 결과, synth_out = synthesize_4tracks 결과(킬 조건),
-    position={"entry_pe": .., "entry_eps": ..}이면 진입 뒤 배수·이익 분해로 매도를 판정(없으면 12개월 분해)."""
+    position={"entry_pe": .., "entry_eps": ..}이면 진입 뒤 배수·이익 분해로 매도를 판정(없으면 12개월 분해).
+    TTM EPS 두 값이 없으면 eps_change_12m(확정 EPS 1년 전 대비 로그 변화, V 트랙 multiple_decomposition의 이익 기여분)으로
+    '발표 실적이 줄지 않음'을 판정한다."""
     f = fund_out or {}
     tz = f.get("triple_z_score") or {}
     pq = (f.get("price_qualification") or {}).get("status")
@@ -407,7 +409,11 @@ def frame_b_evaluate(fund_out: Optional[Dict[str, Any]], synth_out: Optional[Dic
     pq_word = {"QUALIFIED": "충족", "CONDITIONAL": "조건부", "DISQUALIFIED": "미충족", "NA": "판정 불가"}.get(pq, "데이터 없음")
     add("price", "V 가격 자격(매수선)", True if pq == "QUALIFIED" else (None if pq in (None, "NA") else (pq == "CONDITIONAL" or False)),
         f"{pq_word}" + (f" · 자기 밴드 z {self_z:+.2f}" if self_z is not None else "") + (f" · 피어 상대 z {peer_z:+.2f}" if self_z is None and peer_z is not None else ""))
-    if ttm_eps is None or ttm_eps_prev is None:
+    if (ttm_eps is None or ttm_eps_prev is None) and eps_change_12m is not None and not _isna(eps_change_12m):
+        earn_ok = float(eps_change_12m) >= 0
+        add("ttm", "발표 실적(확정 EPS)", earn_ok,
+            f"1년 전 대비 {math.exp(float(eps_change_12m)) * 100 - 100:+.1f}% ({'줄지 않음' if earn_ok else '감소'})")
+    elif ttm_eps is None or ttm_eps_prev is None:
         earn_ok = None
         add("ttm", "발표 실적(TTM EPS)", None, "TTM EPS 또는 1년 전 값 데이터 없음")
     else:

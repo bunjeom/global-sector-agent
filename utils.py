@@ -71,6 +71,7 @@ def inject_terminal_css():
         --font-mono: 'JetBrains Mono', 'Pretendard', monospace;
     }
     .term-banner {
+        color: var(--text-main);   /* 브라우저가 다크 모드여도 흰 카드 위 글자가 보이게 */
         border: 1.5px solid var(--border-strong);
         border-radius: 6px;
         padding: 16px 20px;
@@ -99,6 +100,7 @@ def inject_terminal_css():
         padding-top: 8px;
     }
     .term-card {
+        color: var(--text-main);   /* 브라우저가 다크 모드여도 흰 카드 위 글자가 보이게 */
         border: 1px solid var(--border-color);
         border-radius: 6px;
         padding: 14px 16px;
@@ -153,6 +155,7 @@ def inject_terminal_css():
         margin: 0;
     }
     .term-list li {
+        color: var(--text-main);
         padding: 6px 0;
         border-bottom: 1px solid #f1f5f9;
         font-size: 0.9rem;

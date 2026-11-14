@@ -2,3 +2,7 @@
 # 사이드바의 Streamlit 기본 페이지 메뉴(app / 종목 딥다이브)를 숨긴다.
 # 페이지 이동은 utils.init_session()의 st.page_link 메뉴를 쓴다.
 showSidebarNavigation = false
+
+[theme]
+# 앱 디자인(흰 카드·검은 선 아이콘)에 맞춰 밝은 테마로 고정한다. 브라우저가 다크 모드여도 글자가 흰 카드에 묻히지 않게.
+base = "light"

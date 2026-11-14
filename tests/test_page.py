@@ -213,4 +213,11 @@ print("broken HTML blocks:", len(_hb), _hb[:2])
 _tc = [m.value for m in at.markdown if "Step 3. T 트랙" in m.value]
 _tcv = _tc[0] if _tc else ""
 import re as _r2; print("T badge:", _r2.findall(r"term-badge-inv\">([^<]*)", _tcv)[:1], _r2.findall(r"상태 코드: ([A-Z_0-9]+)", _tcv)); print("T card has ticket text:", "진입 <b>" in _tcv, "| no-ticket text:", "생성되지 않음" in _tcv, "| '0주':", "<b>0주</b>" in _tcv)
-sys.exit(1 if (at.exception or _bad or _hb) else 0)
+# ---- 매매 틀 v2 카드(틀 A·틀 B)가 종합 탭 맨 위에 그려지고 검증 상태가 붙는지
+_pa = [m.value for m in at.markdown if "틀 A · 추세 판단과 전환 가능성" in m.value]
+_pb = [m.value for m in at.markdown if "틀 B · 저평가 매수" in m.value]
+_pb_ok = bool(_pa) and bool(_pb) and all("검증 상태" in v for v in _pa + _pb)
+print("playbook cards:", bool(_pa), bool(_pb), "| 검증 상태:", _pb_ok,
+      "| B 단계:", _r2.findall(r"term-badge-inv\" style=\"background:#[0-9a-f]+;border-color:#[0-9a-f]+;\">([^<]*)", _pb[0] if _pb else "")[:1])
+# 실적 데이터가 전혀 없는 모드(none)는 화면이 종합 탭 전에 멈추는 것이 정상(가짜 값으로 채우지 않음)
+sys.exit(1 if (at.exception or _bad or _hb or (MODE != "none" and not _pb_ok)) else 0)
