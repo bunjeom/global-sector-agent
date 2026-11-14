@@ -58,6 +58,15 @@ r2 = engine.frame_a_evaluate(fut, spy, at=up.index[k])
 chk("1-8 그날 이후 가격을 바꿔도 판정 그대로", r1["state"] == r2["state"] and r1["diff"] == r2["diff"]
     and [i["sign"] for i in r1["items"]] == [i["sign"] for i in r2["items"]])
 chk("1-9 가격 이력 부족은 판정 불가", engine.frame_a_evaluate(up.iloc[:150])["available"] is False)
+rs = engine.frame_a_evaluate(None, ind=pd.DataFrame({"Open": [90.0], "Low": [90.0], "Close": [90.0], "SMA200": [100.0], "SMA50": [95.0],
+                                                      "SMA20": [91.0], "slope50": [0.4], "slope20": [0.1], "low_recent": [88.0],
+                                                      "low_prior": [87.0], "ATR20": [2.0], "rs63": [0.0], "event": [False], "state": ["횡보"]},
+                                                     index=[pd.Timestamp("2026-11-13")]))
+sb = rs["state_basis"]
+chk("1-10 횡보 근거: 하락 조건 중 50일선 기울기만 아님 + 세부 표시(장기 하락 뒤)",
+    rs["state_detail"].startswith("횡보 (장기 하락 뒤") and "50일선 기울기" in sb["why"].split(" / ")[0]
+    and "종가 vs 50일선" not in sb["why"].split(" / ")[0] and [c["down"] for c in sb["conditions"]] == [True, True, False])
+chk("1-11 요약 문구에 추세 판단 근거", "추세 판단 근거" in engine.render_frame_a_text({**rs, "ticker": "X"}))
 
 # ---------------------------------------------------------------------------
 # 2 근거 저울 항목

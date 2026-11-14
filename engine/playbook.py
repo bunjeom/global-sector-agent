@@ -90,6 +90,34 @@ def trend_indicators(df: pd.DataFrame, bench: Optional[pd.DataFrame] = None) -> 
     return out
 
 
+def state_basis(row: pd.Series) -> Dict[str, Any]:
+    """추세 상태를 정한 세 조건과 결과를 사람이 확인할 수 있게 돌려준다. 횡보는 50일선·200일선 위치로 세부 표시를 붙인다
+    (상태 판정 자체는 바꾸지 않는다)."""
+    close, s50, s200, sl = (float(row.get(k)) if pd.notna(row.get(k)) else None for k in ("Close", "SMA50", "SMA200", "slope50"))
+    conds = [
+        {"name": "종가 vs 50일선", "up": close is not None and s50 is not None and close > s50,
+         "down": close is not None and s50 is not None and close < s50, "text": f"종가 {_fmt(close)} · 50일선 {_fmt(s50)}"},
+        {"name": "50일선 vs 200일선", "up": s50 is not None and s200 is not None and s50 > s200,
+         "down": s50 is not None and s200 is not None and s50 < s200, "text": f"50일선 {_fmt(s50)} · 200일선 {_fmt(s200)}"},
+        {"name": f"50일선 기울기({PLAYBOOK_CONFIG['MID_SLOPE_DAYS']}거래일 전 대비)", "up": sl is not None and sl > 0,
+         "down": sl is not None and sl < 0, "text": f"{_fmt(sl)} ({'상승' if (sl or 0) > 0 else ('하락' if (sl or 0) < 0 else '보합')})"},
+    ]
+    state = row.get("state")
+    detail = state
+    if state == STATE_SIDE and s50 is not None and s200 is not None:
+        detail = ("횡보 (장기 하락 뒤 — 50일선이 200일선 아래)" if s50 < s200 else "횡보 (장기 상승 속 — 50일선이 200일선 위)")
+    if state == STATE_UP:
+        why = "세 조건 모두 상승 쪽"
+    elif state == STATE_DOWN:
+        why = "세 조건 모두 하락 쪽"
+    else:
+        miss_dn = [c["name"] for c in conds if not c["down"]]
+        miss_up = [c["name"] for c in conds if not c["up"]]
+        why = ("하락이 되려면 세 조건이 모두 하락 쪽이어야 하는데 아닌 것: " + ", ".join(miss_dn)
+               + " / 상승이 되려면 아닌 것: " + ", ".join(miss_up))
+    return {"conditions": conds, "why": why, "detail": detail}
+
+
 def _item(key: str, label: str, track: str, sign: Optional[int], text: str, weight: int = 1) -> Dict[str, Any]:
     """sign: +1 전환 쪽, −1 실패 쪽, 0 중립, None 데이터 없음(중립으로 계산)."""
     return {"key": key, "label": label, "track": track, "sign": sign, "weight": weight,
@@ -219,8 +247,9 @@ def frame_a_evaluate(df: pd.DataFrame, bench: Optional[pd.DataFrame] = None, con
                "label": ("손절 (전환 실패 우세)" if pnl < 0 else "매도 (하락 전환 우세)") if exit_now else "보유",
                "rule": "하락 쪽 근거 합(실패·하락 전환)이 상승 쪽 근거 합보다 많으면 다음 날 시가에 청산"}
     words = (("유지 근거", "하락 전환 근거") if state == STATE_UP else ("전환 근거", "실패 근거"))
+    basis = state_basis(row)
     return {"frame": "A v2", "available": True, "as_of": str(ind.index[-1].date()), "state": state,
-            "pos_word": words[0], "neg_word": words[1],
+            "pos_word": words[0], "neg_word": words[1], "state_basis": basis, "state_detail": basis["detail"],
             "close": close, "atr": atr, "items": items, "support": support, "against": against, "diff": diff,
             "lean": lean, "opinion": opinion, "position": pos, "verification": VERIFICATION["frame_a"]}
 
@@ -376,8 +405,12 @@ def render_frame_a_text(r: Dict[str, Any]) -> str:
     """터미널·로그용 짧은 요약."""
     if not r.get("available"):
         return f"{r.get('ticker', '')}: 판정 불가 — {r.get('reason')}"
-    L = [f"{r.get('ticker', '')} ({r['as_of']}) 추세: {r['state']} · {r['lean']['direction']}: {r['lean']['label']} "
+    L = [f"{r.get('ticker', '')} ({r['as_of']}) 추세: {r.get('state_detail') or r['state']} · {r['lean']['direction']}: {r['lean']['label']} "
          f"({r['pos_word']} {r['support']} vs {r['neg_word']} {r['against']}, 차이 {r['diff']:+d})"]
+    sb = r.get("state_basis")
+    if sb:
+        L.append("   추세 판단 근거: " + " | ".join(f"{c['name']} {c['text']}" for c in sb["conditions"]))
+        L.append(f"   → {sb['why']}")
     for i in r["items"]:
         mark = ("데이터 없음" if i["no_data"] else
                 {1: f"{r['pos_word']} +", -1: f"{r['neg_word']} −", 0: "중립"}[i["sign"]] + (f"{abs(i['points'])}" if i["sign"] else ""))
