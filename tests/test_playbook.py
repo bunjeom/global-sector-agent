@@ -31,42 +31,62 @@ def path(lp, start="2023-01-02", seed=0, noise=0.004):
     return pd.DataFrame({"Open": c, "High": c * 1.01, "Low": c * 0.99, "Close": c}, index=idx)
 
 
+def zig(points, n=420, start="2024-01-01", seed=0, noise=0.003):
+    """꺾이는 점(위치, 가격)을 잇는 가짜 경로."""
+    idx = pd.bdate_range(start, periods=n)
+    pos, val = zip(*points)
+    c = np.interp(np.arange(n), pos, val) * np.exp(np.random.default_rng(seed).normal(0, noise, n))
+    return pd.DataFrame({"Open": c, "High": c * 1.01, "Low": c * 0.99, "Close": c}, index=idx)
+
+
 t = np.arange(400)
-up, dn = path(0.002 * t), path(-0.002 * t, seed=1)
-flat = path(0.03 * np.sin(t / 15.0), seed=2)
-spy = pd.DataFrame({"Close": 100 * np.exp(0.0003 * t)}, index=up.index)
+up_z = zig([(0, 100), (60, 130), (90, 112), (150, 150), (180, 128), (240, 175), (270, 150), (330, 200), (360, 176), (419, 215)])
+dn_z = zig([(0, 200), (60, 160), (90, 185), (150, 140), (180, 165), (240, 120), (270, 140), (330, 100), (360, 118), (419, 92)], seed=1)
+brk_z = zig([(0, 100), (60, 130), (90, 112), (150, 150), (180, 128), (240, 175), (270, 152), (330, 196), (419, 150)], seed=2)
+smooth = path(0.002 * t)
+spy = pd.DataFrame({"Close": 100 * np.exp(0.0003 * np.arange(420))}, index=up_z.index)
+up = up_z
 
 # ---------------------------------------------------------------------------
-# 1 추세 상태·지표
+# 1 스윙·추세 상태·지표
 # ---------------------------------------------------------------------------
-chk("1-1 꾸준한 상승 → 상승", engine.trend_indicators(up)["state"].iloc[-1] == "상승")
-chk("1-2 꾸준한 하락 → 하락", engine.trend_indicators(dn)["state"].iloc[-1] == "하락")
-chk("1-3 오르내림 → 횡보", engine.trend_indicators(flat)["state"].iloc[-1] == "횡보")
-chk("1-4 200일선 전에는 상태 없음", engine.trend_indicators(up)["state"].iloc[150] is None)
+h = np.array([10, 11, 12, 11, 9, 8, 9, 10, 12, 13.0])
+l = h - 0.5
+sp = engine.swing_points(h, l, np.ones(10), k_atr=3.0)
+# 고점 12(2번 날)에서 저가 8.5(4번 날)로 3 이상 되돌림 → 4번 날 고점 확정. 저점 7.5(5번 날)에서 고가 12(8번 날)로 4.5 → 8번 날 저점 확정
+chk("1-0 스윙 손 계산(3×ATR 되돌림이 나온 날 확정)",
+    [(x["kind"], x["idx"], x["price"], x["confirm"]) for x in sp] == [("H", 2, 12.0, 4), ("L", 5, 7.5, 8)])
+chk("1-1 저점이 높아지는 지그재그 → 상승", engine.trend_indicators(up_z)["state"].iloc[-1] == "상승")
+chk("1-2 고점·저점이 낮아지는 지그재그 → 하락", engine.trend_indicators(dn_z)["state"].iloc[-1] == "하락")
+ib = engine.trend_indicators(brk_z)
+chk("1-3 상승 추세선을 깼지만 고점 낮아짐 확인 전 → 횡보(상승 추세선 이탈)", ib["state"].iloc[-1] == "횡보"
+    and "상승 추세선 이탈" in ib["state_detail"].iloc[-1])
+ism = engine.trend_indicators(smooth)
+chk("1-4 스윙이 모자라면 이동평균 배열로 대신 판단하고 표시", ism["state"].iloc[-1] == "상승" and "스윙 부족" in ism["state_detail"].iloc[-1]
+    and ism["state"].iloc[100] is None)
 ind = engine.trend_indicators(up, spy)
 k = 300
 c, lo = up["Close"], up["Low"]
 chk("1-5 50일선 기울기 = 50일선 − 20거래일 전 50일선",
     abs(ind["slope50"].iloc[k] - (c.iloc[k - 49:k + 1].mean() - c.iloc[k - 69:k - 19].mean())) < 1e-9)
-chk("1-6 저점: 최근 10일 최저 vs 그 앞 20일 최저",
-    abs(ind["low_recent"].iloc[k] - lo.iloc[k - 9:k + 1].min()) < 1e-12 and abs(ind["low_prior"].iloc[k] - lo.iloc[k - 29:k - 9].min()) < 1e-12)
+L1, L2 = ind["sw_L1"].iloc[k], ind["sw_L2"].iloc[k]
+exp_line = math.exp(math.log(L2["price"]) + (math.log(L2["price"]) - math.log(L1["price"])) / (L2["idx"] - L1["idx"]) * (k - L2["idx"]))
+chk("1-6 저점 연결선 = 두 스윙 저점을 잇는 로그 직선의 그날 값, 확정일이 그날 이전",
+    abs(ind["line_low"].iloc[k] - exp_line) < 1e-9 and L2["confirm"] <= k)
 chk("1-7 3개월 상대강도", abs(ind["rs63"].iloc[k] - ((c.iloc[k] / c.iloc[k - 63] - 1) - (spy["Close"].iloc[k] / spy["Close"].iloc[k - 63] - 1))) < 1e-12)
 fut = up.copy()
 fut.iloc[k + 1:, :4] *= 0.3
 r1 = engine.frame_a_evaluate(up, spy, at=up.index[k])
 r2 = engine.frame_a_evaluate(fut, spy, at=up.index[k])
-chk("1-8 그날 이후 가격을 바꿔도 판정 그대로", r1["state"] == r2["state"] and r1["diff"] == r2["diff"]
+chk("1-8 그날 이후 가격을 바꿔도 추세 상태·근거 그대로(스윙은 확정일 이후에만 씀)", r1["state"] == r2["state"]
+    and r1["state_detail"] == r2["state_detail"] and r1["diff"] == r2["diff"]
     and [i["sign"] for i in r1["items"]] == [i["sign"] for i in r2["items"]])
-chk("1-9 가격 이력 부족은 판정 불가", engine.frame_a_evaluate(up.iloc[:150])["available"] is False)
-rs = engine.frame_a_evaluate(None, ind=pd.DataFrame({"Open": [90.0], "Low": [90.0], "Close": [90.0], "SMA200": [100.0], "SMA50": [95.0],
-                                                      "SMA20": [91.0], "slope50": [0.4], "slope20": [0.1], "low_recent": [88.0],
-                                                      "low_prior": [87.0], "ATR20": [2.0], "rs63": [0.0], "event": [False], "state": ["횡보"]},
-                                                     index=[pd.Timestamp("2026-11-13")]))
-sb = rs["state_basis"]
-chk("1-10 횡보 근거: 하락 조건 중 50일선 기울기만 아님 + 세부 표시(장기 하락 뒤)",
-    rs["state_detail"].startswith("횡보 (장기 하락 뒤") and "50일선 기울기" in sb["why"].split(" / ")[0]
-    and "종가 vs 50일선" not in sb["why"].split(" / ")[0] and [c["down"] for c in sb["conditions"]] == [True, True, False])
-chk("1-11 요약 문구에 추세 판단 근거", "추세 판단 근거" in engine.render_frame_a_text({**rs, "ticker": "X"}))
+chk("1-9 가격 이력 부족은 판정 불가", engine.frame_a_evaluate(up.iloc[:30])["available"] is False)
+rd = engine.frame_a_evaluate(dn_z)
+txt = engine.render_frame_a_text({**rd, "ticker": "X"})
+chk("1-10 근거 표시: 스윙 저점·고점, 연결선 값, 확정 전 진행 중, 이동평균 참고",
+    "스윙 저점" in txt and "고점 연결선 오늘 값" in txt and "확정 전 진행 중" in txt and "참고: 50일선" in txt)
+chk("1-11 하락 세부 문구", rd["state_detail"].startswith("하락 ("))
 
 # ---------------------------------------------------------------------------
 # 2 근거 저울 항목
@@ -105,9 +125,14 @@ chk("3-2 상승: 저울을 뒤집어 하락 전환 가능성", L("상승", -2)["
 # 4 진입 의견·크기·청산 (지표 표를 직접 넣음)
 # ---------------------------------------------------------------------------
 def one(state="횡보", close=110.0, sma50=100.0, slope20=1.0, low_recent=95.0, low_prior=90.0, rs=0.05, atr=2.0, sma20=105.0, event=False):
-    return pd.DataFrame({"Open": [close], "Low": [close], "Close": [close], "SMA200": [90.0], "SMA50": [sma50], "SMA20": [sma20],
-                         "slope50": [0.1], "slope20": [slope20], "low_recent": [low_recent], "low_prior": [low_prior],
-                         "ATR20": [atr], "rs63": [rs], "event": [event], "state": [state]}, index=[pd.Timestamp("2026-11-13")])
+    """지표 한 줄. low_prior → low_recent = 앞 스윙 저점 → 나중 스윙 저점."""
+    return pd.DataFrame({"Open": [close], "High": [close], "Low": [close], "Close": [close], "SMA200": [90.0], "SMA50": [sma50],
+                         "SMA20": [sma20], "slope50": [0.1], "slope20": [slope20],
+                         "sw_L1": [{"kind": "L", "idx": 0, "price": low_prior, "confirm": 0}],
+                         "sw_L2": [{"kind": "L", "idx": 0, "price": low_recent, "confirm": 0}],
+                         "sw_H1": [None], "sw_H2": [None], "line_low": [np.nan], "line_high": [np.nan], "ma_state": [state],
+                         "ATR20": [atr], "rs63": [rs], "event": [event], "state": [state], "state_detail": [state]},
+                        index=[pd.Timestamp("2026-11-13")])
 
 
 up_cs = {"eps_fy1_up_30d": 4, "eps_fy1_down_30d": 1}

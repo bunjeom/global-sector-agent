@@ -1,9 +1,10 @@
 """매매 틀 v2 판정 (2026-11-14 추가) — AGENTS.md 4번 '틀 A v2'·'틀 B v2'를 코드로 옮긴 것.
 
 틀 A v2 — 추세 판단과 전환 가능성 (트레이딩, 의견)
-    추세 상태   상승(종가 > 50일선 > 200일선, 50일선 20일 전보다 높음) / 하락(반대) / 횡보(그 외)
+    추세 상태   스윙 고점·저점(직전 극점에서 3×ATR 이상 되돌리면 확정)으로 판단. 상승 = 저점이 높아지고 두 저점을 잇는
+                상승 추세선 위 / 하락 = 상승이 아니고 고점이 낮아지며 두 고점을 잇는 하락 추세선 아래 / 횡보 = 그 외
     근거 저울   항목마다 전환 쪽 +1 · 실패 쪽 −1 · 중립 0. 같은 사실을 양쪽에 두 번 세지 않는다
-                기술 4개(50일선·20일선 기울기·저점·3개월 상대강도), 실적(30일 추정치 상향·하향 건수),
+                기술 4개(50일선·20일선 기울기·스윙 저점·3개월 상대강도), 실적(30일 추정치 상향·하향 건수),
                 가치(자기 PER 밴드 위치), 돌발 이벤트(최근 5거래일 −5% 갭 또는 하루 2.5×ATR 급락 → −2)
                 국면 게이트는 저울에 넣지 않고 크기만 줄인다(검증: 수익을 예측하지 못하는 위험 온도계)
     표시        차이(전환 − 실패) +2 이상 '우세', −1~+1 '팽팽', −2 이하 '실패 우세'. 확률(%)로 표시하지 않는다
@@ -26,7 +27,7 @@ PLAYBOOK_CONFIG: Dict[str, Any] = {
     "TREND_MA": 200, "MID_MA": 50, "SHORT_MA": 20,
     "MID_SLOPE_DAYS": 20,           # 50일선 기울기: 20거래일 전과 비교
     "SHORT_SLOPE_DAYS": 5,          # 20일선 기울기: 5거래일 전과 비교
-    "LOW_RECENT": 10, "LOW_PRIOR": 20,   # 최근 10거래일 최저가 vs 그 앞 20거래일 최저가
+    "SWING_ATR": 3.0,               # 스윙 확정: 직전 극점에서 3×ATR(20) 이상 되돌리면 그 극점을 스윙 고점·저점으로 확정
     "RS_DAYS": 63,                  # 3개월 상대강도
     "ATR_DAYS": 20,
     "EVENT_DAYS": 5, "EVENT_GAP": -0.05, "EVENT_DROP_ATR": 2.5, "EVENT_WEIGHT": 2,
@@ -61,13 +62,11 @@ def trend_indicators(df: pd.DataFrame, bench: Optional[pd.DataFrame] = None) -> 
     op = d["Open"].astype(float) if "Open" in d else close
     hi = d["High"].astype(float) if "High" in d else close
     out = pd.DataFrame(index=d.index)
-    out["Open"], out["Low"], out["Close"] = op, low, close
+    out["Open"], out["High"], out["Low"], out["Close"] = op, hi, low, close
     for k, n in (("SMA200", c["TREND_MA"]), ("SMA50", c["MID_MA"]), ("SMA20", c["SHORT_MA"])):
         out[k] = close.rolling(n, min_periods=n).mean()
     out["slope50"] = out["SMA50"] - out["SMA50"].shift(c["MID_SLOPE_DAYS"])
     out["slope20"] = out["SMA20"] - out["SMA20"].shift(c["SHORT_SLOPE_DAYS"])
-    out["low_recent"] = low.rolling(c["LOW_RECENT"], min_periods=c["LOW_RECENT"]).min()
-    out["low_prior"] = low.shift(c["LOW_RECENT"]).rolling(c["LOW_PRIOR"], min_periods=c["LOW_PRIOR"]).min()
     tr = pd.concat([hi - low, (hi - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
     out["ATR20"] = tr.ewm(alpha=1 / c["ATR_DAYS"], adjust=False, min_periods=c["ATR_DAYS"]).mean()
     ret = close / close.shift(c["RS_DAYS"]) - 1.0
@@ -83,39 +82,138 @@ def trend_indicators(df: pd.DataFrame, bench: Optional[pd.DataFrame] = None) -> 
     drop_atr = (prev - close) / out["ATR20"].shift()
     ev = ((gap <= c["EVENT_GAP"]) | (drop_atr >= c["EVENT_DROP_ATR"])).astype(float)
     out["event"] = ev.rolling(c["EVENT_DAYS"], min_periods=1).max().astype(bool)
+    # 참고용 이동평균 배열 상태(스윙이 모자랄 때 대신 씀)
     up = (close > out["SMA50"]) & (out["SMA50"] > out["SMA200"]) & (out["slope50"] > 0)
     dn = (close < out["SMA50"]) & (out["SMA50"] < out["SMA200"]) & (out["slope50"] < 0)
     ready = out[["SMA200", "slope50"]].notna().all(axis=1)
-    out["state"] = np.where(~ready, None, np.where(up, STATE_UP, np.where(dn, STATE_DOWN, STATE_SIDE)))
+    out["ma_state"] = np.where(~ready, None, np.where(up, STATE_UP, np.where(dn, STATE_DOWN, STATE_SIDE)))
+    _swing_state(out, hi.to_numpy(dtype=float), low.to_numpy(dtype=float))
     return out
 
 
-def state_basis(row: pd.Series) -> Dict[str, Any]:
-    """추세 상태를 정한 세 조건과 결과를 사람이 확인할 수 있게 돌려준다. 횡보는 50일선·200일선 위치로 세부 표시를 붙인다
-    (상태 판정 자체는 바꾸지 않는다)."""
-    close, s50, s200, sl = (float(row.get(k)) if pd.notna(row.get(k)) else None for k in ("Close", "SMA50", "SMA200", "slope50"))
-    conds = [
-        {"name": "종가 vs 50일선", "up": close is not None and s50 is not None and close > s50,
-         "down": close is not None and s50 is not None and close < s50, "text": f"종가 {_fmt(close)} · 50일선 {_fmt(s50)}"},
-        {"name": "50일선 vs 200일선", "up": s50 is not None and s200 is not None and s50 > s200,
-         "down": s50 is not None and s200 is not None and s50 < s200, "text": f"50일선 {_fmt(s50)} · 200일선 {_fmt(s200)}"},
-        {"name": f"50일선 기울기({PLAYBOOK_CONFIG['MID_SLOPE_DAYS']}거래일 전 대비)", "up": sl is not None and sl > 0,
-         "down": sl is not None and sl < 0, "text": f"{_fmt(sl)} ({'상승' if (sl or 0) > 0 else ('하락' if (sl or 0) < 0 else '보합')})"},
-    ]
-    state = row.get("state")
-    detail = state
-    if state == STATE_SIDE and s50 is not None and s200 is not None:
-        detail = ("횡보 (장기 하락 뒤 — 50일선이 200일선 아래)" if s50 < s200 else "횡보 (장기 상승 속 — 50일선이 200일선 위)")
-    if state == STATE_UP:
-        why = "세 조건 모두 상승 쪽"
-    elif state == STATE_DOWN:
-        why = "세 조건 모두 하락 쪽"
-    else:
-        miss_dn = [c["name"] for c in conds if not c["down"]]
-        miss_up = [c["name"] for c in conds if not c["up"]]
-        why = ("하락이 되려면 세 조건이 모두 하락 쪽이어야 하는데 아닌 것: " + ", ".join(miss_dn)
-               + " / 상승이 되려면 아닌 것: " + ", ".join(miss_up))
-    return {"conditions": conds, "why": why, "detail": detail}
+def swing_points(high: np.ndarray, low: np.ndarray, atr: np.ndarray, k_atr: Optional[float] = None) -> List[Dict[str, Any]]:
+    """움직임의 크기로 스윙 고점·저점을 찾는다(지그재그). 상승 구간에서 최고가를 따라가다가 그 최고가보다
+    k×ATR(그날 값) 이상 낮은 저가가 나오면 그 최고가를 스윙 고점으로 확정한다(저점도 반대로).
+    확정일(confirm)은 되돌림이 나온 날이라, 그 전 날짜의 판정에는 쓰이지 않는다."""
+    k = PLAYBOOK_CONFIG["SWING_ATR"] if k_atr is None else float(k_atr)
+    n = len(high)
+    out: List[Dict[str, Any]] = []
+    start = next((i for i in range(n) if np.isfinite(atr[i])), None)
+    if start is None:
+        return out
+    d = None
+    hi_i, hi_v, lo_i, lo_v = start, high[start], start, low[start]
+    for j in range(start + 1, n):
+        thr = k * atr[j]
+        if not np.isfinite(thr):
+            continue
+        if d is None:
+            if high[j] > hi_v:
+                hi_i, hi_v = j, high[j]
+            if low[j] < lo_v:
+                lo_i, lo_v = j, low[j]
+            if high[j] - lo_v >= thr and lo_i < j:
+                out.append({"kind": "L", "idx": lo_i, "price": float(lo_v), "confirm": j})
+                d, hi_i, hi_v = "up", j, high[j]
+            elif hi_v - low[j] >= thr and hi_i < j:
+                out.append({"kind": "H", "idx": hi_i, "price": float(hi_v), "confirm": j})
+                d, lo_i, lo_v = "down", j, low[j]
+        elif d == "up":
+            if high[j] > hi_v:
+                hi_i, hi_v = j, high[j]
+            elif hi_v - low[j] >= thr:
+                out.append({"kind": "H", "idx": hi_i, "price": float(hi_v), "confirm": j})
+                d, lo_i, lo_v = "down", j, low[j]
+        else:
+            if low[j] < lo_v:
+                lo_i, lo_v = j, low[j]
+            elif high[j] - lo_v >= thr:
+                out.append({"kind": "L", "idx": lo_i, "price": float(lo_v), "confirm": j})
+                d, hi_i, hi_v = "up", j, high[j]
+    return out
+
+
+def _line(a: Dict[str, Any], b: Dict[str, Any], t: int) -> float:
+    """두 스윙 점을 잇는 추세선(로그 가격)의 t일 값."""
+    la, lb = math.log(a["price"]), math.log(b["price"])
+    return math.exp(lb + (lb - la) / (b["idx"] - a["idx"]) * (t - b["idx"]))
+
+
+def _swing_state(out: pd.DataFrame, high: np.ndarray, low: np.ndarray) -> None:
+    """날마다 그날까지 확정된 스윙만으로 추세 상태를 정한다(사용자 정의, AGENTS.md 4번).
+    상승 = 최근 두 스윙 저점이 높아짐 + 종가가 두 저점을 잇는 상승 추세선 위
+    하락 = 상승이 아님(추세선 이탈 또는 저점이 안 높아짐) + 최근 두 스윙 고점이 낮아짐 + 종가가 두 고점을 잇는 하락 추세선 아래
+    횡보 = 그 외. 스윙이 2개씩 안 되면 이동평균 배열 상태(ma_state)를 대신 쓰고 표시한다."""
+    close = out["Close"].to_numpy(dtype=float)
+    pts = swing_points(high, low, out["ATR20"].to_numpy(dtype=float))
+    n = len(close)
+    states, details, la, lb, ha, hb, lline, hline = ([None] * n for _ in range(8))
+    lows: List[Dict[str, Any]] = []
+    highs: List[Dict[str, Any]] = []
+    p = 0
+    ma = out["ma_state"].to_numpy()
+    for t in range(n):
+        while p < len(pts) and pts[p]["confirm"] <= t:
+            (lows if pts[p]["kind"] == "L" else highs).append(pts[p])
+            p += 1
+        if len(lows) < 2 or len(highs) < 2:
+            states[t] = ma[t]
+            details[t] = None if ma[t] is None else f"{ma[t]} (스윙 부족 — 이동평근 배열 기준)".replace("이동평근", "이동평균")
+            continue
+        L1, L2, H1, H2 = lows[-2], lows[-1], highs[-2], highs[-1]
+        lo_line, hi_line = _line(L1, L2, t), _line(H1, H2, t)
+        rising, falling = L2["price"] > L1["price"], H2["price"] < H1["price"]
+        up = rising and close[t] >= lo_line
+        down = (not up) and falling and close[t] <= hi_line
+        if up:
+            st, dt = STATE_UP, "상승 (저점이 높아지고 상승 추세선 위)" + (" · 고점은 낮아지는 중(수렴)" if falling else "")
+        elif down:
+            st, dt = STATE_DOWN, "하락 (" + ("상승 추세선 이탈 뒤 " if rising else "저점이 낮아지고 ") + "고점이 낮아지며 하락 추세선 아래)"
+        else:
+            st = STATE_SIDE
+            if rising and close[t] < lo_line and not falling:
+                dt = "횡보 (상승 추세선 이탈 — 고점 낮아짐은 아직 확인 안 됨)"
+            elif falling and close[t] > hi_line:
+                dt = "횡보 (하락 추세선 돌파 시도 — 저점 높아짐은 아직 확인 안 됨)"
+            else:
+                dt = "횡보 (저점·고점 방향이 엇갈림)"
+        states[t], details[t] = st, dt
+        la[t], lb[t], ha[t], hb[t], lline[t], hline[t] = L1, L2, H1, H2, lo_line, hi_line
+    out["state"], out["state_detail"] = states, details
+    out["sw_L1"], out["sw_L2"], out["sw_H1"], out["sw_H2"] = la, lb, ha, hb
+    out["line_low"], out["line_high"] = lline, hline
+
+
+def state_basis(row: pd.Series, ind: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    """추세 상태를 정한 스윙 고점·저점과 연결선 값, 아직 확정되지 않은 진행 중 극점을 사람이 확인할 수 있게 돌려준다."""
+    index = ind.index if ind is not None else None
+    def pt(x):
+        if not isinstance(x, dict):
+            return "—"
+        d = str(index[x["idx"]].date()) if index is not None else f"#{x['idx']}"
+        return f"{d} {_fmt(x['price'], 0)}"
+    L1, L2, H1, H2 = (row.get(k) for k in ("sw_L1", "sw_L2", "sw_H1", "sw_H2"))
+    close = float(row["Close"])
+    conds = []
+    if isinstance(L2, dict):
+        conds.append({"name": "스윙 저점", "text": f"{pt(L1)} → {pt(L2)} ({'높아짐' if L2['price'] > L1['price'] else '낮아짐'})"})
+        conds.append({"name": "저점 연결선 오늘 값", "text": f"{_fmt(row.get('line_low'), 0)} · 종가 {_fmt(close, 0)} "
+                      f"({'위' if close >= float(row.get('line_low')) else '아래'})"})
+    if isinstance(H2, dict):
+        conds.append({"name": "스윙 고점", "text": f"{pt(H1)} → {pt(H2)} ({'낮아짐' if H2['price'] < H1['price'] else '높아짐'})"})
+        conds.append({"name": "고점 연결선 오늘 값", "text": f"{_fmt(row.get('line_high'), 0)} · 종가 {_fmt(close, 0)} "
+                      f"({'아래' if close <= float(row.get('line_high')) else '위'})"})
+    if ind is not None and isinstance(L2, dict) and isinstance(H2, dict):
+        k0 = max(L2["confirm"], H2["confirm"])
+        w = ind.iloc[k0:]
+        if len(w):
+            lo_d, hi_d = w["Low"].idxmin(), w["Close"].idxmax() if "High" not in w else w["High"].idxmax()
+            conds.append({"name": "확정 전 진행 중", "text": f"마지막 스윙 확정({index[k0].date()}) 뒤 최저 {_fmt(float(w['Low'].min()), 0)}"
+                          f"({lo_d.date()}) · 최고 {_fmt(float(w['High'].max() if 'High' in w else w['Close'].max()), 0)}({hi_d.date()}) "
+                          f"— {PLAYBOOK_CONFIG['SWING_ATR']:.0f}×ATR 되돌림이 나와야 스윙으로 확정"})
+    s50, s200 = row.get("SMA50"), row.get("SMA200")
+    ma_txt = f"참고: 50일선 {_fmt(s50, 0)} · 200일선 {_fmt(s200, 0)} (이동평균 배열 {row.get('ma_state') or '—'})"
+    return {"conditions": conds, "why": row.get("state_detail") or "—", "detail": row.get("state_detail"), "ma_note": ma_txt}
 
 
 def _item(key: str, label: str, track: str, sign: Optional[int], text: str, weight: int = 1) -> Dict[str, Any]:
@@ -159,6 +257,15 @@ def band_item(band_z: Optional[float]) -> Dict[str, Any]:
     return _item("band", "가격 수준", "가치", s, f"자기 5년 PER 밴드 z {z:+.2f} ({word})")
 
 
+def _lows_item(row: pd.Series) -> Dict[str, Any]:
+    L1, L2 = row.get("sw_L1"), row.get("sw_L2")
+    if not (isinstance(L1, dict) and isinstance(L2, dict)):
+        return _item("lows", "스윙 저점", "기술", None, "확정된 스윙 저점이 2개 미만")
+    s = _sgn(L2["price"] - L1["price"])
+    return _item("lows", "스윙 저점", "기술", s, f"최근 두 스윙 저점 {_fmt(L1['price'])} → {_fmt(L2['price'])} "
+                 f"({'높아짐' if s == 1 else ('낮아짐' if s == -1 else '같음')})")
+
+
 def frame_a_items(row: pd.Series, consensus: Optional[Dict[str, Any]] = None, band_z: Optional[float] = None) -> List[Dict[str, Any]]:
     c = PLAYBOOK_CONFIG
     close, s50 = row.get("Close"), row.get("SMA50")
@@ -167,8 +274,7 @@ def frame_a_items(row: pd.Series, consensus: Optional[Dict[str, Any]] = None, ba
               f"종가 {_fmt(close)} vs 50일선 {_fmt(s50)}"),
         _item("slope20", "20일선 기울기", "기술", _sgn(row.get("slope20")),
               f"20일선이 {c['SHORT_SLOPE_DAYS']}거래일 전보다 {_fmt(row.get('slope20'))}"),
-        _item("lows", "저점", "기술", None if pd.isna(row.get("low_prior")) else _sgn(row.get("low_recent") - row.get("low_prior")),
-              f"최근 {c['LOW_RECENT']}거래일 최저 {_fmt(row.get('low_recent'))} vs 그 앞 {c['LOW_PRIOR']}거래일 최저 {_fmt(row.get('low_prior'))}"),
+        _lows_item(row),
         _item("rs", "상대강도", "기술", _sgn(row.get("rs63")),
               "3개월 시장 대비 " + ("데이터 없음" if pd.isna(row.get("rs63")) else f"{float(row.get('rs63')) * 100:+.1f}%p")),
         consensus_item(consensus),
@@ -210,7 +316,7 @@ def frame_a_evaluate(df: pd.DataFrame, bench: Optional[pd.DataFrame] = None, con
     state = row.get("state")
     if state is None:
         return {"frame": "A v2", "available": False, "as_of": str(ind.index[-1].date()),
-                "reason": f"가격 이력 부족(200일선 계산에 {c['TREND_MA']}거래일 필요)", "verification": VERIFICATION["frame_a"]}
+                "reason": "가격 이력 부족(스윙 고점·저점이 2개씩 확정되지 않았고 200일선도 계산할 수 없음)", "verification": VERIFICATION["frame_a"]}
     items = frame_a_items(row, consensus, band_z)
     support = sum(i["points"] for i in items if i["points"] > 0)
     against = -sum(i["points"] for i in items if i["points"] < 0)
@@ -247,7 +353,7 @@ def frame_a_evaluate(df: pd.DataFrame, bench: Optional[pd.DataFrame] = None, con
                "label": ("손절 (전환 실패 우세)" if pnl < 0 else "매도 (하락 전환 우세)") if exit_now else "보유",
                "rule": "하락 쪽 근거 합(실패·하락 전환)이 상승 쪽 근거 합보다 많으면 다음 날 시가에 청산"}
     words = (("유지 근거", "하락 전환 근거") if state == STATE_UP else ("전환 근거", "실패 근거"))
-    basis = state_basis(row)
+    basis = state_basis(row, ind)
     return {"frame": "A v2", "available": True, "as_of": str(ind.index[-1].date()), "state": state,
             "pos_word": words[0], "neg_word": words[1], "state_basis": basis, "state_detail": basis["detail"],
             "close": close, "atr": atr, "items": items, "support": support, "against": against, "diff": diff,
@@ -409,8 +515,9 @@ def render_frame_a_text(r: Dict[str, Any]) -> str:
          f"({r['pos_word']} {r['support']} vs {r['neg_word']} {r['against']}, 차이 {r['diff']:+d})"]
     sb = r.get("state_basis")
     if sb:
-        L.append("   추세 판단 근거: " + " | ".join(f"{c['name']} {c['text']}" for c in sb["conditions"]))
-        L.append(f"   → {sb['why']}")
+        for cnd in sb["conditions"]:
+            L.append(f"   추세 근거 · {cnd['name']}: {cnd['text']}")
+        L.append(f"   {sb['ma_note']}")
     for i in r["items"]:
         mark = ("데이터 없음" if i["no_data"] else
                 {1: f"{r['pos_word']} +", -1: f"{r['neg_word']} −", 0: "중립"}[i["sign"]] + (f"{abs(i['points'])}" if i["sign"] else ""))
