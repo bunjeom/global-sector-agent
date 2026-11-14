@@ -10,6 +10,7 @@
 - `utils.py` — 공통 CSS, 사이드바 메뉴(`init_session`)
 - `pages/1_🔎_종목_딥다이브.py` — 종목 딥다이브
 - `check_earnings_data.py` — 실적 트랙 실제 데이터 점검(PC에서 `python check_earnings_data.py AAPL 005930.KS`)
+- `check_playbook.py` — 매매 틀 v2(틀 A) 판정 실제 데이터 점검(PC에서 `python check_playbook.py NVDA 005930.KS --gate 1`)
 - `run_backtest.py` — 판정 규칙 백테스트(PC에서 실제 야후 데이터로 실행, 결과 `data/backtest/REPORT.md`·`summary.json`)
 - `snapshot_daily.py` — 컨센서스·목표가 날짜별 기록 실행(매일 GitHub Actions `daily_agent.yml`이 실행, 결과 `data/snapshots/consensus_<연도>.csv`). 관심 종목은 `data/snapshots/watchlist.txt`에 한 줄에 하나씩 추가
 - `tests/` — 회귀 테스트(가짜 데이터·오프라인). `python tests/run_all.py`로 한 번에 실행
@@ -43,11 +44,12 @@
 | `t_backtest.py` | T 트랙 검증(TBT_CONFIG): 실제 스캐너 날짜별 재현·티켓 청산, 재설계 후보 T-A 추세 추종·T-B 눌림목(관행값 고정, 해외 국가 ETF로 판정) |
 | `snapshot.py` | 컨센서스·목표가 날짜별 기록(SNAPSHOT_CONFIG·SNAPSHOT_COLUMNS): 야후에서 받아 연도별 CSV에 붙임, `load_snapshots`로 읽음 |
 | `sec_facts.py` | SEC 공시일 기준 TTM EPS(SEC_CONFIG): 티커→CIK, EPS 개념 받기·캐시(data/sec_cache/), 4분기 = 연간 − 9개월, 정정 값은 제출일부터, 액면분할 단위 맞춤 |
+| `playbook.py` | 매매 틀 v2 판정(PLAYBOOK_CONFIG): `frame_a_evaluate`(추세 상태·근거 저울 7항목·전환 가능성·의견·청산), `frame_b_evaluate`(적용 범위·단계), `fetch_frame_a_live`(실제 데이터), 점검은 check_playbook.py |
 | `frame_backtest.py` | 매매 틀 검증. 틀 A(FRAME_A_CONFIG·FRAME_A_CRITERIA): 개별 종목, 보유 기간 맞춘 무작위와 비교. 틀 B(FRAME_B_CONFIG·FRAME_B_CRITERIA): 미국 개별 종목, SEC EPS로 만든 자기 PER 밴드, 같은 날 다른 종목 평균과 비교. 둘 다 월 묶음 표준오차 |
 
 ### 패키지 규칙
 - 새 함수는 기능이 맞는 모듈에 넣는다. `engine.py` 파일을 다시 만들지 않는다(폴더 `engine/`이 우선 로드되어 새 파일은 무시됨).
-- 다른 모듈 이름을 쓰면 파일 위쪽에 `from .모듈 import 이름`을 추가한다. 의존 방향은 아래 순서의 **앞쪽 모듈만** 가져다 쓴다(거꾸로 가져오면 순환 import 오류): common → technical_signals → backtest → technical → earnings → macro → fundamental → synthesis → home → gate → rrg → radar → rule_backtest → t_backtest → snapshot → sec_facts → frame_backtest.
+- 다른 모듈 이름을 쓰면 파일 위쪽에 `from .모듈 import 이름`을 추가한다. 의존 방향은 아래 순서의 **앞쪽 모듈만** 가져다 쓴다(거꾸로 가져오면 순환 import 오류): common → technical_signals → backtest → technical → earnings → macro → fundamental → synthesis → home → gate → rrg → radar → rule_backtest → t_backtest → snapshot → sec_facts → frame_backtest → playbook.
 - 바깥(app.py·페이지·테스트)은 `engine.이름`으로만 쓴다. 새 이름도 `engine/__init__.py`가 자동으로 내보낸다(따로 등록할 필요 없음).
 - 테스트에서 `engine.이름 = 가짜함수`로 바꿔 끼우면 그 이름을 쓰는 모든 모듈에 같이 적용되고, `importlib.reload(engine)`은 모든 모듈을 처음부터 다시 읽는다(한 파일이던 시절과 같은 동작, `engine/__init__.py`의 _EngineModule).
 - 같은 이름을 두 모듈에서 따로 정의하면 import 시 오류로 멈춘다(단일 출처 보호).
@@ -153,7 +155,7 @@
 | 진입 | V 가격 자격(매수선 도달) **그리고** 이익 훼손 없음 = 발표 실적 TTM EPS가 1년 전보다 줄지 않음 **그리고** 추정치 하향 우세가 아님 |
 | 추정치 하향 우세 (정의) | 30일간 FY1 EPS 추정치 하향 건수 > 상향 건수 **그리고** FY1 추정치가 30일 전보다 낮음(야후 eps_trend·eps_revisions, 매일 기록은 data/snapshots/) |
 | 경고 = 신규 매수 중단 | 보유 중 추정치 하향 우세가 시작됨 |
-| 손절 = 논리 무효화 | 추정치 하향으로 적정가가 현재가 아래로 내려감 / 발표 실적 TTM EPS 감소 확정 / 킬 조건(HARD_KILL·VALUE_TRAP) |
+| 손절 = 논리 무효화 | 추정치 하향으로 적정가가 현재가 아래로 내려감(= 추정치 하향 우세이면서 V 가격 자격이 '미충족' — V 매수기준선은 최신 추정치로 다시 계산되므로) / 발표 실적 TTM EPS 감소 확정 / 킬 조건(HARD_KILL·VALUE_TRAP) |
 | 매도 = 고평가 | 자기 밴드 +1σ 이상이고 진입 뒤 상승이 배수 주도(배수 상승분 > 이익 증가분)면 분할 매도. 이익 주도면 재평가로 보고 보유(미검증, v1 참고 결과 양호) |
 | 기술의 역할 | 종가 < 200일선이고 50일선이 하락 중이면 분할 간격을 넓힌다. 수익 신호가 아니다 |
 - **재평가와 일시적 고평가의 구별**: 주가 상승을 이익 증가분과 배수 상승분으로 나눈다(`multiple_decomposition`). 이익(추정치) 증가가 더 크면 재평가(적정가를 올려 잡고 보유), 이익은 그대로인데 배수만 올랐으면 일시적 고평가(분할 매도).
@@ -168,8 +170,8 @@
 | V 매수선·가격 자격, 킬 조건(HARD_KILL·VALUE_TRAP) | 있음 — engine/fundamental.py, engine/synthesis.py |
 | 주가 변화의 이익·배수 분해 | 있음(후행 EPS 기준 12개월, `multiple_decomposition`) — 매도 판정에는 아직 연결 안 됨 |
 | 틀 A v1·틀 B v1 검증 | 검증 코드만 있음(engine/frame_backtest.py, engine/sec_facts.py) — 둘 다 사전 기준 미통과, 화면에 넣지 않음 |
-| 틀 A v2·틀 B v2 판정 | 없음 — 문서로 고정(위), 판정 모듈 engine/playbook.py(가칭)로 만들 예정 |
-| 추정치 상향·하향(30일) | 야후에서 실시간으로 받을 수 있음(eps_trend·eps_revisions), 날짜별 기록은 engine/snapshot.py — 판정에는 아직 안 씀 |
+| 틀 A v2·틀 B v2 판정 | 있음(2026-11-14) — engine/playbook.py. 틀 A는 실제 데이터로 계산 가능(check_playbook.py), 틀 B는 가치·실적·종합 판정 결과를 받아 판정. 화면에는 아직 없음 |
+| 추정치 상향·하향(30일) | 틀 A 저울 항목과 틀 B '추정치 하향 우세'에 사용(snapshot.fetch_consensus_row 모양), 날짜별 기록은 engine/snapshot.py |
 | 레이더 T 신호 | 기존 셋업 스캐너(ST-1~4) 그대로 — 장기 검증 미통과 표시 중 |
 | 종합 판정 | 기존 결정 트리(ARCH_1~8) 그대로 — '어느 틀의 어느 단계인지, 무효화 조건이 무엇인지'로 개편 예정 |
 | 컨센서스·목표가 날짜별 저장 | 있음(2026-11-14~) — engine/snapshot.py, 매일 자동 실행. 화면에는 아직 쓰지 않음 |
@@ -177,7 +179,7 @@
 
 ### 다음 작업 순서
 1. ~~틀 v2 정의~~ (2026-11-14, 위 표): 결과를 보고 숫자를 맞추지 않고, v1 검증에서 드러난 원인에 맞춰 정의와 역할을 바꿨다.
-2. 틀 판정 모듈(engine/playbook.py 가칭): 종목 하나에 대해 틀 A v2(추세 상태·근거 저울 항목별 근거·전환 가능성·의견 단계·청산 조건)와 틀 B v2(적용 범위·진입 조건·경고·손절·매도)를 판정하고, 각 항목의 검증 상태를 함께 돌려준다. 가짜 데이터 테스트 포함.
+2. ~~틀 판정 모듈~~ 완료(2026-11-14, engine/playbook.py): 종목 하나에 대해 틀 A v2(추세 상태·근거 저울 항목별 근거·전환 가능성·의견 단계·청산 조건)와 틀 B v2(적용 범위·진입 조건·경고·손절·매도)를 판정하고, 각 항목의 검증 상태를 함께 돌려준다. 가짜 데이터 테스트 포함.
 3. 신호 기록 장부(data/ledger/): 매일 대표 종목·관심 종목의 틀 판정을 원자료처럼 쌓는다(스냅샷과 같은 규칙: 손으로 고치지 않음, 열 고정). 평가 방법(몇 주 뒤 무엇과 비교할지)은 장부를 시작하기 전에 고정한다. 앞으로 쌓이는 기록이 유일하게 깨끗한 검증 자료다.
 4. 종합 화면 개편(어느 틀의 어느 단계, 의견 단계·근거 목록, 무효화·매도 조건, 검증 상태) 후 Streamlit Cloud 배포.
 5. 이후: 한국 틀 B 재현 시험(DART 공시일 기준, v1 규칙 그대로 — 새 독립 검증), 한국 종목 피어·수급.
