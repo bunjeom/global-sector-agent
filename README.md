@@ -79,8 +79,9 @@ python run_backtest.py                # 미국·한국 국면 게이트 + T 셋�
 python run_backtest.py --skip-setups  # 게이트만
 python run_backtest.py --variants     # 규칙 후보 비교만 (저장된 결과 사용, 1분 안팎) → data/backtest/VARIANTS.md
 python run_backtest.py --setup-diag   # T 셋업 진단: 실제 신호 vs 무작위 진입 → data/backtest/SETUP_DIAG.md
-python run_backtest.py --scanner      # 실제 T 스캐너 날짜별 재현 (ETF 19개, 2014년~, 30~60분, 끊겨도 이어서) → SCANNER.md
+python run_backtest.py --scanner      # 실제 T 스캐너 날짜별 재현 (ETF 19개, 2014년~, 몇 시간, 끊겨도 이어서) → SCANNER.md
 python run_backtest.py --redesign     # T 트랙 재설계 후보(추세 추종·눌림목) 검증, 해외 국가 ETF로 판정 → REDESIGN.md
+python run_backtest.py --frame-a      # 틀 A(추세반등) 개별 종목 검증, 새 종목 83개로 판정 (5~10분) → FRAME_A.md
 ```
 
 - 국면 게이트를 2000년부터 날짜마다 앱과 같은 함수로 다시 계산합니다(그날 이전 데이터만 사용). 게이트 단계별 이후 지수 성과와, 게이트대로 노출을 줄인 전략을 매수 후 보유·같은 평균 노출 고정 비중과 비교합니다.
@@ -112,7 +113,7 @@ python run_backtest.py --redesign     # T 트랙 재설계 후보(추세 추종�
 ```
 app.py                      홈: 시장 국면, 섹터 흐름(RRG), 실행 레이더
 pages/1_🔎_종목_딥다이브.py   종목 딥다이브 (종합 + 4개 트랙 탭)
-engine/                     계산 엔진 패키지 (트랙별 분석·데이터 수집층·종합 판정·백테스트, 기능별 15개 모듈)
+engine/                     계산 엔진 패키지 (트랙별 분석·데이터 수집층·종합 판정·백테스트, 기능별 16개 모듈)
 utils.py                    공통 스타일·사이드바
 check_*.py                  실제 데이터 수집 점검 스크립트
 run_backtest.py             판정 규칙 백테스트 실행 (결과 data/backtest/)

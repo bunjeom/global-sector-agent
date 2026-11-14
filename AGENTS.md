@@ -42,10 +42,11 @@
 | `rule_backtest.py` | 판정 규칙 백테스트(BACKTEST_CONFIG): 국면 게이트 재현·선행 성과·노출 전략, T 셋업 × 게이트 |
 | `t_backtest.py` | T 트랙 검증(TBT_CONFIG): 실제 스캐너 날짜별 재현·티켓 청산, 재설계 후보 T-A 추세 추종·T-B 눌림목(관행값 고정, 해외 국가 ETF로 판정) |
 | `snapshot.py` | 컨센서스·목표가 날짜별 기록(SNAPSHOT_CONFIG·SNAPSHOT_COLUMNS): 야후에서 받아 연도별 CSV에 붙임, `load_snapshots`로 읽음 |
+| `frame_backtest.py` | 매매 틀 검증(FRAME_A_CONFIG·FRAME_A_CRITERIA): 틀 A(추세반등)를 개별 종목으로, 보유 기간 맞춘 무작위와 비교, 월 묶음 표준오차, 갭 하락 통계 |
 
 ### 패키지 규칙
 - 새 함수는 기능이 맞는 모듈에 넣는다. `engine.py` 파일을 다시 만들지 않는다(폴더 `engine/`이 우선 로드되어 새 파일은 무시됨).
-- 다른 모듈 이름을 쓰면 파일 위쪽에 `from .모듈 import 이름`을 추가한다. 의존 방향은 아래 순서의 **앞쪽 모듈만** 가져다 쓴다(거꾸로 가져오면 순환 import 오류): common → technical_signals → backtest → technical → earnings → macro → fundamental → synthesis → home → gate → rrg → radar → rule_backtest → t_backtest → snapshot.
+- 다른 모듈 이름을 쓰면 파일 위쪽에 `from .모듈 import 이름`을 추가한다. 의존 방향은 아래 순서의 **앞쪽 모듈만** 가져다 쓴다(거꾸로 가져오면 순환 import 오류): common → technical_signals → backtest → technical → earnings → macro → fundamental → synthesis → home → gate → rrg → radar → rule_backtest → t_backtest → snapshot → frame_backtest.
 - 바깥(app.py·페이지·테스트)은 `engine.이름`으로만 쓴다. 새 이름도 `engine/__init__.py`가 자동으로 내보낸다(따로 등록할 필요 없음).
 - 테스트에서 `engine.이름 = 가짜함수`로 바꿔 끼우면 그 이름을 쓰는 모든 모듈에 같이 적용되고, `importlib.reload(engine)`은 모든 모듈을 처음부터 다시 읽는다(한 파일이던 시절과 같은 동작, `engine/__init__.py`의 _EngineModule).
 - 같은 이름을 두 모듈에서 따로 정의하면 import 시 오류로 멈춘다(단일 출처 보호).
@@ -63,6 +64,7 @@
 - T 셋업 장기 검증(data/backtest/setup_diag.json, run_backtest.py --setup-diag): ST-1·ST-2 모두 '같은 매매 방식의 무작위 진입'보다 낫지 않음(미통과). 레이더 카드는 engine.load_setup_validation으로 이 파일을 읽어 표시하며 숫자를 코드에 적지 않는다. 파일이 없으면 표시하지 않는다.
 - T 트랙 재설계(2026-11-13~): 실제 스캐너는 run_backtest.py --scanner(앱 레이더와 같은 입력으로 날짜별 재현, 캐시 data/backtest/scanner_cache/), 재설계 후보는 --redesign. 후보 규칙·매개변수(55·20일, 2×ATR(20), RSI(2)<10, 5일선)와 판정 기준(TBT_CRITERIA)은 결과를 보기 전에 고정했으므로 결과를 보고 바꾸지 않는다. HOLDOUT_UNIVERSE(해외 국가 ETF)는 판정 전용이라 다른 분석에 쓰지 않는다. 결과와 이후 방향은 4번 '검증 상태'·'다음 작업 순서' 참고.
 - 컨센서스 기록(engine/snapshot.py, 2026-11-14~): 판정 결과가 아니라 원자료를 저장한다. 못 받은 값은 빈칸(전날 값·추정으로 채우지 않음). `snapshot_date`는 받은 날(한국 날짜), `price_as_of`는 가격 데이터의 날짜. 열은 SNAPSHOT_COLUMNS 순서로 고정이며 새 열은 맨 뒤에만 추가한다(이미 쌓인 CSV와 어긋나지 않게). 쌓인 CSV는 손으로 고치거나 지우지 않는다 — 다시 만들 수 없는 자료다. daily_agent.yml은 Python 3.11로 돌므로 engine/ 코드는 3.11 문법을 지킨다.
+- 틀 A 검증(engine/frame_backtest.py, run_backtest.py --frame-a): 규칙·매개변수(6·12개월 상대강도, 200·50일선, RSI(2)<10, 60일 최저가)와 판정 기준(FRAME_A_CRITERIA)은 실제 데이터 결과를 보기 전에 고정했다. 결과를 보고 바꾸지 않는다. 무작위 비교는 반드시 **보유 기간을 맞춘다**(주가는 평균적으로 오르므로, 같은 청산 규칙을 무작위 날짜에 쓰면 보유가 짧아져 우위가 없는 가짜 가격에서도 통과로 나온다 — tests/test_frame_backtest.py 4-7이 이를 막는다). HOLDOUT_UNIVERSE(새 개별 종목)는 판정 전용이다.
 - 국면 게이트 입력은 `build_gate_inputs_from_header(macro_header, "US"|"KR")`로 홈 헤더의 실제 데이터에서 만든다.
 - 실적 트랙(analyze_earnings_track) 입력은 `fetch_real_earnings_inputs` 한 곳에서만 만든다(미국 yfinance, 한국 DART + yfinance 추정치). 못 받은 값은 None이고 화면에는 '데이터 없음'. 삼성전자식 기본값을 다시 넣지 않는다.
 - 실적 트랙은 판정 가능한 축만 점수에 반영한다(`verdict.coverage`). 근거가 부족하면 국면은 `NA`(판정 불가)이며, 계산에서만 G3로 중립 처리하고 화면에는 '판정 불가'로 표시한다.
@@ -112,6 +114,7 @@
 | V 매수선·가격 자격, 킬 조건(HARD_KILL·VALUE_TRAP) | 있음 — engine/fundamental.py, engine/synthesis.py |
 | 주가 변화의 이익·배수 분해 | 있음(후행 EPS 기준 12개월, `multiple_decomposition`) — 매도 판정에는 아직 연결 안 됨 |
 | 눌림 진입 조건 T-B | 검증 코드만 있음(engine/t_backtest.py) — 레이더·딥다이브에는 없음 |
+| 틀 A 전체(선정·진입·무효화·매도) | 검증 코드만 있음(engine/frame_backtest.py) — 실제 데이터 결과 대기 |
 | 레이더 T 신호 | 기존 셋업 스캐너(ST-1~4) 그대로 — 장기 검증 미통과 표시 중 |
 | 종합 판정 | 기존 결정 트리(ARCH_1~8) 그대로 — '어느 틀의 어느 단계인지, 무효화 조건이 무엇인지'로 개편 예정 |
 | 컨센서스·목표가 날짜별 저장 | 있음(2026-11-14~) — engine/snapshot.py, 매일 자동 실행. 화면에는 아직 쓰지 않음 |
@@ -119,7 +122,7 @@
 
 ### 다음 작업 순서
 1. 기록 쌓기: 컨센서스 EPS·목표가·PER 날짜별 저장은 시작함(위 표). 남은 일은 틀 판정 모듈이 생긴 뒤 앱이 낸 신호와 무효화 조건을 장부로 남기는 것. 과거 데이터는 여러 번 들여다봤으므로 앞으로 쌓이는 기록이 유일하게 깨끗한 검증 자료다.
-2. 틀 A 검증: '상대강도 선정 + 눌림 진입 + 추세 청산 + 무효화 손절'을 후보로 먼저 고정하고 개별 종목으로 검증(새 검증용 묶음, 큰 갭 하락 통계 포함).
+2. 틀 A 검증: '상대강도 선정 + 눌림 진입 + 추세 청산 + 무효화 손절'을 후보로 고정하고 개별 종목으로 검증(새 검증용 묶음, 큰 갭 하락 통계 포함). 코드 완료(2026-11-14), `run_backtest.py --frame-a` 실제 데이터 결과 대기.
 3. 틀 B 재료: 한국 종목 피어·수급, 공시일 기준 재무 데이터(DART·SEC)로 '저평가 + 이익 훼손 없음' 일부 검증, 이익·배수 분해를 매도 판정에 연결.
 4. 종합 화면 개편(틀·단계·무효화 조건·매도 조건) 후 Streamlit Cloud 배포.
 
@@ -127,6 +130,7 @@
 - 국면 게이트: 이후 변동성·낙폭은 구분하지만 수익률은 구분하지 못한다(REPORT.md). 후보 A·B·C는 사전 기준 탈락, 현재 규칙 유지(VARIANTS.md).
 - 기존 T 셋업: 단순화 규칙(SETUP_DIAG.md)과 실제 스캐너(SCANNER.md, ETF 19개 2014~2026, 251건 −0.15R vs 무작위 +0.06R) 모두 무작위 진입보다 낫지 않음.
 - 재설계 후보(REDESIGN.md): T-A 추세 추종 미통과. T-B 눌림목 반등 통과(처음 보는 해외 국가 ETF에서 +0.01R vs 무작위 −0.06R, z +5.5, 승률 62%, 평균 3.7일 보유). 단 왕복 비용 0.30% 차감 후 거래당 약 +0.10%로 비용에 민감하고 손절이 없는 규칙이다. 단독 매매 신호가 아니라 틀 A의 진입 조건으로 쓴다.
+- 틀 A(FRAME_A.md): 실제 데이터 결과 대기. 판정 = HOLDOUT(새 개별 종목 83개) 거래당 순수익률 > 0 이고 보유 기간 맞춘 무작위 대비 z ≥ 2(월 묶음), 개발 묶음(대표 종목) 앞·뒤 기간 모두 > 0.
 - 실적·가치·거시 트랙과 틀 B: 과거 시점 데이터가 없어 미검증. 화면·문구에서 검증된 것처럼 표현하지 않는다.
 
 ### 운용 규칙 (현재 코드에 적용 중)

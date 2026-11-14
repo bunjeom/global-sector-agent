@@ -32,6 +32,7 @@ ENGINE_TESTS = [
     ("판정 규칙 백테스트 (미래 데이터 미사용·앱 게이트와 일치)", "test_backtest.py", [], {}),
     ("T 트랙 검증·재설계 후보 (스캐너 재현·청산 손 계산)", "test_t_backtest.py", [], {}),
     ("컨센서스·목표가 날짜별 기록 (가짜 yfinance)", "test_snapshot.py", [], {}),
+    ("틀 A 추세반등 검증 (미래 데이터 미사용·거래 손 계산)", "test_frame_backtest.py", [], {}),
 ]
 
 PAGE_TESTS = [

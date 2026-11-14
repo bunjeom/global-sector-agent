@@ -7,8 +7,9 @@
     .venv\\Scripts\\python run_backtest.py --workers 4     병렬 프로세스 수 (기본: CPU 수 − 1)
     .venv\\Scripts\\python run_backtest.py --variants      규칙 후보 비교만 (저장된 CSV 사용, 1분 안팎)
     .venv\\Scripts\\python run_backtest.py --setup-diag    T 셋업 진단: 실제 신호 vs 무작위 진입 (게이트 계산 없음, 수 분)
-    .venv\\Scripts\\python run_backtest.py --scanner       실제 T 스캐너 재현 (ETF 19개, 2014년~, 30~60분, 끊겨도 이어서 계산)
+    .venv\\Scripts\\python run_backtest.py --scanner       실제 T 스캐너 재현 (ETF 19개, 2014년~, 몇 시간, 끊겨도 이어서 계산)
     .venv\\Scripts\\python run_backtest.py --redesign      T 트랙 재설계 후보 검증 (해외 국가 ETF 포함, 수 분)
+    .venv\\Scripts\\python run_backtest.py --frame-a       틀 A(추세반등) 개별 종목 검증 (약 150종목 받기 포함 5~10분)
 
 결과 (data/backtest/):
     REPORT.md          사람이 읽는 보고서 (커밋해 두면 다른 AI도 결과를 읽을 수 있음)
@@ -16,6 +17,7 @@
     SETUP_DIAG.md      T 셋업 진단 + setup_diag.json
     SCANNER.md         실제 T 스캐너 검증 + scanner.json (계산 캐시: scanner_cache/, .gitignore)
     REDESIGN.md        T 트랙 재설계 후보 검증 + redesign.json
+    FRAME_A.md         틀 A(추세반등) 개별 종목 검증 + frame_a.json (거래 목록 frame_a_trades.csv)
     summary.json       숫자 요약 + 주간 누적 수익 곡선 (이후 화면 표시용)
     *.csv              날짜별 게이트·누적 수익·거래 목록 (용량이 커서 .gitignore로 커밋 제외)
 계산은 engine/rule_backtest.py에 있고, 이 파일은 데이터 다운로드와 저장만 한다.
@@ -212,6 +214,32 @@ def run_redesign_only(engine, args, t0):
     print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'REDESIGN.md')}")
 
 
+def run_frame_a_only(engine, args, t0):
+    """틀 A(추세반등) 검증: 개발 묶음(대표 종목) + HOLDOUT(새 개별 종목), 시장 비교용 SPY·KOSPI."""
+    cfg = engine.FRAME_A_CONFIG
+    dev_uni, ho_uni = list(cfg["DEV_UNIVERSE"]), list(cfg["HOLDOUT_UNIVERSE"])
+    start = cfg["DATA_START"]
+    print(f"[1/2] 가격 받기: 시장 2개 + 개발 묶음 {len(dev_uni)}개 + HOLDOUT {len(ho_uni)}개 ({start}~)", flush=True)
+    bm, f0 = download(sorted(set(cfg["BENCH"].values())), start)
+    if len(bm) < len(cfg["BENCH"]):
+        print(f"   시장 데이터를 받지 못했습니다: {', '.join(f0)} — 잠시 뒤 다시 실행해 주세요.")
+        return
+    dm, f1 = download(dev_uni, start)
+    hm, f2 = download(ho_uni, start)
+    if f1 or f2:
+        print(f"   받지 못함: {', '.join(f1 + f2)}")
+    print("[2/2] 거래 계산 · 무작위 비교", flush=True)
+    out = engine.evaluate_frame_a(dm, hm, bm)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    summ = {**out["summary"], "failed_downloads": f1 + f2}
+    rep = engine.render_frame_a_report(summ, generated_at=now)
+    _save("FRAME_A.md", "frame_a.json", rep, {"generated_at": now, **summ})
+    if len(out["trades"]):
+        out["trades"].to_csv(os.path.join(OUT_DIR, "frame_a_trades.csv"), index=False, encoding="utf-8-sig")
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'FRAME_A.md')}")
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8")   # Windows 콘솔에서 한글 깨짐 방지
@@ -229,6 +257,7 @@ def main():
     ap.add_argument("--setup-diag", action="store_true", help="T 셋업 진단만 (실제 신호 vs 무작위 진입)")
     ap.add_argument("--scanner", action="store_true", help="실제 T 스캐너 재현 (ETF, 2014년~)")
     ap.add_argument("--redesign", action="store_true", help="T 트랙 재설계 후보 검증")
+    ap.add_argument("--frame-a", action="store_true", help="틀 A(추세반등) 개별 종목 검증")
     args = ap.parse_args()
     t0 = time.time()
     if args.variants:
@@ -242,6 +271,9 @@ def main():
         return
     if args.redesign:
         run_redesign_only(engine, args, t0)
+        return
+    if args.frame_a:
+        run_frame_a_only(engine, args, t0)
         return
 
     print(f"[1/4] 지수 데이터 받기 (시작 {args.start})", flush=True)
