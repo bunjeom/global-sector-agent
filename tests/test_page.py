@@ -219,5 +219,10 @@ _pb = [m.value for m in at.markdown if "틀 B · 저평가 매수" in m.value]
 _pb_ok = bool(_pa) and bool(_pb) and all("검증 상태" in v for v in _pa + _pb)
 print("playbook cards:", bool(_pa), bool(_pb), "| 검증 상태:", _pb_ok,
       "| B 단계:", _r2.findall(r"term-badge-inv\" style=\"background:#[0-9a-f]+;border-color:#[0-9a-f]+;\">([^<]*)", _pb[0] if _pb else "")[:1])
+_t1 = any("매매 틀 v2 · 틀 A 추세 판단" in m.value for m in at.markdown) or any("매매 틀 v2 · 틀 A: 판정 불가" in c.value for c in at.caption)
+_bt = [m.value for m in at.markdown if "조건부 백테스트 기대값" in m.value]
+_bt_ok = (not _bt) or all("장기 검증" in v for v in _bt)
+print("기술 탭 틀 A 요약:", _t1, "| 백테스트 상자 경고:", _bt_ok)
+_pb_ok = _pb_ok and _t1 and _bt_ok
 # 실적 데이터가 전혀 없는 모드(none)는 화면이 종합 탭 전에 멈추는 것이 정상(가짜 값으로 채우지 않음)
 sys.exit(1 if (at.exception or _bad or _hb or (MODE != "none" and not _pb_ok)) else 0)

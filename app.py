@@ -256,6 +256,14 @@ with t_col_bench:
 with t_col_title:
     st.markdown("#### 섹터 흐름")
     st.caption(f"{bench_choice} 대비 강도와 가속 · 꼬리 = 최근 4주")
+    with st.expander("이 그래프 읽는 법", expanded=False):
+        st.markdown(
+            f"- **가로(오른쪽일수록)**: 그 섹터가 {bench_choice}보다 강하다. **세로(위일수록)**: 그 강도가 더 빨리 좋아지는 중이다.\n"
+            "- 네 칸: **주도**(강하고 더 강해짐) · **약화**(강하지만 식는 중) · **소외**(약하고 더 약해짐) · **개선**(약하지만 회복 중).\n"
+            "- 섹터는 보통 개선 → 주도 → 약화 → 소외 순서로 **시계 방향**으로 돈다. 그래서 '다음 후보'는 개선 칸에서 오른쪽으로 움직이는 섹터다.\n"
+            "- 선은 최근 4주 이동 경로(1주 간격 점), 화살표 끝이 오늘 위치. 기본으로 '지금 강한 곳'·'다음 후보'만 선을 그린다.\n"
+            "- 축 단위 σ는 각 ETF 자체의 평소 변동 폭. 1σ = 그 섹터로서는 평소 정도의 움직임. 가운데 회색 칸은 '뚜렷한 방향 없음'."
+        )
 
 
 def grade_for(quad: str, m: dict) -> str:
@@ -267,7 +275,10 @@ def grade_for(quad: str, m: dict) -> str:
 
 def build_rrg_figure(coords_map: dict, struct_map: dict, meta_info: dict, clock_name: str,
                      highlight: set, show_all_tails: bool):
-    lim = engine.RRG_CONFIG["AXIS_LIMIT"]
+    # 축 범위: 기본 ±3σ, 오늘 위치가 그 밖이면 화면만 넓힌다(최대 AXIS_LIMIT_MAX). 사분면 판정 기준은 그대로.
+    base_lim = engine.RRG_CONFIG["AXIS_LIMIT"]
+    cur_abs = [abs(v) for d in coords_map.values() for v in (d.get("x", np.nan), d.get("y", np.nan)) if not np.isnan(v)]
+    lim = float(min(engine.RRG_CONFIG.get("AXIS_LIMIT_MAX", 6.0), max(base_lim, np.ceil(max(cur_abs, default=0) + 0.4))))
     nth = engine.RRG_CONFIG["NEUTRAL_THRESHOLD"]
     chart_h = engine.RRG_CONFIG["CHART_HEIGHT"]
     fig = go.Figure()
@@ -290,7 +301,7 @@ def build_rrg_figure(coords_map: dict, struct_map: dict, meta_info: dict, clock_
 
     pts = [{"basket": b, "x": d["x"], "y": d["y"]} for b, d in coords_map.items()
            if not (np.isnan(d.get("x", np.nan)) or np.isnan(d.get("y", np.nan)))]
-    label_res = engine.place_labels(pts, fig_size=(700, chart_h))
+    label_res = engine.place_labels(pts, fig_size=(700, chart_h), lim=lim)
     placements = label_res["placements"]
 
     for b_code, d in coords_map.items():
@@ -304,16 +315,37 @@ def build_rrg_figure(coords_map: dict, struct_map: dict, meta_info: dict, clock_
         cx, cy = float(np.clip(raw_x, -lim, lim)), float(np.clip(raw_y, -lim, lim))
         clipped = abs(raw_x) > lim or abs(raw_y) > lim
 
-        # 꼬리: 기본은 강조 바스켓(지금 강한 곳·다음 후보)만, 체크하면 전부
-        tx = [float(np.clip(v, -lim, lim)) for v in d.get("tail_x", [])]
-        ty = [float(np.clip(v, -lim, lim)) for v in d.get("tail_y", [])]
+        # 꼬리: 기본은 강조 바스켓(지금 강한 곳·다음 후보)만, 체크하면 전부.
+        # 축 밖의 점은 모서리로 끌어오지 않는다(가짜 꺾임이 생김) — 선이 축 경계에서 실제 방향 그대로 잘린다.
+        tx = [float(v) for v in d.get("tail_x", [])]
+        ty = [float(v) for v in d.get("tail_y", [])]
         if len(tx) >= 2 and (show_all_tails or is_hl):
-            fig.add_trace(go.Scatter(x=tx, y=ty, mode="lines+markers",
-                                     line=dict(color=c_hex, width=1.6), marker=dict(size=4, color=c_hex),
-                                     opacity=0.5, hoverinfo="skip", showlegend=False))
-            annotations.append(dict(x=tx[-1], y=ty[-1], ax=tx[-2], ay=ty[-2], xref="x", yref="y",
-                                    axref="x", ayref="y", showarrow=True, arrowhead=2, arrowsize=1.1,
-                                    arrowwidth=1.6, arrowcolor=c_hex, text=""))
+            # 오래된 구간일수록 흐리게: 지금에 가까운 움직임이 눈에 먼저 들어오게 한다
+            n_seg = len(tx) - 1
+            for k in range(n_seg):
+                fig.add_trace(go.Scatter(x=tx[k:k + 2], y=ty[k:k + 2], mode="lines",
+                                         line=dict(color=c_hex, width=1.2 + 1.0 * (k + 1) / n_seg),
+                                         opacity=0.12 + 0.58 * (k + 1) / n_seg, hoverinfo="skip", showlegend=False))
+            # 꼬리 점: 마우스를 올리면 섹터·몇 주 전·날짜·위치 (오늘 점은 아래 큰 점이 따로 보여 준다)
+            dates = list(d.get("tail_dates") or [""] * len(tx))
+            dates += [""] * (len(tx) - len(dates))
+            hov = [f"<b>{b_code}</b> · {len(tx) - 1 - i}주 전"
+                   + (f" ({dates[i]})" if dates[i] else "")
+                   + f"<br>X {tx[i]:+.2f}σ · Y {ty[i]:+.2f}σ · {engine.classify_rrg_quadrant(tx[i], ty[i])}"
+                   for i in range(len(tx) - 1)]
+            fig.add_trace(go.Scatter(x=tx[:-1], y=ty[:-1], mode="markers", marker=dict(size=6, color=c_hex, opacity=0.6),
+                                     hovertemplate="%{text}<extra></extra>", text=hov, showlegend=False))
+            if abs(tx[0]) <= lim and abs(ty[0]) <= lim:   # 시작점 표시 (화면 밖이면 생략)
+                annotations.append(dict(x=tx[0], y=ty[0], text=f"{len(tx) - 1}주 전", showarrow=False, yshift=-11,
+                                        font=dict(size=9, color="#94a3b8")))
+            # 오늘 위치로 들어오는 화살표: 마지막 구간 방향으로 최대 0.6σ 길이(시작점이 축 밖으로 나가지 않게)
+            sx, sy = tx[-2] - tx[-1], ty[-2] - ty[-1]
+            seg = float(np.hypot(sx, sy))
+            if seg > 1e-9 and abs(cx - raw_x) < 1e-9 and abs(cy - raw_y) < 1e-9:
+                t = min(1.0, 0.6 / seg)
+                annotations.append(dict(x=tx[-1], y=ty[-1], ax=tx[-1] + sx * t, ay=ty[-1] + sy * t, xref="x", yref="y",
+                                        axref="x", ayref="y", showarrow=True, arrowhead=2, arrowsize=1.1,
+                                        arrowwidth=1.6, arrowcolor=c_hex, text=""))
 
         hover = (
             f"<b>{b_code} · {m_info.get('name', b_code)}</b><br>"
@@ -331,13 +363,18 @@ def build_rrg_figure(coords_map: dict, struct_map: dict, meta_info: dict, clock_
         ))
         pl = placements.get(b_code, {"visible": False})
         if pl.get("visible"):
-            annotations.append(dict(
-                x=cx, y=cy, text=f"<b>{b_code}{' ▶' if clipped else ''}</b>",
-                showarrow=bool(pl.get("use_leader", False)), arrowhead=0, arrowwidth=1,
-                arrowcolor="rgba(100,116,139,0.7)", ax=pl["dx"], ay=pl["dy"],
-                font=dict(size=11, color="#1e293b" if is_hl else "#64748b"),
-                bgcolor="rgba(255,255,255,0.78)", borderpad=2,
-            ))
+            arrow_txt = ""
+            if clipped:   # 화면 밖에 있는 방향
+                arrow_txt = " " + ("▶" if raw_x > lim else "◀" if raw_x < -lim else "▲" if raw_y > lim else "▼")
+            lab = dict(x=cx, y=cy, text=f"<b>{b_code}{arrow_txt}</b>",
+                       font=dict(size=11, color="#1e293b" if is_hl else "#64748b"),
+                       bgcolor="rgba(255,255,255,0.78)", borderpad=2)
+            if pl.get("use_leader", False):
+                lab.update(showarrow=True, arrowhead=0, arrowwidth=1, arrowcolor="rgba(100,116,139,0.7)",
+                           ax=pl["dx"], ay=pl["dy"])
+            else:   # 지시선 없이 점 옆으로 옮김 (plotly는 showarrow=False일 때 ax·ay를 무시하므로 shift로 옮긴다)
+                lab.update(showarrow=False, xshift=pl["dx"], yshift=-pl["dy"])
+            annotations.append(lab)
 
     fig.update_layout(
         annotations=annotations,
@@ -345,15 +382,27 @@ def build_rrg_figure(coords_map: dict, struct_map: dict, meta_info: dict, clock_
         yaxis=dict(title="Y: 강도가 바뀌는 속도 (σ)", range=[-lim, lim], zeroline=False, dtick=1.0, gridcolor="rgba(148,163,184,0.18)"),
         height=chart_h, margin=dict(l=45, r=20, t=15, b=40), plot_bgcolor="#ffffff", hovermode="closest",
     )
-    return fig, label_res["hidden_count"]
+    return fig, label_res["hidden_count"], lim
 
 
-def basket_card(item: dict, border: str) -> str:
-    tip = f"X {item['x']:+.2f}σ · Y {item['y']:+.2f}σ"
+def basket_card(item: dict, border: str, coords: dict = None) -> str:
+    """오른쪽 카드: 그래프의 선(꼬리)을 말로 풀어 쓴다 — 지나온 칸, 최근 1주 변화, 그 방향."""
+    d = (coords or {}).get(item["basket"]) or {}
+    desc = engine.describe_rrg_tail(d.get("tail_x", []), d.get("tail_y", []))
+    if desc.get("available"):
+        meaning = (f" <span style='color:#64748b;font-size:0.78rem;'>({QUAD_PLAIN.get(desc['heading_quadrant'], '')})</span>"
+                   if desc.get("heading_change") else "")
+        body = (
+            f"<span style='font-size:0.86rem;color:#0f172a;'><b>{desc['weeks']}주 경로</b>: {desc['path_text']}</span><br>"
+            f"<span style='font-size:0.86rem;color:#0f172a;'><b>최근 1주</b>: {desc['last_week_text']}</span><br>"
+            f"<span style='font-size:0.86rem;color:#0f172a;'><b>이 흐름이 1주 더 이어지면</b>: {desc['heading']}{meaning}</span><br>"
+        )
+    else:
+        body = f"<span style='font-size:0.86rem;color:#0f172a;'>{QUAD_PLAIN.get(item['quadrant'], '')}</span><br>"
     return (
-        f"<div title='{tip}' style='border:1px solid {border};border-radius:8px;padding:9px 12px;margin-bottom:8px;'>"
+        f"<div style='border:1px solid {border};border-radius:8px;padding:9px 12px;margin-bottom:8px;color:#0f172a;'>"
         f"<b>{item['basket']}</b> <span style='color:#475569;'>{item['name']}</span><br>"
-        f"<span style='font-size:0.86rem;color:#0f172a;'>{QUAD_PLAIN.get(item['quadrant'], '')}</span><br>"
+        + body +
         f"<span style='font-size:0.78rem;color:#64748b;'>판정: {item['grade']} · 구조(주봉): {item['structural_quadrant']}</span>"
         f"</div>"
     )
@@ -377,25 +426,32 @@ else:
     rrg_col_chart, rrg_col_cards = st.columns([3.2, 1.8])
     with rrg_col_chart:
         show_all_tails = st.checkbox("모든 섹터의 꼬리 보기", value=False, key="rrg_all_tails")
-        rrg_fig, hidden_cnt = build_rrg_figure(
+        rrg_fig, hidden_cnt, view_lim = build_rrg_figure(
             active_coords, structural_coords, rb["meta"],
             "일봉" if clock_choice == "daily" else "주봉", highlight, show_all_tails,
         )
         st.plotly_chart(rrg_fig, width="stretch", config={"displayModeBar": False})
         hidden_txt = f"라벨 생략 {hidden_cnt}개(마우스를 올리면 표시) · " if hidden_cnt > 0 else ""
+        if view_lim > engine.RRG_CONFIG["AXIS_LIMIT"]:
+            hidden_txt += f"범위를 넘은 섹터가 있어 축을 ±{view_lim:.0f}σ로 넓힘 · "
+        st.markdown(
+            "<div style='font-size:0.85rem;color:#334155;'><b>선(꼬리)</b> = 그 섹터가 최근 4주 동안 지나온 길입니다. "
+            "점 하나가 1주, 흐린 쪽이 과거이고 화살표 끝이 오늘 위치입니다. 선 색은 오늘 있는 칸의 색(초록 = 주도). "
+            "오른쪽 위로 가면 지수보다 강해지는 중, 아래로 꺾이면 강해지는 속도가 줄어드는 중입니다. 점에 마우스를 올리면 날짜와 위치가 나옵니다.</div>",
+            unsafe_allow_html=True)
         st.caption(f"{hidden_txt}기준일 {rb['as_of']} · 출처 yfinance 종가 · 축은 각 ETF 자체 변동성(σ)으로 정규화")
 
     with rrg_col_cards:
         st.markdown("##### 지금 강한 곳")
         lead = ev.get("leading_top3", [])
         if lead:
-            st.markdown("".join(basket_card(x, "#16a34a") for x in lead), unsafe_allow_html=True)
+            st.markdown("".join(basket_card(x, "#16a34a", active_coords) for x in lead), unsafe_allow_html=True)
         else:
             st.caption("지금 주도 사분면에 있는 섹터가 없습니다.")
         st.markdown("##### 다음 후보")
         ign = ev.get("igniting_top3", [])
         if ign:
-            st.markdown("".join(basket_card(x, "#2563eb") for x in ign), unsafe_allow_html=True)
+            st.markdown("".join(basket_card(x, "#2563eb", active_coords) for x in ign), unsafe_allow_html=True)
         else:
             st.caption("조건을 통과한 개선 사분면 섹터가 없습니다." if ev.get("igniting_excluded")
                        else "지금 개선 사분면에 있는 섹터가 없습니다.")
@@ -494,22 +550,41 @@ with col_sm3:
 # =====================================================================
 st.markdown("---")
 st.markdown("#### 실행 레이더")
-st.caption("시장 국면 게이트가 종목 신호의 실행 여부와 크기를 정합니다. 손절·비중 축소 같은 방어 행동은 어떤 국면에서도 막지 않습니다.")
+st.caption("오늘의 추세 판단(매매 틀 v2)을 보여 주고, 시장 국면 게이트가 진입 크기를 정합니다. 손절·비중 축소 같은 방어 행동은 어떤 국면에서도 막지 않습니다.")
+
+
+REGIME_PLAIN = {   # 지수 추세(레짐) 4단계 — engine/technical_signals.py 판정 규칙을 쉬운 말로
+    "추세 상승": "고점·저점이 높아지고 20·60일선 위에서 두 선 모두 오르는 중, 추세 강도(ADX) 25 이상",
+    "약한 상승·횡보": "아래 세 경우가 아닌 상태",
+    "하락": "고점·저점이 낮아지고 20일선 아래, 20일선도 내려가는 중",
+    "위기": "지수가 200일 지수이동평균선(EMA200) 아래",
+}
+
+
+def _regime_words(txt: str) -> str:
+    return str(txt or "").replace("지수 레짐", "지수 추세")
 
 
 def gate_box(title: str, g: dict) -> str:
     color = GATE_COLOR.get(g["level"], "#64748b")
+    binding = _regime_words(g["binding_component"])
+    if "지수 추세" in binding:   # 어떤 지수가 어떤 단계인지 덧붙인다 (예: 나스닥 ⚫ 위기)
+        lab = str((g.get("inputs") or {}).get("regime_label") or "")
+        stage = next((k for k in REGIME_PLAIN if k in lab), None)
+        if lab and stage:
+            binding = binding.replace("지수 추세", f"지수 추세 — {lab.replace('⚫ ', '').replace('🔴 ', '').replace('🟡 ', '').replace('🟢 ', '')}"
+                                                  f" ({REGIME_PLAIN[stage]})", 1)
     return (
         f"<div style='border:1px solid {color};border-left:6px solid {color};border-radius:6px;padding:10px 12px;'>"
         f"<div style='font-size:0.8rem;color:#64748b;'>{title}</div>"
         f"<div style='font-size:1.05rem;font-weight:700;color:{color};'>{g['code']} {g['name']}</div>"
         f"<div style='font-size:0.88rem;color:#0f172a;margin:2px 0;'>{g['action_summary']}</div>"
-        f"<div style='font-size:0.78rem;color:#475569;'>결정 요인: {g['binding_component']}</div>"
-        f"<div style='font-size:0.78rem;color:#475569;'>해제 조건: {g['release_condition']}</div>"
+        f"<div style='font-size:0.78rem;color:#475569;'>결정 요인: {binding}</div>"
+        f"<div style='font-size:0.78rem;color:#475569;'>해제 조건: {_regime_words(g['release_condition'])}</div>"
         + ("" if g.get("history_used") else
            "<div style='font-size:0.74rem;color:#ca8a04;'>이전 단계 기록 없음 — 오늘 지표만으로 판정</div>")
         +
-        f"<div style='font-size:0.74rem;color:#94a3b8;'>기준일 {g.get('as_of') or '데이터 없음'} · {g.get('source', '')}</div>"
+        f"<div style='font-size:0.74rem;color:#94a3b8;'>기준일 {g.get('as_of') or '데이터 없음'}</div>"
         f"</div>"
     )
 
@@ -519,162 +594,289 @@ with g_us:
     st.markdown(gate_box("미국 · 크립토 게이트", us_gate), unsafe_allow_html=True)
 with g_kr:
     st.markdown(gate_box("한국 게이트", kr_gate), unsafe_allow_html=True)
+with st.expander("지수 추세(레짐)란?", expanded=False):
+    st.markdown(
+        "레짐은 '지수가 지금 어떤 추세 상태인가'를 4단계로 나눈 것입니다. 미국 게이트는 나스닥(QQQ)·S&P 500(SPY) 중 더 나쁜 쪽, "
+        "한국 게이트는 KOSPI를 봅니다. 하루만 넘었다고 바로 바뀌지 않도록, 나빠질 때는 2거래일·좋아질 때는 3거래일 연속 확인합니다"
+        "(200일선 아래로 내려가는 '위기'는 바로 적용).\n\n"
+        + "\n".join(f"- **{k}**: {v}" for k, v in REGIME_PLAIN.items())
+        + "\n\n게이트는 이 지수 추세·변동성(VIX)·거시 국면 중 가장 나쁜 것을 따릅니다. 과거 검증에서 게이트는 이후 변동성·낙폭은 구분했지만 "
+        "이후 수익률은 구분하지 못했습니다 — 수익 예측이 아니라 위험 크기 조절용입니다."
+    )
 st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
 
-# 레이더 대상: '지금 강한 곳'·'다음 후보' 섹터 ETF의 상위 구성 종목 중 추세·상대강도 상위 (나중에 사용자 관심 종목을 앞에 추가)
-radar_baskets = engine.select_radar_baskets(ev) if ev else []
-radar_universe = []
-if radar_baskets:
-    radar_res = load_radar_signals(
-        tuple((b["basket"], b["basket_role"]) for b in radar_baskets),
-        float(st.session_state["total_equity"]), float(st.session_state["t_sleeve_ratio"]),
-    )
-    radar_universe = radar_res.get("universe", [])
-    if not radar_universe:
-        radar_res["fatal"] = "강한 섹터의 후보 종목 중 추세(50일선 위)를 통과한 종목이 없습니다"
-else:
-    no_basket_msg = ("지금 '주도'·'개선' 사분면에 있는 섹터가 없어 레이더 대상 종목이 없습니다" if rb.get("available")
-                     else "섹터 흐름 데이터가 없어 레이더 종목을 고르지 못했습니다")
-    radar_res = {"signals": [], "no_signal": [], "errors": [], "fatal": no_basket_msg}
-all_signals = radar_res["signals"]
-if baskets_eval and all_signals:
-    all_signals = engine.sync_radar_basket_badges({"all": all_signals}, baskets_eval)["all"]
-
-# 게이트 적용 후 '실행 / 관찰 / 방어 / 동결 / 장기보유 예외'로 다시 분류
-buckets = {"실행": [], "관찰": [], "방어": [], "동결": [], "예외": []}
-for sig in all_signals:
-    g = kr_gate if str(sig.get("market", "US")).upper() == "KR" else us_gate
-    if sig.get("earnings_blackout"):
-        # 실적 발표 임박: 게이트와 무관하게 신규 진입 보류 (종합 결론과 같은 규칙)
-        a = {**sig, "gate_applied": False, "orig_action": sig.get("action_text"), "orig_weight": 100,
-             "effective_action": sig.get("action_text"), "effective_weight": 0, "status": "EARNINGS_BLACKOUT",
-             "reason": f"실적 발표 D-{engine.TECH_PARAMS['EARNINGS_BLACKOUT_DAYS']} ~ 당일은 전 셋업 신규 진입 제한", "_gate": g}
-        buckets["동결"].append(a)
-        continue
-    a = engine.apply_gate_action_matrix(sig, g["level"])
-    a["_gate"] = g
-    if a["status"] == "DEFENSE_PRIORITY":
-        buckets["방어"].append(a)
-    elif a["status"] == "CORE_EXEMPT":
-        buckets["예외"].append(a)
-    elif a["status"] in ("BLOCKED", "FROZEN") or a.get("effective_weight", 0) == 0:
-        buckets["동결"].append(a)
-    elif sig.get("signal_type") == "T_WATCH":
-        buckets["관찰"].append(a)
-    else:
-        buckets["실행"].append(a)
+# 레이더: 신호 기록 장부(data/ledger/, 매일 아침 자동 기록)의 오늘 판정을 매매 틀 v2(틀 A) 기준으로 보여 준다.
+# 장부를 읽기만 하므로 빠르다. 기존 셋업 레이더(장기 검증 미통과)는 스위치를 켤 때만 계산한다.
+@st.cache_data(ttl=600, show_spinner=False)
+def load_latest_ledger() -> pd.DataFrame:
+    lg = engine.load_ledger()
+    if not len(lg):
+        return lg
+    return lg[lg["ledger_date"] == lg["ledger_date"].max()].copy()
 
 
-def fmt_px(v, currency) -> str:
-    """가격 표시: 미국 종목은 달러, 한국 종목은 원"""
-    if v is None:
-        return "-"
-    return f"${float(v):,.2f}" if currency == "USD" else f"{int(v):,}원"
+def _num_or(v, d=None):
+    try:
+        f = float(v)
+        return d if f != f else f
+    except (TypeError, ValueError):
+        return d
 
 
-def bt_text(a: dict) -> str:
-    """과거 검증(참고): 지금 신호와 같은 종류 셋업의 이 종목 과거 성적. 표본 수와 오차를 함께 표시."""
-    fam, bt = a.get("bt_family"), a.get("bt") or {}
-    if not fam:
-        return f"과거 검증(참고): {a.get('setup_id')} 셋업은 엔진 검증 대상이 아님"
-    label = "이격 반등" if fam == "ST-1" else "돌파"
-    min_n = engine.RADAR_CONFIG["BT_MIN_SAMPLE"]
-
-    def _one(d: dict) -> str:
-        n = (d or {}).get("sample_n", 0) or 0
-        if n < min_n:
-            return f"표본 부족({n}건)"
-        se = f" ±{d['se_r']:.2f}" if d.get("se_r") is not None else ""
-        return f"{n}건 · 승률 {d['win_rate']:.0f}% · 평균 {d['expectancy_r']:+.2f}R{se}"
-
-    pooled = a.get("bt_pooled") or {}
-    return (f"과거 검증(참고, 최근 2년 {label}) — 이 종목: {_one(bt)} / "
-            f"레이더 {pooled.get('n_tickers', 0)}종목 합산: {_one(pooled)}")
-
-
-def render_signal(a: dict, key_prefix: str):
-    g = a["_gate"]
-    color = GATE_COLOR.get(g["level"], "#64748b")
+def ledger_item(r, key_prefix: str, kind: str):
+    """장부 한 줄 → 레이더 카드(세 줄). kind: entry(상승 전환 의견) / watch(관찰) / hold(보유 점검)."""
+    mk = str(r.get("market") or "US").upper()
+    g = kr_gate if mk == "KR" else us_gate
+    sup, ag = int(_num_or(r.get("support"), 0)), int(_num_or(r.get("against"), 0))
+    lean = r.get("lean_label") or "데이터 없음"
+    lc = "#16a34a" if lean in ("전환 가능성 우세", "상승 추세 유지 우세") else ("#dc2626" if lean in ("실패 가능성 우세", "하락 전환 가능성 우세") else "#64748b")
+    words = ("유지", "하락 전환") if r.get("state") == "상승" else ("전환", "실패")
+    name = utils.TICKER_NAMES.get(str(r["ticker"]), "")
     st.markdown(
-        f"**{a.get('ticker', '데이터 없음')}** "
-        f"<span style='font-size:0.78rem;color:{color};border:1px solid {color};border-radius:4px;padding:0 5px;'>"
-        f"{str(a.get('market', 'US')).upper()} · {g['code']}</span>",
-        unsafe_allow_html=True,
-    )
-    st.caption(f"섹터 맥락: {a.get('basket_sync_badge') or a.get('basket', '')} · {a.get('basket_role', '')}")
-    if a.get("selection_note"):
-        st.caption(f"선정 이유: {a['selection_note']}")
-    if a.get("gate_applied"):
-        st.markdown(f"<span style='color:#94a3b8;'>원신호: <s>{a['orig_action']} (계획 비중의 {a['orig_weight']}%)</s></span>",
-                    unsafe_allow_html=True)
-    is_def = a.get("status") == "DEFENSE_PRIORITY"
-    hide_w = is_def or a.get("status") == "EARNINGS_BLACKOUT"
-    st.markdown(f"**{a['effective_action']}**" + ("" if hide_w else f" · 계획 비중의 {a.get('effective_weight', 0)}%"))
-    if a.get("entry") is not None and not is_def:
-        r_txt = f" · 예상 {a['expected_r']}R" if a.get("expected_r") is not None else ""
-        st.caption(f"진입 {fmt_px(a['entry'], a.get('currency'))} · 손절 {fmt_px(a.get('stop'), a.get('currency'))}"
-                   f" · 1차 목표 {fmt_px(a.get('target_1'), a.get('currency'))}{r_txt}")
-    st.caption(f"다음 실적 발표: {a['next_earnings']} (D-{a['days_to_earnings']})" if a.get("days_to_earnings") is not None
-               else "다음 실적 발표: 일정 미확인")
-    st.caption(f"근거: {a.get('headline', '')} · 상태: {a.get('state_label', '')}")
-    if not is_def and a.get("setup_id"):
-        st.caption(bt_text(a))
-        _vt = engine.setup_validation_text(a.get("bt_validation"))
-        if _vt:
-            st.caption(_vt)
-    if a.get("next_cond"):
-        st.caption(a["next_cond"])
-    st.caption(f"게이트: {a.get('reason', '')}")
-    st.caption(f"출처: {a.get('source', '')} · 기준일: {a.get('as_of') or '없음'}")
-    if st.button("딥다이브 →", key=f"{key_prefix}_{a.get('ticker')}_{a.get('market')}"):
-        st.session_state["selected_ticker"] = a.get("ticker")
+        f"**{r['ticker']}** <span style='font-size:0.8rem;color:#64748b;'>{name}</span> · "
+        f"<span style='color:{lc};font-weight:700;'>{lean}</span> "
+        f"<span style='font-size:0.82rem;color:#475569;'>({words[0]} {sup} · {words[1]} {ag})</span>",
+        unsafe_allow_html=True)
+    extra = []
+    if kind == "entry":
+        base = _num_or(r.get("size_mult"), 0.0)
+        gm = float(engine.PLAYBOOK_CONFIG["GATE_SIZE"].get(int(g["level"]), 0.0))
+        if gm > 0:
+            extra.append(f"크기 {base:.1f}배 × 국면 {g['code']} {gm:.1f} = {base * gm:.2f}배")
+        if str(r.get("chase_caution")).lower() == "true":
+            extra.append("추격 주의(종가가 20일선 + 2×ATR 위)")
+    st.caption(" · ".join([str(r.get("state_detail") or r.get("state") or "데이터 없음")] + extra))
+    if st.button("딥다이브 →", key=f"{key_prefix}_{r['ticker']}"):
+        st.session_state["selected_ticker"] = r["ticker"]
         st.switch_page("pages/1_🔎_종목_딥다이브.py")
 
 
-def render_radar():
-    order = ["방어", "실행", "관찰"] if top_level >= 3 else ["실행", "관찰", "방어"]
-    titles = {"실행": "실행", "관찰": "관찰", "방어": "방어 (손절·축소)"}
-    cols = st.columns(3)
-    for col, name in zip(cols, order):
-        with col:
-            st.markdown(f"##### {titles[name]}")
-            if not buckets[name]:
-                st.caption("해당 없음")
-            for i, a in enumerate(buckets[name]):
-                render_signal(a, f"{name}{i}")
-                st.markdown("<hr style='margin:6px 0;'>", unsafe_allow_html=True)
-    if buckets["동결"]:
-        with st.expander(f"게이트·실적 발표로 보류된 신호 {len(buckets['동결'])}건", expanded=False):
-            for i, a in enumerate(buckets["동결"]):
-                render_signal(a, f"frz{i}")
-                st.markdown("<hr style='margin:6px 0;'>", unsafe_allow_html=True)
-    if buckets["예외"]:
-        st.caption("장기 보유 예외 (게이트 미적용, 보유 유지): " + ", ".join(a.get("ticker", "") for a in buckets["예외"]))
-    if radar_res["no_signal"]:
-        with st.expander(f"지금 신호 없는 종목 {len(radar_res['no_signal'])}개", expanded=False):
-            st.dataframe(pd.DataFrame([
-                {"종목": r["ticker"], "섹터": r.get("basket"), "구분": r.get("basket_role"),
-                 "선정 이유": r.get("selection_note", ""),
-                 "상태": r.get("state_label", ""),
-                 "실적 발표": f"{r['next_earnings']} (D-{r['days_to_earnings']})" if r.get("days_to_earnings") is not None else "미확인",
-                 "사유": r.get("reason", "")}
-                for r in radar_res["no_signal"]
-            ]), width="stretch", hide_index=True)
+def ledger_column(df: pd.DataFrame, kind: str, empty: str, show_n: int = 6):
+    """한 칸: 위에서 show_n개를 보여 주고 나머지는 접어 둔다."""
+    if not len(df):
+        st.caption(empty)
+        return
+    rows = list(df.iterrows())
+    for i, (_, r) in enumerate(rows[:show_n]):
+        ledger_item(r, f"led_{kind}{i}", kind)
+    if len(rows) > show_n:
+        with st.expander(f"나머지 {len(rows) - show_n}개", expanded=False):
+            for i, (_, r) in enumerate(rows[show_n:], start=show_n):
+                ledger_item(r, f"led_{kind}{i}", kind)
 
 
-st.caption(f"대상: '지금 강한 곳'·'다음 후보' 섹터 ETF의 상위 구성 종목 중 추세(50일선 위)·3개월 상대강도 상위 {len(radar_universe)}개 · "
-           "T(추세매매) 신호만 표시 — V(가치 분할매수)는 종목 딥다이브에서 확인하세요.")
-st.caption("과거 검증은 엔진의 단순화된 검증(이격 반등·돌파만, 다음 날 시가 진입, 왕복 비용 0.3% 반영)입니다. "
-           "합산 대상은 '지금 강한 종목'만 모은 것이라 과거 성적이 실제보다 좋게 나올 수 있습니다. ± 는 평균의 오차(1 표준오차). "
-           "'장기 검증'은 섹터 ETF 2001년~ 결과로, 신호가 같은 매매 방식으로 아무 날에나 들어간 것보다 나은지 본 것입니다(data/backtest/SETUP_DIAG.md).")
-if radar_res.get("selection_log"):
-    with st.expander("종목 선정 과정 보기", expanded=False):
-        st.dataframe(pd.DataFrame(radar_res["selection_log"]), width="stretch", hide_index=True)
-        st.caption("후보 = 섹터 ETF 상위 구성 종목(미국·한국 상장만). 구성 데이터가 없으면 미리 정한 대표 종목으로 보충합니다.")
-if radar_res.get("fatal"):
-    st.warning(f"실행 레이더: {radar_res['fatal']}. 예시 신호로 대신 채우지 않습니다.")
+ledger_today = load_latest_ledger()
+radar_res = {"errors": []}   # 데이터 점검 칸이 쓰는 기존 레이더 오류 목록 (기존 레이더를 켜면 채워짐)
+if not len(ledger_today):
+    st.info("신호 기록 장부가 아직 없습니다. 매일 아침 GitHub Actions가 기록하면(ledger_daily.py) 여기에 표시됩니다.")
 else:
-    render_radar()
+    led_date = ledger_today["ledger_date"].max()
+    px_date = ledger_today["as_of"].max()
+    ver = ", ".join(sorted(ledger_today["version"].dropna().astype(str).unique()))
+    age = (pd.Timestamp.now(tz="Asia/Seoul").tz_localize(None).normalize() - pd.Timestamp(led_date)).days
+    if age > 3:
+        st.warning(f"신호 기록 장부의 마지막 기록이 {age}일 전({led_date.date()})입니다. GitHub Actions의 매일 실행(4-3 단계)을 확인해 주세요.")
+    judged = ledger_today[ledger_today["state"].notna()]
+    entry = judged[judged["entry_opinion"].astype(str).str.lower() == "true"].sort_values("diff", ascending=False)
+    watch = judged[judged["state"].isin(["하락", "횡보"]) & judged["lean_label"].isin(["전환 가능성 우세", "팽팽"])
+                   & ~judged.index.isin(entry.index)].sort_values("diff", ascending=False)
+    hold = judged[(judged["state"] == "상승") & (judged["lean_label"] == "하락 전환 가능성 우세")].sort_values("diff")
+    st.caption(f"기준일 {px_date.date()} · 미검증 의견",
+               help=(f"매매 틀 v2 · 틀 A(추세 판단과 전환 가능성). 신호 기록 장부 {led_date.date()} 기록, {len(judged)}종목, 규칙 {ver}. "
+                     "미검증 · 의견: 가격 기반 타이밍 규칙은 과거 검증에서 우위가 확인되지 않았고, 이 기록으로 앞으로 채점합니다"
+                     "(채점 방법은 미리 고정). 진입 크기는 국면 게이트로 줄입니다."))
+    # 국면 게이트가 신규 진입 크기를 0으로 만드는 시장은 칸 위에 한 번만 알린다
+    frozen = [f"{nm} {g['code']}" for nm, g, mk in (("미국", us_gate, "US"), ("한국", kr_gate, "KR"))
+              if float(engine.PLAYBOOK_CONFIG["GATE_SIZE"].get(int(g["level"]), 0.0)) == 0
+              and (judged["market"].astype(str).str.upper() == mk).any()]
+    cols = st.columns(3)
+    for col, (title, sub, df, kind, empty) in zip(cols, [
+        ("상승 전환 의견", "하락·횡보 중 전환 근거가 2 이상 많고 종가가 50일선 위", entry, "entry", "오늘 진입 의견 없음"),
+        ("관찰", "하락·횡보 중 근거가 팽팽하거나, 전환 우세지만 아직 진입 조건 전", watch, "watch", "해당 없음"),
+        ("보유 점검", "상승 추세인데 하락 전환 근거가 더 많음 — 보유 중이면 다음 날 시가 청산 규칙", hold, "hold", "해당 없음"),
+    ]):
+        with col:
+            st.markdown(f"##### {title} <span style='font-size:0.85rem;color:#64748b;font-weight:400;'>{len(df)}</span>",
+                        unsafe_allow_html=True)
+            st.caption(sub)
+            if kind == "entry" and frozen and len(df):
+                st.markdown(f"<div style='font-size:0.82rem;color:#b91c1c;margin-bottom:4px;'>국면 {' · '.join(frozen)}: "
+                            "신규 진입 크기 0 — 의견만 표시</div>", unsafe_allow_html=True)
+            ledger_column(df, kind, empty)
+    with st.expander(f"오늘 판정 전체 {len(ledger_today)}종목 보기", expanded=False):
+        tbl = ledger_today.assign(name=ledger_today["ticker"].astype(str).map(utils.TICKER_NAMES).fillna(""))
+        tbl = tbl[["ticker", "name", "market", "state", "lean_label", "support", "against", "diff", "entry_opinion",
+                            "est_up_30d", "est_down_30d", "band_z", "state_detail"]].rename(columns={
+            "ticker": "종목", "name": "이름", "market": "시장", "state": "추세", "lean_label": "전환 가능성", "support": "상승 쪽 근거",
+            "against": "하락 쪽 근거", "diff": "차이", "entry_opinion": "진입 의견", "est_up_30d": "추정치 상향(30일)",
+            "est_down_30d": "추정치 하향(30일)", "band_z": "자기 밴드 z", "state_detail": "추세 설명"})
+        st.dataframe(tbl.sort_values("차이", ascending=False), width="stretch", hide_index=True)
+        st.caption("상승 쪽 근거·하락 쪽 근거는 근거 저울 항목의 합(돌발 이벤트는 하락 쪽 2점). 확률이 아니라 근거 개수의 비교입니다.")
+
+show_legacy = st.toggle("기존 셋업 레이더 보기 (ST 셋업 스캐너 — 장기 검증 미통과, 계산에 수십 초)", value=False, key="show_legacy_radar")
+
+
+def legacy_radar():
+    """기존 셋업 스캐너 레이더(개편 전 방식). 스위치를 켤 때만 계산한다."""
+    # 레이더 대상: '지금 강한 곳'·'다음 후보' 섹터 ETF의 상위 구성 종목 중 추세·상대강도 상위 (나중에 사용자 관심 종목을 앞에 추가)
+    radar_baskets = engine.select_radar_baskets(ev) if ev else []
+    radar_universe = []
+    if radar_baskets:
+        radar_res = load_radar_signals(
+            tuple((b["basket"], b["basket_role"]) for b in radar_baskets),
+            float(st.session_state["total_equity"]), float(st.session_state["t_sleeve_ratio"]),
+        )
+        radar_universe = radar_res.get("universe", [])
+        if not radar_universe:
+            radar_res["fatal"] = "강한 섹터의 후보 종목 중 추세(50일선 위)를 통과한 종목이 없습니다"
+    else:
+        no_basket_msg = ("지금 '주도'·'개선' 사분면에 있는 섹터가 없어 레이더 대상 종목이 없습니다" if rb.get("available")
+                         else "섹터 흐름 데이터가 없어 레이더 종목을 고르지 못했습니다")
+        radar_res = {"signals": [], "no_signal": [], "errors": [], "fatal": no_basket_msg}
+    all_signals = radar_res["signals"]
+    if baskets_eval and all_signals:
+        all_signals = engine.sync_radar_basket_badges({"all": all_signals}, baskets_eval)["all"]
+
+    # 게이트 적용 후 '실행 / 관찰 / 방어 / 동결 / 장기보유 예외'로 다시 분류
+    buckets = {"실행": [], "관찰": [], "방어": [], "동결": [], "예외": []}
+    for sig in all_signals:
+        g = kr_gate if str(sig.get("market", "US")).upper() == "KR" else us_gate
+        if sig.get("earnings_blackout"):
+            # 실적 발표 임박: 게이트와 무관하게 신규 진입 보류 (종합 결론과 같은 규칙)
+            a = {**sig, "gate_applied": False, "orig_action": sig.get("action_text"), "orig_weight": 100,
+                 "effective_action": sig.get("action_text"), "effective_weight": 0, "status": "EARNINGS_BLACKOUT",
+                 "reason": f"실적 발표 D-{engine.TECH_PARAMS['EARNINGS_BLACKOUT_DAYS']} ~ 당일은 전 셋업 신규 진입 제한", "_gate": g}
+            buckets["동결"].append(a)
+            continue
+        a = engine.apply_gate_action_matrix(sig, g["level"])
+        a["_gate"] = g
+        if a["status"] == "DEFENSE_PRIORITY":
+            buckets["방어"].append(a)
+        elif a["status"] == "CORE_EXEMPT":
+            buckets["예외"].append(a)
+        elif a["status"] in ("BLOCKED", "FROZEN") or a.get("effective_weight", 0) == 0:
+            buckets["동결"].append(a)
+        elif sig.get("signal_type") == "T_WATCH":
+            buckets["관찰"].append(a)
+        else:
+            buckets["실행"].append(a)
+
+
+    def fmt_px(v, currency) -> str:
+        """가격 표시: 미국 종목은 달러, 한국 종목은 원"""
+        if v is None:
+            return "-"
+        return f"${float(v):,.2f}" if currency == "USD" else f"{int(v):,}원"
+
+
+    def bt_text(a: dict) -> str:
+        """과거 검증(참고): 지금 신호와 같은 종류 셋업의 이 종목 과거 성적. 표본 수와 오차를 함께 표시."""
+        fam, bt = a.get("bt_family"), a.get("bt") or {}
+        if not fam:
+            return f"과거 검증(참고): {a.get('setup_id')} 셋업은 엔진 검증 대상이 아님"
+        label = "이격 반등" if fam == "ST-1" else "돌파"
+        min_n = engine.RADAR_CONFIG["BT_MIN_SAMPLE"]
+
+        def _one(d: dict) -> str:
+            n = (d or {}).get("sample_n", 0) or 0
+            if n < min_n:
+                return f"표본 부족({n}건)"
+            se = f" ±{d['se_r']:.2f}" if d.get("se_r") is not None else ""
+            return f"{n}건 · 승률 {d['win_rate']:.0f}% · 평균 {d['expectancy_r']:+.2f}R{se}"
+
+        pooled = a.get("bt_pooled") or {}
+        return (f"과거 검증(참고, 최근 2년 {label}) — 이 종목: {_one(bt)} / "
+                f"레이더 {pooled.get('n_tickers', 0)}종목 합산: {_one(pooled)}")
+
+
+    def render_signal(a: dict, key_prefix: str):
+        g = a["_gate"]
+        color = GATE_COLOR.get(g["level"], "#64748b")
+        st.markdown(
+            f"**{a.get('ticker', '데이터 없음')}** "
+            f"<span style='font-size:0.78rem;color:{color};border:1px solid {color};border-radius:4px;padding:0 5px;'>"
+            f"{str(a.get('market', 'US')).upper()} · {g['code']}</span>",
+            unsafe_allow_html=True,
+        )
+        st.caption(f"섹터 맥락: {a.get('basket_sync_badge') or a.get('basket', '')} · {a.get('basket_role', '')}")
+        if a.get("selection_note"):
+            st.caption(f"선정 이유: {a['selection_note']}")
+        if a.get("gate_applied"):
+            st.markdown(f"<span style='color:#94a3b8;'>원신호: <s>{a['orig_action']} (계획 비중의 {a['orig_weight']}%)</s></span>",
+                        unsafe_allow_html=True)
+        is_def = a.get("status") == "DEFENSE_PRIORITY"
+        hide_w = is_def or a.get("status") == "EARNINGS_BLACKOUT"
+        st.markdown(f"**{a['effective_action']}**" + ("" if hide_w else f" · 계획 비중의 {a.get('effective_weight', 0)}%"))
+        if a.get("entry") is not None and not is_def:
+            r_txt = f" · 예상 {a['expected_r']}R" if a.get("expected_r") is not None else ""
+            st.caption(f"진입 {fmt_px(a['entry'], a.get('currency'))} · 손절 {fmt_px(a.get('stop'), a.get('currency'))}"
+                       f" · 1차 목표 {fmt_px(a.get('target_1'), a.get('currency'))}{r_txt}")
+        st.caption(f"다음 실적 발표: {a['next_earnings']} (D-{a['days_to_earnings']})" if a.get("days_to_earnings") is not None
+                   else "다음 실적 발표: 일정 미확인")
+        st.caption(f"근거: {a.get('headline', '')} · 상태: {a.get('state_label', '')}")
+        if not is_def and a.get("setup_id"):
+            st.caption(bt_text(a))
+            _vt = engine.setup_validation_text(a.get("bt_validation"))
+            if _vt:
+                st.caption(_vt)
+        if a.get("next_cond"):
+            st.caption(a["next_cond"])
+        st.caption(f"게이트: {a.get('reason', '')}")
+        st.caption(f"출처: {a.get('source', '')} · 기준일: {a.get('as_of') or '없음'}")
+        if st.button("딥다이브 →", key=f"{key_prefix}_{a.get('ticker')}_{a.get('market')}"):
+            st.session_state["selected_ticker"] = a.get("ticker")
+            st.switch_page("pages/1_🔎_종목_딥다이브.py")
+
+
+    def render_radar():
+        order = ["방어", "실행", "관찰"] if top_level >= 3 else ["실행", "관찰", "방어"]
+        titles = {"실행": "실행", "관찰": "관찰", "방어": "방어 (손절·축소)"}
+        cols = st.columns(3)
+        for col, name in zip(cols, order):
+            with col:
+                st.markdown(f"##### {titles[name]}")
+                if not buckets[name]:
+                    st.caption("해당 없음")
+                for i, a in enumerate(buckets[name]):
+                    render_signal(a, f"{name}{i}")
+                    st.markdown("<hr style='margin:6px 0;'>", unsafe_allow_html=True)
+        if buckets["동결"]:
+            with st.expander(f"게이트·실적 발표로 보류된 신호 {len(buckets['동결'])}건", expanded=False):
+                for i, a in enumerate(buckets["동결"]):
+                    render_signal(a, f"frz{i}")
+                    st.markdown("<hr style='margin:6px 0;'>", unsafe_allow_html=True)
+        if buckets["예외"]:
+            st.caption("장기 보유 예외 (게이트 미적용, 보유 유지): " + ", ".join(a.get("ticker", "") for a in buckets["예외"]))
+        if radar_res["no_signal"]:
+            with st.expander(f"지금 신호 없는 종목 {len(radar_res['no_signal'])}개", expanded=False):
+                st.dataframe(pd.DataFrame([
+                    {"종목": r["ticker"], "섹터": r.get("basket"), "구분": r.get("basket_role"),
+                     "선정 이유": r.get("selection_note", ""),
+                     "상태": r.get("state_label", ""),
+                     "실적 발표": f"{r['next_earnings']} (D-{r['days_to_earnings']})" if r.get("days_to_earnings") is not None else "미확인",
+                     "사유": r.get("reason", "")}
+                    for r in radar_res["no_signal"]
+                ]), width="stretch", hide_index=True)
+
+
+    st.caption(f"대상: '지금 강한 곳'·'다음 후보' 섹터 ETF의 상위 구성 종목 중 추세(50일선 위)·3개월 상대강도 상위 {len(radar_universe)}개 · "
+               "T(추세매매) 신호만 표시 — V(가치 분할매수)는 종목 딥다이브에서 확인하세요.")
+    st.caption("과거 검증은 엔진의 단순화된 검증(이격 반등·돌파만, 다음 날 시가 진입, 왕복 비용 0.3% 반영)입니다. "
+               "합산 대상은 '지금 강한 종목'만 모은 것이라 과거 성적이 실제보다 좋게 나올 수 있습니다. ± 는 평균의 오차(1 표준오차). "
+               "'장기 검증'은 섹터 ETF 2001년~ 결과로, 신호가 같은 매매 방식으로 아무 날에나 들어간 것보다 나은지 본 것입니다(data/backtest/SETUP_DIAG.md).")
+    if radar_res.get("selection_log"):
+        with st.expander("종목 선정 과정 보기", expanded=False):
+            st.dataframe(pd.DataFrame(radar_res["selection_log"]), width="stretch", hide_index=True)
+            st.caption("후보 = 섹터 ETF 상위 구성 종목(미국·한국 상장만). 구성 데이터가 없으면 미리 정한 대표 종목으로 보충합니다.")
+    if radar_res.get("fatal"):
+        st.warning(f"실행 레이더: {radar_res['fatal']}. 예시 신호로 대신 채우지 않습니다.")
+    else:
+        render_radar()
+    return radar_res
+
+
+if show_legacy:
+    radar_res = legacy_radar()
 
 # =====================================================================
 # 6. 데이터 점검 (접이식)

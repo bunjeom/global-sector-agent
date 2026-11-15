@@ -817,6 +817,24 @@ with tab_syn:
 # [탭 1] 기술적 분석 트랙 v1.2[cite: 1]
 # =====================================================================
 with tab_t1:
+    # 매매 틀 v2 틀 A 요약 (새 기술 판단) — 아래 기존 셋업 진단보다 앞에 둔다
+    if frame_a.get("available"):
+        _lab = frame_a["lean"]["label"]
+        _lc = "#16a34a" if _lab in ("전환 가능성 우세", "상승 추세 유지 우세") else ("#dc2626" if _lab in ("실패 가능성 우세", "하락 전환 가능성 우세") else "#64748b")
+        html_md(f"""
+        <div class="term-card" style="border-left:4px solid {_lc};">
+            <div>{utils.line_icon("activity", 16)}<b>매매 틀 v2 · 틀 A 추세 판단</b> <span class="term-badge">트레이딩 · 의견 · 미검증</span></div>
+            <div style="margin-top:6px;"><span class="term-badge-inv">{_esc(frame_a["state"])}</span> {_esc(frame_a.get("state_detail"))}</div>
+            <div style="margin-top:4px;"><b>{_esc(frame_a["lean"]["direction"])}:</b> <span style="color:{_lc};font-weight:700;">{_esc(_lab)}</span>
+                ({_esc(frame_a["pos_word"])} {frame_a["support"]} · {_esc(frame_a["neg_word"])} {frame_a["against"]}) · 의견: {_esc(frame_a["opinion"]["label"])}</div>
+            <div style="font-size:0.82rem;color:#64748b;margin-top:4px;">근거 항목과 스윙 고점·저점은 종합 탭의 틀 A 카드에 있습니다.</div>
+        </div>
+        """)
+    else:
+        st.caption(f"매매 틀 v2 · 틀 A: 판정 불가 — {frame_a.get('reason')}")
+    chart_heading("기존 셋업 진단 (7상태 기계·6대 판정 모듈·T 티켓 — 장기 검증 미통과)")
+    st.caption("기존 셋업(ST-1·ST-2)은 섹터 ETF 2001년~ 장기 검증에서 같은 매매 방식의 무작위 진입보다 낫지 않았습니다(data/backtest/SETUP_DIAG.md). "
+               "차트·수평 저항 구간·레벨 맵은 위험 관리 참고용으로 둡니다.")
     banner = tech_out["summary_banner"]
     t_ticket = tech_out["t_ticket"]
     lc = tech_out["lifecycle_state"]
@@ -1065,6 +1083,8 @@ with tab_t1:
                     평균 이익: <b>+{bt["avg_win_r"]}R</b> · 평균 손실: <b>-{bt["avg_loss_r"]}R</b> ·
                     기대값(E): <b>{bt["expectancy_r"]}R</b> · 최대 연속 손실: <b>{bt["max_loss_streak"]}회</b>
                 </div>
+                <div style="font-size:0.82rem;color:#92400e;margin-top:6px;">⚠ 이 종목 최근 자료만으로 계산한 표본 {bt["sample_n"]}회입니다{" — 표본이 적어 우연과 구별하기 어렵습니다" if (bt.get("sample_n") or 0) < 30 else ""}.
+                    같은 셋업을 섹터 ETF 2001년~ 장기 검증했을 때는 무작위 진입보다 낫지 않았습니다(SETUP_DIAG). 참고로만 보세요.</div>
             </div>
             """)
 

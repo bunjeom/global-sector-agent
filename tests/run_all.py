@@ -36,6 +36,7 @@ ENGINE_TESTS = [
     ("틀 B 저평가 매수 검증 (SEC 공시일 기준 EPS·거래 손 계산)", "test_frame_b.py", [], {}),
     ("매매 틀 v2 판정 (추세 상태·근거 저울·틀 B 단계)", "test_playbook.py", [], {}),
     ("신호 기록 장부 (하루 기록·중복 없음·채점 손 계산)", "test_ledger.py", [], {}),
+    ("섹터 흐름 그래프 (축 밖 꼬리·축 범위·라벨 위치)", "test_rrg_chart.py", [], {}),
 ]
 
 PAGE_TESTS = [
@@ -46,6 +47,11 @@ PAGE_TESTS = [
     ("화면: 이익 급변형 PER 밴드", "test_page.py", ["full", "NVDA"], {"VMODE": "full", "BANDSERIES": "nvda"}),
     ("화면: 가치·금리·거시 일부만 받음", "test_page.py", ["full", "NVDA"], {"VMODE": "partial", "MACROMODE": "partial"}),
     ("화면: 가치·금리·거시 모두 못 받음", "test_page.py", ["full", "NVDA"], {"VMODE": "none", "RFMODE": "off", "MACROMODE": "off"}),
+    ("홈: 장부 기반 실행 레이더 (칸 나누기·크기 안내)", "test_home.py", ["ledger"], {}),
+    ("홈: 장부 없음 안내", "test_home.py", ["empty"], {}),
+    ("홈: 오래된 장부 경고", "test_home.py", ["stale"], {}),
+    ("홈: 기존 셋업 레이더 스위치", "test_home.py", ["legacy"], {}),
+    ("홈: 국면 크기 0 알림 한 번만", "test_home.py", ["frozen"], {}),
 ]
 
 

@@ -24,7 +24,8 @@ RRG_CONFIG = {
     },
     "EMA_SPAN": 3,
     "NEUTRAL_THRESHOLD": 0.25,  # |X| < 0.25 and |Y| < 0.25 -> 중립
-    "AXIS_LIMIT": 3.0,          # 차트 고정 범위 [-3, 3] sigma
+    "AXIS_LIMIT": 3.0,          # 차트 기본 범위 [-3, 3] sigma (현재 위치가 밖이면 화면만 AXIS_LIMIT_MAX까지 넓힘)
+    "AXIS_LIMIT_MAX": 6.0,
     "CHART_HEIGHT": 540,        # 우측 Top 3 카드 열과 맞춘 고정 픽셀 높이
     "MIN_OBS_RATIO": 0.8,       # 표본 짧음 판정 기준
     "COMPARE_LOG_PATH": "logs/rrg_compare.csv",
@@ -156,6 +157,7 @@ def rrg_coordinates(prices: pd.DataFrame, bench: pd.Series, clock: str = "daily"
         tail_indices.reverse()
         tail_x = [float(valid_xy["x"].iloc[i]) for i in tail_indices]
         tail_y = [float(valid_xy["y"].iloc[i]) for i in tail_indices]
+        tail_dates = [str(pd.Timestamp(valid_xy.index[i]).date()) for i in tail_indices]
 
         move_4w_x = cur_x - tail_x[0] if len(tail_x) >= 2 else 0.0
         move_4w_y = cur_y - tail_y[0] if len(tail_y) >= 2 else 0.0
@@ -164,11 +166,47 @@ def rrg_coordinates(prices: pd.DataFrame, bench: pd.Series, clock: str = "daily"
         out[basket] = {
             "x": cur_x, "y": cur_y, "quadrant": quad,
             "x_series": x_ser, "y_series": y_ser,
-            "tail_x": tail_x, "tail_y": tail_y,
+            "tail_x": tail_x, "tail_y": tail_y, "tail_dates": tail_dates,
             "short_sample": short_sample, "obs_count": total_obs,
             "move_4w_x": move_4w_x, "move_4w_y": move_4w_y
         }
     return out
+
+
+def describe_rrg_tail(tail_x: list, tail_y: list, move_th: float = 0.25) -> dict:
+    """꼬리(최근 몇 주의 위치 기록)를 말로 풀어 쓴다. 화면 설명용이며 판정에는 쓰지 않는다.
+
+    - path: 지나온 사분면 순서(연속 중복 제거), 예: ['소외', '개선', '주도']
+    - last_week: 마지막 한 칸(1주) 동안 X(지수 대비 강도)·Y(강해지는 속도)가 어떻게 바뀌었는지
+    - heading: 최근 1주와 같은 방향·같은 크기로 1주 더 움직였다고 가정할 때 닿는 사분면(예측이 아니라 지금 방향의 표시)
+    move_th: 이보다 작은 변화(σ)는 '비슷'으로 본다(사분면 중립 폭과 같은 값)."""
+    n = min(len(tail_x or []), len(tail_y or []))
+    if n < 2:
+        return {"available": False, "reason": "꼬리 점 부족"}
+    qs = [classify_rrg_quadrant(tail_x[i], tail_y[i]) for i in range(n)]
+    path = [q for i, q in enumerate(qs) if i == 0 or q != qs[i - 1]]
+    dx, dy = tail_x[-1] - tail_x[-2], tail_y[-1] - tail_y[-2]
+
+    def word(v, up, down):
+        return up if v > move_th else (down if v < -move_th else "비슷")
+    x_word = word(dx, "높아짐", "낮아짐")
+    y_word = word(dy, "빨라짐", "느려짐")
+    cur_q = qs[-1]
+    nxt_q = classify_rrg_quadrant(tail_x[-1] + dx, tail_y[-1] + dy)
+    if x_word == "비슷" and y_word == "비슷":
+        heading, change = "거의 제자리", False
+    elif nxt_q == cur_q:
+        heading, change = f"{cur_q} 칸에 머묾", False
+    else:
+        heading, change = f"{nxt_q} 칸으로 넘어감", True
+    path_txt = (f"{n - 1}주 내내 {path[0]}" if len(path) == 1 else " → ".join(path))
+    return {
+        "available": True, "path": path, "path_text": path_txt, "weeks": n - 1,
+        "start": (float(tail_x[0]), float(tail_y[0])), "end": (float(tail_x[-1]), float(tail_y[-1])),
+        "dx_1w": float(dx), "dy_1w": float(dy), "x_word": x_word, "y_word": y_word,
+        "last_week_text": f"지수 대비 강도 {x_word} · 강해지는 속도 {y_word}",
+        "heading": heading, "heading_quadrant": nxt_q, "heading_change": change,
+    }
 
 
 def diagnose_rrg_axes(prices: pd.DataFrame, bench: pd.Series) -> dict:
@@ -415,15 +453,17 @@ def evaluate_basket_grades(
 # ------------------------------------------------------------------------------
 # 4. 8방향 라벨 배치 및 바운딩 박스 충돌 방지: place_labels(points, fig_size)
 # ------------------------------------------------------------------------------
-def place_labels(points: list[dict], fig_size: tuple[int, int] = (700, 540)) -> dict:
+def place_labels(points: list[dict], fig_size: tuple[int, int] = (700, 540), lim: float = None) -> dict:
     """
     점들의 화면 픽셀 좌표를 계산해 8방향 후보 중 겹치지 않는 위치를 배정.
     - 원점에서 먼 순서대로 우선 배치
     - 8방향 모두 겹치면 짧은 지시선(leader line)과 함께 외곽으로 밀어냄
     - 그래도 겹치면 라벨을 숨기고 hidden_count 증가
+    - dx, dy: 라벨 중심의 픽셀 오프셋(dy는 아래가 +). 지시선 없이 그릴 때는 plotly의 xshift=dx, yshift=-dy로 옮긴다
+      (showarrow=False이면 plotly가 ax·ay를 무시해 라벨이 점 위에 겹친다)
     """
     width, height = fig_size
-    lim = RRG_CONFIG["AXIS_LIMIT"]
+    lim = float(lim or RRG_CONFIG["AXIS_LIMIT"])   # 화면 축 범위(차트가 넓힌 경우 같은 값을 넘겨야 픽셀 위치가 맞음)
     pad_x, pad_y = 55, 45
     plot_w = max(200, width - 2 * pad_x)
     plot_h = max(200, height - 2 * pad_y)

@@ -137,8 +137,9 @@ def _gate_release_condition(comps: dict, level: int) -> str:
             k = f"G{level}"
             parts.append(f"VIX 백분위 {cfg_v[k + '_PERCENTILE']:.0f} 미만 & VIX {cfg_v[k + '_ABSOLUTE']:.0f} 미만")
         elif key == "regime":
-            target = {3: "'하락'", 2: "'약한 상승·횡보'", 1: "'추세 상승'"}[level]
-            parts.append(f"지수 레짐 {target}으로 회복")
+            parts.append({3: "지수가 200일선(EMA200) 위로 올라와 지수 레짐이 '위기'를 벗어남",
+                          2: "지수 레짐이 '하락'에서 '약한 상승·횡보' 이상으로 회복",
+                          1: "지수 레짐이 '추세 상승'으로 회복"}[level])
         else:
             parts.append("거시 국면 한 단계 완화")
     if not parts:
