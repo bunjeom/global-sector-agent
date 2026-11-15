@@ -17,6 +17,7 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+TIMEOUT_SEC = 600   # 검사 하나의 최대 시간
 REPO = os.path.dirname(HERE)
 
 # (이름, 스크립트, 인자, 추가 환경변수)
@@ -62,8 +63,16 @@ def run(name, script, args, extra_env, verbose):
     env["PYTHONIOENCODING"] = "utf-8"   # Windows 콘솔(cp949)에서 이모지·한글 출력 오류 방지
     env["PYTHONUTF8"] = "1"
     t0 = time.time()
-    proc = subprocess.run([sys.executable, os.path.join(HERE, script)] + args, cwd=REPO, env=env,
-                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
+    try:
+        proc = subprocess.run([sys.executable, os.path.join(HERE, script)] + args, cwd=REPO, env=env,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_SEC)
+    except subprocess.TimeoutExpired as e:   # 한 검사가 멈춰도 실행기 전체가 죽지 않고 '시간 초과'로 기록하고 다음으로 넘어간다
+        print(f"  실패  {name}  (시간 초과 {TIMEOUT_SEC}초 — 멈춘 곳은 아래 마지막 출력)", flush=True)
+        part = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        tail = "\n".join(part.strip().splitlines()[-15:]) or "(출력 없음)"
+        print("      " + tail.replace("\n", "\n      "))
+        print(f"      → 따로 실행해 확인: .venv\\Scripts\\python tests\\{script} {' '.join(args)}")
+        return False
     ok = proc.returncode == 0
     print(f"  {'통과' if ok else '실패'}  {name}  ({time.time() - t0:.0f}초)", flush=True)
     if verbose or not ok:

@@ -74,9 +74,10 @@ def main():
         s = engine.evaluate_survival(ocf=v.get("ocf_ttm_krw"), fcf=v.get("fcf_ttm_krw"), liquid=liquid,
                                      current_debt=v.get("current_debt_krw"), dilution=v.get("share_dilution_yoy"),
                                      is_financial=v["is_financial_sector"], capex=v.get("capex_ttm_krw"),
-                                     debt_change=v.get("debt_change_1y_krw"), is_krx=v["_is_krx"])
+                                     debt_change=v.get("debt_change_1y_krw"), is_krx=v["_is_krx"],
+                                     captive_finance=engine.SURVIVAL_CONFIG["CAPTIVE_FINANCE"].get(t.upper()))
         new = ("킬 (" + ", ".join(s["kill_reasons"]) + ")") if s["kill"] else ("경고 (" + ", ".join(s["warn_reasons"]) + ")" if s["warning"]
-                                                                              else ("해당 없음" if not s["applicable"] else "-"))
+                                                                              else (("판정 보류" if "판정 보류" in s["runway_text"] else "해당 없음") if not s["applicable"] else "-"))
         rows.append((t, v["_sector"], v1_verdict(v), new, s["runway_text"], s["coverage_text"], s["dilution_text"]))
         print(f"{t:10s} | 예전: {rows[-1][2]:28s} | 새: {new}")
     changed = [r for r in rows if r[2].startswith("킬") != r[3].startswith("킬")]

@@ -53,8 +53,15 @@ chk("3-3 상환 여력 1.29배: 경고, 킬 아님", c3["coverage_ratio"] == 1.2
 c4 = S(ocf=None, fcf=1.0, liquid=3.0, current_debt=8.0, dilution=0.0)          # 영업현금 모름 → 킬 안 함, 경고
 chk("3-4 영업현금 모름: 현금만 0.38배 → 경고만", c4["coverage_ratio"] == 0.38 and c4["warning"] and not c4["kill"], c4["coverage_text"])
 
-# 4) 희석 20% → 킬, 8% → 경고, 3% → 양호
-chk("4 희석 20%: 하드 킬", S(ocf=10.0, fcf=5.0, liquid=10.0, current_debt=1.0, dilution=0.20)["kill"])
+# 4) 희석 (v2.1): 킬은 영업현금 또는 FCF가 적자일 때만, 흑자 기업의 희석은 경고, 현금흐름 모르면 경고
+chk("4 희석 20% + FCF 적자: 하드 킬", S(ocf=10.0, fcf=-5.0, liquid=100.0, current_debt=1.0, dilution=0.20)["kill"])
+m = S(ocf=-0.007 * B, fcf=-17.4 * B, liquid=5.9 * B, current_debt=1.0 * B, dilution=0.357)       # MSTR형
+chk("4-1 MSTR형(영업현금 적자, 희석 36%): 하드 킬(희석 사유 포함)", m["kill"] and any("희석" in r for r in m["kill_reasons"]))
+pw = S(ocf=4.8 * B, fcf=4.1 * B, liquid=3.0 * B, current_debt=None, dilution=0.152)              # PANW형(인수 대가 주식 발행)
+print("  PANW형:", pw["dilution_text"])
+chk("4-1b PANW형(FCF 흑자, 희석 15.2%): 경고, 킬 아님", not pw["kill"] and pw["warning"] and "흑자 기업의 희석" in pw["dilution_text"])
+un = S(ocf=None, fcf=None, liquid=None, current_debt=None, dilution=0.20)
+chk("4-1c 현금흐름 모름 + 희석 20%: 경고만", not un["kill"] and un["warning"] and "미확인" in un["dilution_text"])
 d8 = S(ocf=10.0, fcf=5.0, liquid=10.0, current_debt=1.0, dilution=0.08)
 chk("4-2 희석 8%: 경고", d8["warning"] and not d8["kill"])
 chk("4-3 희석 3%: 경고 없음", not S(ocf=10.0, fcf=5.0, liquid=10.0, current_debt=1.0, dilution=0.03)["warning"])
@@ -62,6 +69,14 @@ chk("4-3 희석 3%: 경고 없음", not S(ocf=10.0, fcf=5.0, liquid=10.0, curren
 # 5) 은행형: 금융업이면 지표가 나빠 보여도 해당 없음
 e = S(ocf=-50 * B, fcf=-60 * B, liquid=10 * B, current_debt=300 * B, dilution=0.0, is_financial=True)
 chk("5 은행형: 해당 없음(킬·경고 없음)", not e["kill"] and not e["warning"] and e["applicable"] is False and "금융업" in e["runway_text"])
+
+# 5-2) 금융 자회사 포함 연결(현대차형): 지표가 나빠 보여도 판정 보류
+hy = S(ocf=-6.0e12, fcf=-14.4e12, liquid=24.2e12, current_debt=44.1e12, dilution=-0.005, is_krx=True,
+       captive_finance=engine.SURVIVAL_CONFIG["CAPTIVE_FINANCE"]["005380.KS"])
+print("  현대차형:", hy["runway_text"])
+chk("5-2 금융 자회사 연결: 판정 보류(킬·경고 없음)", not hy["kill"] and not hy["warning"] and hy["applicable"] is False and "판정 보류" in hy["runway_text"])
+chk("5-3 목록은 원칙 목록(현대차·CAT 포함, 기아 미포함)", "005380.KS" in engine.SURVIVAL_CONFIG["CAPTIVE_FINANCE"]
+    and "CAT" in engine.SURVIVAL_CONFIG["CAPTIVE_FINANCE"] and "000270.KS" not in engine.SURVIVAL_CONFIG["CAPTIVE_FINANCE"])
 
 # 6) 자료 부족: FCF 적자인데 현금 모름 → '데이터 없음', 단정 안 함
 f = S(ocf=None, fcf=-10.0, liquid=None, current_debt=None, dilution=None)
@@ -119,6 +134,16 @@ fs = v["financial_survival"]
 print("  V 트랙:", fs["fcf_runway_years"], "|", fs["coverage_text"], "| 비중 상한", v.get("position_cap"))
 chk("9 V 트랙: 하드 킬 없음 + 경고", fs["survival_kill"] is False and fs["survival_warning"] is True, fs)
 chk("9 V 트랙: 버전 표시", fs.get("version") == engine.SURVIVAL_CONFIG["VERSION"])
+engine.fetch_real_fundamental_inputs = lambda t, p: {"values": dict(FULL), "meta": {"source": "test", "notes": [], "missing": [],
+                                                                                    "band_basis": "후행", "band_points": 36, "peer_count": 0}}
+try:
+    vc = engine.analyze_fundamental_track("CAT", 120.0, fake_earn("forward", False, regime="G2", sector="구조성장형"),
+                                          {"rf_10y": 0.042, "market_erp": 0.055}, None)
+finally:
+    engine.fetch_real_fundamental_inputs = _orig_fetch
+fc = vc["financial_survival"]
+chk("9-2 V 트랙: 금융 자회사 목록 종목(CAT)은 판정 보류, 경고 없음", fc["applicable"] is False and not fc["survival_warning"]
+    and "판정 보류" in fc["fcf_runway_years"], fc)
 
 print(f"\n결과: {'통과' if not FAILS else '실패 ' + str(FAILS)}")
 sys.exit(1 if FAILS else 0)

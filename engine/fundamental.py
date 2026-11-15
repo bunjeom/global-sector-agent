@@ -296,13 +296,22 @@ def _dart_annual_block(dart: Any, code6: str, cache: Dict[Tuple[int, str], Any],
 # v2는 기준 숫자(1·2년, 15%·5%)는 그대로 두고 '무엇을 재는지'만 바로잡았다. 결과를 보고 숫자를 바꾸지 않는다.
 # ---------------------------------------------------------------------
 SURVIVAL_CONFIG = {
-    "VERSION": "생존성 v2 (2026-11-15)",
+    "VERSION": "생존성 v2.1 (2026-11-15)",
     "RUNWAY_KILL_YEARS": 1.0,    # 영업이 현금을 태울 때: 보유 현금 ÷ FCF 적자 < 1년 → 하드 킬
     "RUNWAY_WARN_YEARS": 2.0,    # < 2년 → 경고
     "COVERAGE_KILL": 1.0,        # (보유 현금 + 12개월 영업현금) ÷ 1년 내 만기 차입 < 1.0배 → 하드 킬
     "COVERAGE_WARN": 1.5,        # < 1.5배 → 경고
     "DILUTION_KILL": 0.15,       # 희석 주식수 1년 증가율 > 15% → 하드 킬
     "DILUTION_WARN": 0.05,       # > 5% → 경고
+    # v2.1: 희석 하드 킬은 '새 주식을 찍어 버티는' 경우(영업현금 또는 FCF 적자)에만. 흑자 기업의 희석(인수 대가·보상 등)은 경고.
+    # 영업현금·FCF를 모두 모르면 단정하지 않고 경고만.
+    # v2.1: 연결 재무제표에 대형 금융 자회사(할부·리스·카드)를 포함하는 회사는 차입·영업현금이 금융업 숫자에 섞여
+    # 제조 부문의 생존성을 잴 수 없다 → '판정 보류'. 원칙으로 정한 목록이며(결과로 고르지 않음), 추가하면 VERSION을 올린다.
+    "CAPTIVE_FINANCE": {
+        "005380.KS": "현대캐피탈·현대카드 연결", "CAT": "Cat Financial 연결", "DE": "John Deere Financial 연결",
+        "F": "Ford Credit 연결", "GM": "GM Financial 연결", "PCAR": "PACCAR Financial 연결",
+        "TM": "Toyota Financial Services 연결", "HMC": "American Honda Finance 연결", "HOG": "Harley-Davidson Financial 연결",
+    },
 }
 
 
@@ -322,7 +331,7 @@ def fmt_amount(v: Any, is_krx: bool) -> str:
 def evaluate_survival(ocf: Optional[float], fcf: Optional[float], liquid: Optional[float],
                       current_debt: Optional[float], dilution: Optional[float], is_financial: bool = False,
                       capex: Optional[float] = None, debt_change: Optional[float] = None,
-                      is_krx: bool = False) -> Dict[str, Any]:
+                      is_krx: bool = False, captive_finance: Optional[str] = None) -> Dict[str, Any]:
     """재무 생존성 3지표 판정 (숫자로 판정, 문구는 표시용). 금액 단위는 종목 통화(원·달러).
 
     ① 런웨이: FCF 흑자면 해당 없음. FCF 적자이면서
@@ -330,8 +339,9 @@ def evaluate_survival(ocf: Optional[float], fcf: Optional[float], liquid: Option
         - 영업현금 ≥ 0 (설비투자가 영업현금을 넘음) → 킬 아님, '투자 지출로 FCF 적자' 경고
     ② 차입 상환 여력: (보유 현금 + 영업현금) ÷ 1년 내 만기 차입. 킬 < 1.0배, 경고 < 1.5배.
         영업현금을 모르면 보유 현금만으로 계산하고 킬은 걸지 않는다(경고만, < 1.0배).
-    ③ 희석: 킬 > 15%, 경고 > 5%.
-    금융업(은행·보험·증권)은 예금·차입이 영업 자체라 이 지표가 맞지 않아 '해당 없음'(자본비율 미연결)."""
+    ③ 희석: 경고 > 5%. 킬 > 15%는 영업현금 또는 FCF가 적자일 때만(새 주식을 찍어 버팀). 흑자 기업의 희석은 경고.
+    금융업(은행·보험·증권)은 예금·차입이 영업 자체라 이 지표가 맞지 않아 '해당 없음'(자본비율 미연결).
+    captive_finance(금융 자회사 연결 설명 문구)가 있으면 '판정 보류'."""
     C = SURVIVAL_CONFIG
     fa = lambda v: fmt_amount(v, is_krx)
     out: Dict[str, Any] = {"version": C["VERSION"], "kill": False, "warning": False, "kill_reasons": [], "warn_reasons": [],
@@ -341,6 +351,11 @@ def evaluate_survival(ocf: Optional[float], fcf: Optional[float], liquid: Option
     if is_financial:
         out.update(applicable=False, runway_text="해당 없음 (금융업 — 자본비율로 봐야 함, 미연결)",
                    coverage_text="해당 없음 (금융업)", dilution_text="해당 없음 (금융업)")
+        return out
+    if captive_finance:
+        why = f"판정 보류 (금융 자회사 포함 연결 — {captive_finance}, 제조 부문만 따로 보는 자료 미연결)"
+        out.update(applicable=False, runway_text=why, coverage_text="판정 보류 (금융 자회사 포함 연결)",
+                   dilution_text="판정 보류 (금융 자회사 포함 연결)")
         return out
 
     # ① 런웨이
@@ -413,10 +428,17 @@ def evaluate_survival(ocf: Optional[float], fcf: Optional[float], liquid: Option
     if dilution is not None:
         out["checked_count"] += 1
         d = float(dilution)
-        if d > C["DILUTION_KILL"]:
+        cash_deficit = (ocf is not None and ocf < 0) or (fcf is not None and fcf < 0)
+        cash_known = ocf is not None or fcf is not None
+        if d > C["DILUTION_KILL"] and cash_deficit:
             out["kill"] = True
-            out["kill_reasons"].append(f"주식 희석 {d * 100:.1f}% > {C['DILUTION_KILL'] * 100:.0f}%")
+            out["kill_reasons"].append(f"주식 희석 {d * 100:.1f}% > {C['DILUTION_KILL'] * 100:.0f}% (현금흐름 적자 — 새 주식으로 버팀)")
             tag = "하드 킬"
+        elif d > C["DILUTION_KILL"]:
+            out["warning"] = True
+            out["warn_reasons"].append(f"주식 희석 {d * 100:.1f}% > {C['DILUTION_KILL'] * 100:.0f}%")
+            tag = ("경고 — 현금흐름 흑자 기업의 희석(인수 대가·보상 등), 하드 킬 아님" if cash_known
+                   else "경고 — 현금흐름 미확인이라 킬 단정 안 함")
         elif d > C["DILUTION_WARN"]:
             out["warning"] = True
             out["warn_reasons"].append(f"주식 희석 {d * 100:.1f}% > {C['DILUTION_WARN'] * 100:.0f}%")
@@ -922,7 +944,8 @@ def analyze_fundamental_track(
     surv = evaluate_survival(
         ocf=f.get("ocf_ttm_krw"), fcf=fcf_ttm, liquid=liquid, current_debt=f.get("current_debt_krw"),
         dilution=dilution_yoy, is_financial=bool(f.get("is_financial_sector")), capex=f.get("capex_ttm_krw"),
-        debt_change=f.get("debt_change_1y_krw"), is_krx=is_krx)
+        debt_change=f.get("debt_change_1y_krw"), is_krx=is_krx,
+        captive_finance=SURVIVAL_CONFIG["CAPTIVE_FINANCE"].get(str(ticker).upper()))
     runway_str = surv["runway_text"]
     dilution_warn = bool(dilution_yoy is not None and dilution_yoy > SURVIVAL_CONFIG["DILUTION_WARN"] and surv["applicable"])
     survival_warning = bool(surv["warning"])
