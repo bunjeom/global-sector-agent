@@ -1,7 +1,8 @@
-ticker,group,group_name,note
+﻿ticker,group,group_name,note
 # 피어 묶음 직접 지정 (engine/peers.py가 읽음). 여기 있는 종목은 야후 산업 자동 분류보다 이 지정을 따른다.
 # group이 '-'이면 자동 피어에서 뺀다(엉뚱한 종목을 빼고 싶을 때). 같은 group을 쓰는 줄끼리 한 묶음이 된다.
 # 한국 종목은 야후 산업 분류가 없어 여기 적은 묶음만 비교한다(묶음마다 5종목 이상이어야 순위가 나옴).
+# 묶음 원칙(2026-11-15): 회사의 주 수익원 — 영업이익의 대부분이 나오는 사업 — 이 속한 산업. 야후 분류가 이와 다르면 여기서 고친다.
 005930.KS,kr_semi,한국 반도체,
 000660.KS,kr_semi,한국 반도체,
 042700.KS,kr_semi,한국 반도체,한미반도체
@@ -23,3 +24,8 @@ ticker,group,group_name,note
 096770.KS,kr_chem,한국 화학·2차전지,SK이노베이션
 011170.KS,kr_chem,한국 화학·2차전지,롯데케미칼
 003670.KS,kr_chem,한국 화학·2차전지,포스코퓨처엠
+AMZN,us_mega_platform,대형 플랫폼(클라우드·광고·소프트웨어),영업이익 대부분이 AWS(클라우드) — 야후 분류 Internet Retail에서 옮김
+MSFT,us_mega_platform,대형 플랫폼(클라우드·광고·소프트웨어),클라우드·소프트웨어
+GOOGL,us_mega_platform,대형 플랫폼(클라우드·광고·소프트웨어),검색·유튜브 광고 + 클라우드
+META,us_mega_platform,대형 플랫폼(클라우드·광고·소프트웨어),광고
+ORCL,us_mega_platform,대형 플랫폼(클라우드·광고·소프트웨어),데이터베이스·클라우드 인프라

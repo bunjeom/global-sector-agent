@@ -28,7 +28,7 @@ from .playbook import STATE_DOWN, STATE_SIDE, STATE_UP, _pb_market, light_band_z
 from .snapshot import _cell, _f, snapshot_universe
 
 PEER_CONFIG: Dict[str, Any] = {
-    "VERSION": "피어 비교 v1 (2026-11-15)",
+    "VERSION": "피어 비교 v1.1 (2026-11-15)",
     "DIR": os.path.join("data", "peers"),
     "MAP_FILE": "peer_map.csv",
     "TIMEZONE": "Asia/Seoul",
@@ -57,9 +57,9 @@ FACTOR_LABELS: Dict[str, str] = {"growth": "성장", "profitability": "수익성
                                  "valuation": "밸류에이션", "price": "가격 흐름"}
 # (지표 키, 요인, 방향 +1 = 클수록 좋음 / -1 = 작을수록 좋음, 화면 이름)
 PEER_METRICS: List[Tuple[str, str, int, str]] = [
-    ("rev_growth_ttm", "growth", 1, "매출 성장률(최근 4분기, 1년 전 대비)"),
+    ("rev_growth_ttm", "growth", 1, "매출 성장률(최근 분기, 전년 동기 대비)"),
     ("eps_growth_fwd", "growth", 1, "선행 EPS 성장(FY1→FY2)"),
-    ("op_margin_ttm", "profitability", 1, "영업이익률(최근 4분기)"),
+    ("op_margin_ttm", "profitability", 1, "영업이익률(최근 4분기, 없으면 야후 값)"),
     ("roe", "profitability", 1, "ROE"),
     ("rev_net_30d", "revisions", 1, "30일 추정치 순상향 비율((상향−하향)÷FY1 애널리스트 수)"),
     ("fy1_change_30d", "revisions", 1, "FY1 추정치 30일 변화"),
@@ -76,6 +76,8 @@ FUND_COLUMNS: List[str] = [
     "sector", "currency", "price", "fwd_pe_info", "eps_fy1", "eps_fy2", "n_fy1", "up_30d", "down_30d", "fy1_30d_ago",
     "rev_ttm", "rev_ttm_prev", "op_income_ttm", "roe", "band_z", "band_reason",
     "surv_kill", "surv_warning", "surv_applicable", "surv_text", "next_earnings_date", "notes", "version",
+    # v1.1 (새 열은 맨 뒤): 야후 분기 손익은 보통 4~5분기라 최근 4분기 합 대 그 전 4분기 합을 못 만든다 → 최근 분기 대 전년 동기
+    "rev_q0", "rev_q4", "rev_growth_info", "op_margin_info",
 ]
 RANK_COLUMNS: List[str] = (
     ["rank_date", "group", "group_name", "group_source", "ticker", "is_coverage", "n_group", "fund_date", "price_as_of",
@@ -93,11 +95,17 @@ def derive_metrics(fund: Dict[str, Any], price: Optional[Dict[str, Any]] = None)
     """주간 재무 기록 한 줄 + 오늘 가격 지표 → 비교 지표 11개. 정의가 안 되는 값(적자 PER, 성장 ≤ 0인 PEG 등)은 None."""
     g = lambda k: _f(fund.get(k))
     out: Dict[str, Optional[float]] = {m[0]: None for m in PEER_METRICS}
-    rev, rev0, opi = g("rev_ttm"), g("rev_ttm_prev"), g("op_income_ttm")
-    if rev is not None and rev0 is not None and rev0 > 0:
-        out["rev_growth_ttm"] = rev / rev0 - 1.0
+    rev, opi = g("rev_ttm"), g("op_income_ttm")
+    q0, q4 = g("rev_q0"), g("rev_q4")
+    # 매출 성장률 = 최근 분기 ÷ 전년 동기 − 1 (분기 자료가 5개 미만이면 야후 revenueGrowth — 같은 정의)
+    if q0 is not None and q4 is not None and q4 > 0:
+        out["rev_growth_ttm"] = q0 / q4 - 1.0
+    else:
+        out["rev_growth_ttm"] = g("rev_growth_info")
     if rev is not None and rev > 0 and opi is not None:
         out["op_margin_ttm"] = opi / rev
+    else:
+        out["op_margin_ttm"] = g("op_margin_info")
     out["roe"] = g("roe")
     e1, e2 = g("eps_fy1"), g("eps_fy2")
     if e1 is not None and e2 is not None and e1 > 0 and e2 > 0:
@@ -313,6 +321,7 @@ def fetch_fund_row(ticker: str, yf: Any, date: str, group_key: str, group: Dict[
             notes.append("기본 정보")
     row.update(industry_key=info.get("industryKey"), industry=info.get("industry"), sector=info.get("sector"),
                currency=info.get("currency"), fwd_pe_info=_f(info.get("forwardPE")), roe=_f(info.get("returnOnEquity")),
+               rev_growth_info=_f(info.get("revenueGrowth")), op_margin_info=_f(info.get("operatingMargins")),
                price=_f(info.get("currentPrice")) or _f(info.get("regularMarketPrice")))
 
     def table(attr: str, label: str) -> Any:
@@ -336,6 +345,8 @@ def fetch_fund_row(ticker: str, yf: Any, date: str, group_key: str, group: Dict[
         row["rev_ttm"], row["rev_ttm_prev"] = float(sum(rev[:4])), float(sum(rev[4:8]))
     elif len(rev) >= 4 and all(v is not None for v in rev[:4]):
         row["rev_ttm"] = float(sum(rev[:4]))
+    if len(rev) >= 5 and rev[0] is not None and rev[4] is not None:
+        row["rev_q0"], row["rev_q4"] = float(rev[0]), float(rev[4])
     if len(opi) >= 4 and all(v is not None for v in opi[:4]):
         row["op_income_ttm"] = float(sum(opi[:4]))
     try:
@@ -464,6 +475,13 @@ def load_peer_ranks(base_dir: Optional[str] = None) -> pd.DataFrame:
 
 def _append(path: str, rows: List[Dict[str, Any]], columns: List[str], key_cols: List[str]) -> Dict[str, int]:
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    if os.path.exists(path):   # 열이 늘었으면(새 열은 맨 뒤) 기존 줄은 그대로 두고 빈 새 열만 붙여 다시 쓴다 — 값은 바꾸지 않는다
+        head = list(pd.read_csv(path, nrows=0, encoding="utf-8-sig").columns)
+        if head != columns:
+            if head != columns[:len(head)]:
+                raise ValueError(f"{os.path.basename(path)}의 열 순서가 코드와 다릅니다 — 새 열은 맨 뒤에만 추가해야 합니다")
+            old = pd.read_csv(path, dtype=str, encoding="utf-8-sig", keep_default_na=False)
+            old.reindex(columns=columns).to_csv(path, index=False, encoding="utf-8-sig")
     have = set()
     if os.path.exists(path):
         d = pd.read_csv(path, usecols=key_cols, dtype=str, encoding="utf-8-sig").fillna("")

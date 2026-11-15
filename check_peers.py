@@ -37,7 +37,7 @@ def main():
     lines = [f"# 피어 비교 점검 ({pd.Timestamp(d).date()}, {engine.PEER_CONFIG['VERSION']})", "",
              "check_peers.py 출력. 데이터·정의 오류 확인용이며 결과를 보고 가중치·기준을 바꾸지 않는다. 이상한 피어는 data/peers/peer_map.csv로 고친다.", "",
              f"- 묶음 {cur['group'].nunique()}개 · 종목 {cur['ticker'].nunique()}개 · 커버리지 종목 "
-             f"{int(cur['is_coverage'].astype(str).str.lower().eq('true').sum())}개 · 재무 기준일 {cur['fund_date'].max()}",
+             f"{int(cur['is_coverage'].astype(str).str.lower().eq('true').sum())}개 · 재무 기준일 {pd.Timestamp(cur['fund_date'].max()).date()}",
              f"- 순위가 매겨진 묶음: 가치 관점 {cur.groupby('group')['value_rank'].apply(lambda s: s.notna().any()).sum()}개 · "
              f"추세 관점 {cur.groupby('group')['trend_rank'].apply(lambda s: s.notna().any()).sum()}개", "",
              "## 지표가 채워진 비율 (전체)", "", "| 지표 | 채워짐 |", "|---|---|"]

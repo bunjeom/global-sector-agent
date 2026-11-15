@@ -27,10 +27,12 @@ chk("1-2 백분위(작을수록 좋음): 10→100", close(q["a"], 100) and close
 chk("1-3 값 1개면 순위 없음", engine.percentile_ranks(pd.Series([5.0, None]), 1).isna().all())
 
 # 2) 지표 만들기
-fund = {"rev_ttm": 120.0, "rev_ttm_prev": 100.0, "op_income_ttm": 30.0, "roe": 0.25, "eps_fy1": 5.0, "eps_fy2": 6.0,
+fund = {"rev_ttm": 120.0, "rev_q0": 33.0, "rev_q4": 27.5, "op_income_ttm": 30.0, "roe": 0.25, "eps_fy1": 5.0, "eps_fy2": 6.0,
         "n_fy1": 20, "up_30d": 8, "down_30d": 2, "fy1_30d_ago": 4.0, "fwd_pe_info": None, "band_z": -1.2, "price": 90.0}
 dm = engine.derive_metrics(fund, {"price": 100.0, "rs63": 0.05, "trend_state": "상승"})
-chk("2 매출 성장 20%, 영업이익률 25%", close(dm["rev_growth_ttm"], 0.2) and close(dm["op_margin_ttm"], 0.25))
+chk("2 매출 성장(최근 분기 33 ÷ 전년 동기 27.5 − 1 = 20%), 영업이익률 30 ÷ 120 = 25%", close(dm["rev_growth_ttm"], 0.2) and close(dm["op_margin_ttm"], 0.25))
+fb = engine.derive_metrics({"rev_growth_info": 0.07, "op_margin_info": 0.11, "rev_ttm": None}, {})
+chk("2-1 분기 자료가 모자라면 야후 값(매출 성장 7%, 영업이익률 11%)", close(fb["rev_growth_ttm"], 0.07) and close(fb["op_margin_ttm"], 0.11))
 chk("2-2 선행 EPS 성장 20%, 순상향 (8−2)/20 = 0.3, FY1 30일 변화 +25%",
     close(dm["eps_growth_fwd"], 0.2) and close(dm["rev_net_30d"], 0.3) and close(dm["fy1_change_30d"], 0.25))
 chk("2-3 선행 PER = 오늘 가격 100 ÷ FY1 5 = 20 (야후 값 없을 때), PEG = 20 ÷ 20 = 1.0",
@@ -212,6 +214,17 @@ chk("6-10 커버리지 밖 종목 안내", not engine.latest_peer_view("ZZZ", ba
     and "watchlist" in engine.latest_peer_view("ZZZ", base_dir=tmp)["reason"])
 fd = engine.load_peer_fund(tmp)
 chk("6-11 다음 실적 발표일 기록", (fd["next_earnings_date"].astype(str) == "2027-01-28").all())
+
+# 6-12) 열이 늘어난 기록 파일: 기존 줄은 그대로, 빈 새 열을 붙여 다시 쓴 뒤 이어 붙임
+mig = os.path.join(tmp, "mig", "peer_fund_2026.csv")
+os.makedirs(os.path.dirname(mig), exist_ok=True)
+oldcols = engine.FUND_COLUMNS[:-4]
+pd.DataFrame([{c: ("X" if c == "ticker" else ("2026-11-15" if c == "fund_date" else "")) for c in oldcols}], columns=oldcols).to_csv(
+    mig, index=False, encoding="utf-8-sig")
+engine.peers._append(mig, [{"fund_date": "2026-11-16", "ticker": "Y", "rev_q0": 5.0}], engine.FUND_COLUMNS, ["fund_date", "ticker"])
+mg = pd.read_csv(mig, encoding="utf-8-sig")
+chk("6-12 열 추가 이전: 머리글 = 새 열 목록, 기존 줄 보존, 새 줄의 새 열 값", list(mg.columns) == engine.FUND_COLUMNS and len(mg) == 2
+    and mg["ticker"].tolist() == ["X", "Y"] and pd.isna(mg.loc[0, "rev_q0"]) and mg.loc[1, "rev_q0"] == 5.0, list(mg.columns)[-5:])
 
 # 7) peer_map 읽기: 설명 줄(#)·제외(-)
 os.makedirs(tmp, exist_ok=True)
