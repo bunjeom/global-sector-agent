@@ -1,13 +1,13 @@
 {
   "version": "2.0 (Top-Down Causal & Time-Aligned Architecture)",
-  "generated_at": "2026-11-14 11:59:15",
+  "generated_at": "2026-11-15 11:30:42",
   "time_horizon": {
     "anchor_date_t0": "2026-11-13",
     "lookback_short_20d": "2026-10-16 ~ 2026-11-13 (20영업일, 단기 모멘텀·수급 관측)",
     "lookback_mid_60d": "2026-08-14 ~ 2026-11-13 (60영업일, 중기 추세 관측)",
     "lookback_flow": "최근 5영업일 평균 거래대금 vs 직전 20영업일 평균 거래대금",
     "lookback_fundamental": "최근 확정 연간/분기자료 (TTM ROE, PBR, 부채비율)",
-    "target_holding_period": "향후 20영업일 (1개월 스윙/포지션, 차기 리밸런싱 예정일: 2026-12-12)"
+    "target_holding_period": "향후 20영업일 (1개월 스윙/포지션, 차기 리밸런싱 예정일: 2026-12-13)"
   },
   "macro_regime": {
     "regime_name": "고금리·강달러 경계 국면 (Selective Barbell Regime)",
@@ -15,7 +15,7 @@
     "cold_allocation_pct": 40,
     "per_hot_stock_weight_pct": 20.0,
     "per_cold_stock_weight_pct": 13.3,
-    "rationale": "미국채 10년물(5.10%) 및 원/달러 환율(1,333.8원)이 높은 수준을 유지하여 지수 전반의 밸류에이션 확장보다 확실한 실적 주도주(🔥주목 섹터 60% 배분)와 극단적 저평가 우량주(❄️소외 섹터 40% 배분)를 결합하는 바벨(Barbell) 전략 채택"
+    "rationale": "미국채 10년물(5.10%) 및 원/달러 환율(1,336.2원)이 높은 수준을 유지하여 지수 전반의 밸류에이션 확장보다 확실한 실적 주도주(🔥주목 섹터 60% 배분)와 극단적 저평가 우량주(❄️소외 섹터 40% 배분)를 결합하는 바벨(Barbell) 전략 채택"
   },
   "executive_conclusion": {
     "headline": "[2026-11-13 기준 | 향후 20영업일 포트폴리오 결론] 고금리·강달러 경계 국면 (Selective Barbell Regime)에 대응하여 모멘텀 주도주(60%)와 구조적 흑자 저평가주(40%) 바벨 포트폴리오 구축",
@@ -50,7 +50,7 @@
     },
     {
       "지표": "원/달러 환율",
-      "표기": "[1,333.78원 | 2026-11-13 | FDR]"
+      "표기": "[1,336.20원 | 2026-11-14 | FDR]"
     }
   ],
   "kospi_summary": {
@@ -430,8 +430,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(20.83%)·ROE(16.5%) 우위 및 'Regeneron (REGN) Earnings Ex...' 촉매 결합",
-      "quote": "Regeneron (REGN) Earnings Expected to Grow: What to Know Ahead of Next Week's Release - Yahoo Finance",
+      "catalyst": "[모멘텀 추종] 20일 수익률(20.83%)·ROE(16.5%) 우위 및 'Regeneron Has $16 Billion in...' 촉매 결합",
+      "quote": "Regeneron Has $16 Billion in Net Cash and Trades Near 20 Times Earnings. Is It the Cheapest Big Biotech? - The Motley Fool",
       "qa_pass": true
     },
     {
@@ -462,8 +462,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(7.67%)·ROE(68.0%) 우위 및 'Here is What to Know Beyond ...' 촉매 결합",
-      "quote": "Here is What to Know Beyond Why Amgen Inc. (AMGN) is a Trending Stock - Yahoo Finance",
+      "catalyst": "[모멘텀 추종] 20일 수익률(7.67%)·ROE(68.0%) 우위 및 'Amgen (AMGN) Q3 Earnings Pre...' 촉매 결합",
+      "quote": "Amgen (AMGN) Q3 Earnings Preview: What You Should Know Beyond the Headline Estimates - Yahoo Finance",
       "qa_pass": true
     },
     {
@@ -494,8 +494,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(7.61%)·ROE(24.5%) 우위 및 'Gilead Sciences (GILD) After...' 촉매 결합",
-      "quote": "Gilead Sciences (GILD) After Trial Wins And Raised Guidance Looks Fully Valued - Yahoo Finance",
+      "catalyst": "[모멘텀 추종] 20일 수익률(7.61%)·ROE(24.5%) 우위 및 'Gilead (GILD) Stock Still Lo...' 촉매 결합",
+      "quote": "Gilead (GILD) Stock Still Looks Undervalued On Its 205% Run - Yahoo Finance",
       "qa_pass": true
     },
     {
@@ -527,7 +527,7 @@
       "exit_rule": "목표 +12% / 손절 -5% (또는 PBR 리레이팅 달성)",
       "loop_info": "20일 탐색(Loop 1)",
       "catalyst": "[가치 평균회귀] 단기 조정(-2.37%)에도 ROE(45.0%)·PBR(19.0배) 저평가 매력 보유",
-      "quote": "BKNG: Booking Holdings sold €3.55B of senior notes in four tranches... - Quantisnow",
+      "quote": "Booking Holdings (BKNG) Earnings Expected to Grow: What to Know Ahead of Next Week's Release - Yahoo Finance",
       "qa_pass": true
     },
     {
@@ -559,7 +559,7 @@
       "exit_rule": "목표 +12% / 손절 -5% (또는 PBR 리레이팅 달성)",
       "loop_info": "20일 탐색(Loop 1)",
       "catalyst": "[가치 평균회귀] 단기 조정(-11.88%)에도 ROE(32.8%)·PBR(13.5배) 저평가 매력 보유",
-      "quote": "Netflix posts third-quarter earnings beat, but shares fall on advertising and revenue guidance - CNBC",
+      "quote": "Netflix (NFLX) Following Ad Outlook Cuts Still Looks Undervalued To Some Investors - Yahoo Finance",
       "qa_pass": true
     },
     {
@@ -607,7 +607,7 @@
         "TSM"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.00692,
       "rev_90d": 0.15438,
@@ -624,7 +624,7 @@
         "PANW"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": -0.00034,
       "rev_90d": -0.01189,
@@ -641,7 +641,7 @@
         "VST"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.05547,
       "rev_90d": 0.02585,
@@ -658,7 +658,7 @@
         "RTX"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.01062,
       "rev_90d": 0.01859,
@@ -674,7 +674,7 @@
         "VRTX"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.02085,
       "rev_90d": 0.02812,
@@ -689,9 +689,9 @@
         "NVDA"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
-      "rev_30d": -0.00517,
+      "rev_30d": -0.00383,
       "rev_90d": 0.02616,
       "reason": null
     },
@@ -704,7 +704,7 @@
         "NFLX"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": -0.00411,
       "rev_90d": 0.00071,
@@ -720,7 +720,7 @@
         "V"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.02335,
       "rev_90d": 0.01828,
@@ -736,7 +736,7 @@
         "UNH"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.01523,
       "rev_90d": 0.01744,
@@ -751,7 +751,7 @@
         "TSLA"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": -0.00498,
       "rev_90d": -0.01226,
@@ -766,7 +766,7 @@
         "UNP"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.0061,
       "rev_90d": 0.00524,
@@ -781,9 +781,9 @@
         "XOM"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
-      "rev_30d": 0.09557,
+      "rev_30d": 0.0953,
       "rev_90d": 0.17573,
       "reason": null
     },
@@ -796,7 +796,7 @@
         "SO"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": -0.00026,
       "rev_90d": -0.0003,
@@ -811,7 +811,7 @@
         "SHW"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": -0.02099,
       "rev_90d": -0.00803,
@@ -826,7 +826,7 @@
         "WMT"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.00028,
       "rev_90d": -0.00022,
@@ -841,7 +841,7 @@
         "PLD"
       ],
       "period": "+1y",
-      "as_of": "2026-11-13",
+      "as_of": "2026-11-14",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.08075,
       "rev_90d": 0.05878,
