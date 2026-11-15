@@ -181,6 +181,15 @@ if VMODE != "real":
     _eng.fetch_real_fundamental_inputs = lambda t, p: {"values": dict(_d), "meta": {"source": "test", "notes": ["테스트 주입"], "band_series": _BS, "missing": [k for k, x in _d.items() if x is None],
                                                                                       "band_basis": "후행(TTM·연간 확정) EPS 기준", "band_points": 36 if _d["self_5y_mean"] else 0, "peer_count": 12 if _d["peer_median_per"] else 0}}
 
+# 피어 비교 기록: 저장소의 실제 data/peers/ 대신 임시 폴더(PEERMODE=fake: 가짜 6종목 묶음, none: 기록 없음)
+import tempfile as _tf
+PEERMODE = os.environ.get("PEERMODE", "fake")
+_peer_tmp = _tf.mkdtemp(prefix="peers_page_")
+if PEERMODE == "fake":
+    from _fake_peers import write_fake_peers
+    write_fake_peers(_peer_tmp, TICKER)
+_eng.PEER_CONFIG["DIR"] = _peer_tmp
+
 import streamlit as _st
 _st.page_link = lambda *a, **k: None   # 테스트 환경에선 페이지 링크 검증이 불가능해 무력화
 from streamlit.testing.v1 import AppTest
@@ -224,5 +233,14 @@ _bt = [m.value for m in at.markdown if "조건부 백테스트 기대값" in m.v
 _bt_ok = (not _bt) or all("장기 검증" in v for v in _bt)
 print("기술 탭 틀 A 요약:", _t1, "| 백테스트 상자 경고:", _bt_ok)
 _pb_ok = _pb_ok and _t1 and _bt_ok
+# ---- 피어 비교(이 종목에 투자할 이유): 가짜 기록이면 결론 카드·강점·약점·표, 기록 없으면 안내
+_pc = [m.value for m in at.markdown if "피어 6종목" in m.value]
+_pdf = [d for d in at.dataframe if "종목" in getattr(d.value, "columns", []) and (d.value["종목"] == TICKER).any()] if hasattr(at, "dataframe") else []
+if PEERMODE == "fake":
+    _peer_ok = bool(_pc) and all(k in _pc[0] for k in ("가치 관점", "추세 관점", "강점", "약점", "검증 상태: 미검증")) and bool(_pdf)
+else:
+    _peer_ok = any("피어 비교: 피어 기록 없음" in i.value for i in at.info)
+print("피어 비교:", _peer_ok, "| 카드", bool(_pc), "| 표", bool(_pdf))
+_pb_ok = _pb_ok and _peer_ok
 # 실적 데이터가 전혀 없는 모드(none)는 화면이 종합 탭 전에 멈추는 것이 정상(가짜 값으로 채우지 않음)
 sys.exit(1 if (at.exception or _bad or _hb or (MODE != "none" and not _pb_ok)) else 0)

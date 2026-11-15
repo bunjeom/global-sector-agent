@@ -496,6 +496,95 @@ def render_frame_a_card(fa: dict) -> None:
                    "하락 = 그 선을 깨고 고점이 낮아지며 고점 연결선 아래. 근거 개수 비교이며 확률이 아닙니다.")
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def cached_peer_view(t: str) -> dict:
+    """피어 비교 기록(data/peers/, 매일 Actions)에서 이 종목 묶음의 최근 순위표. 기록이 바뀌면 10분 안에 반영."""
+    return engine.latest_peer_view(t)
+
+
+def _peer_name(t: str, short: object) -> str:
+    nm = utils.TICKER_NAMES.get(str(t))
+    if nm:
+        return nm
+    return "" if short is None or (isinstance(short, float) and math.isnan(short)) else str(short)
+
+
+def render_peer_section(t: str) -> None:
+    """딥다이브 개편 2단계: 이 종목에 투자할 이유 — 피어 안 위치(가치 관점·추세 관점), 강점·약점, 피어 비교 표."""
+    chart_heading("이 종목에 투자할 이유 — 피어 비교")
+    view = cached_peer_view(t)
+    sm = engine.peer_summary(view)
+    if not sm.get("available"):
+        st.info(f"피어 비교: {sm.get('reason')}")
+        return
+    tbl = view["table"]
+    n = sm["n"]
+
+    def strat_txt(lbl: str, d: dict) -> str:
+        if d["rank"] is None:
+            return f"<b>{lbl}</b>: 순위 없음 — {_esc(d['note'] or '자료 부족')}"
+        top = ' <span class="term-badge">상위 1/3</span>' if d["top"] else ""
+        return f"<b>{lbl}</b>: {d['rank']}위 / {d['n']}종목 ({d['score']:.0f}점){top}"
+
+    def lead_txt(key: str) -> str:
+        lt = sm["leaders"].get(key)
+        if not lt:
+            return engine.NO_DATA
+        r = tbl[tbl["ticker"].astype(str) == lt]
+        nm = _peer_name(lt, r["short_name"].iloc[0] if len(r) else None)
+        return _esc(lt + (f" {nm}" if nm else "") + (" (이 종목)" if lt == t else ""))
+
+    def items(rows: list, mark: str, color: str) -> str:
+        if not rows:
+            return f'<li style="color:#64748b;">해당 없음</li>'
+        return "".join(f'<li><span style="color:{color};font-weight:700;">{mark} {_esc(r["label"])} {r["score"]:.0f}점</span> — {_esc(r["detail"])}</li>'
+                       for r in rows)
+
+    risk = ""
+    if sm["surv_kill"] or sm["surv_warning"]:
+        risk = (f'<div style="margin-top:6px;color:#b91c1c;"><b>재무 생존성:</b> {"하드 킬 — 순위 제외" if sm["surv_kill"] else "경고"}'
+                f' — {_esc(sm["surv_text"])}</div>')
+    nxt = f' · 다음 실적 발표 {_esc(sm["next_earnings_date"])}' if sm["next_earnings_date"] else ""
+    rd = pd.Timestamp(sm["rank_date"]).date()
+    fd = pd.Timestamp(sm["fund_date"]).date() if sm["fund_date"] is not None and not pd.isna(sm["fund_date"]) else engine.NO_DATA
+    html_md(f"""
+    <div class="term-card">
+        <div>{utils.line_icon("layers", 16)} <b>{_esc(sm["group_name"])}</b> 피어 {n}종목 <span class="term-badge">{_esc(sm["group_source"])}</span></div>
+        <div style="margin-top:6px;">{strat_txt("가치 관점", sm["value"])} · {strat_txt("추세 관점", sm["trend"])}</div>
+        <div style="margin-top:4px;font-size:0.9rem;">1위 — 가치 관점: {lead_txt("value")} · 추세 관점: {lead_txt("trend")}</div>
+        <div style="margin-top:8px;"><b>강점</b> (요인 점수 60 이상)</div>
+        <ul class="term-list">{items(sm["strengths"], "▲", "#16a34a")}</ul>
+        <div><b>약점</b> (요인 점수 40 이하)</div>
+        <ul class="term-list">{items(sm["weaknesses"], "▼", "#dc2626")}</ul>
+        {risk}
+        <div style="font-size:0.82rem;color:#64748b;margin-top:6px;">순위 기준일 {rd} · 재무·추정치 {fd}(주 1회 갱신){nxt} · {_esc(sm["version"])}</div>
+        <div style="font-size:0.82rem;color:#64748b;">검증 상태: 미검증 — 피어 안 사실 비교입니다. 순위가 이후 수익을 예측한다는 검증은 없고, 매일 기록해 앞으로 채점합니다. 점수 = 피어 안 백분위(0~100), 가치 관점 = 밸류에이션 50 · 수익성 25 · 실적 모멘텀 25, 추세 관점 = 가격 흐름 50 · 실적 모멘텀 25 · 성장 25.</div>
+    </div>
+    """)
+    f0 = lambda x: "-" if x is None or pd.isna(x) else f"{float(x):.0f}"
+    disp = pd.DataFrame({
+        "종목": tbl["ticker"].astype(str),
+        "이름": [_peer_name(a, b) for a, b in zip(tbl["ticker"], tbl["short_name"])],
+        "가치 점수(순위)": [f"{f0(a)} ({f0(b)})" for a, b in zip(tbl["value_score"], tbl["value_rank"])],
+        "추세 점수(순위)": [f"{f0(a)} ({f0(b)})" for a, b in zip(tbl["trend_score"], tbl["trend_rank"])],
+        **{lbl: [f0(x) for x in tbl[f"f_{k}"]] for k, lbl in engine.FACTOR_LABELS.items()},
+        "선행 PER": [engine.fmt_peer_metric("fwd_pe", x) for x in tbl["fwd_pe"]],
+        "매출 성장": [engine.fmt_peer_metric("rev_growth_ttm", x) for x in tbl["rev_growth_ttm"]],
+        "영업이익률": [engine.fmt_peer_metric("op_margin_ttm", x) for x in tbl["op_margin_ttm"]],
+        "63일 상대강도": [engine.fmt_peer_metric("rs63", x) for x in tbl["rs63"]],
+        "추세": ["-" if x is None or pd.isna(x) else str(x) for x in tbl["trend_state"]],
+        "생존성": ["하드 킬(순위 제외)" if str(k).lower() == "true" else ("경고" if str(w).lower() == "true" else "")
+                for k, w in zip(tbl["surv_kill"], tbl["surv_warning"])],
+    })
+
+    def _hl(row):
+        on = row["종목"] == t
+        return ["background-color:#e0f2fe;font-weight:700;" if on else "" for _ in row]
+    st.dataframe(disp.style.apply(_hl, axis=1), width="stretch", hide_index=True)
+    st.caption("요인 점수는 피어 안 백분위(100이 가장 좋음). 데이터 없음(-)은 계산에서 빠집니다. 피어 묶음은 회사의 주 수익원 기준이며 "
+               "data/peers/peer_map.csv에서 고칩니다. 앞서려면 무엇이 얼마나 바뀌어야 하는지는 다음 단계(3단계)에서 추가합니다.")
+
+
 _STAGE_COLOR = {"손절 조건": "#dc2626", "매도 조건": "#ea580c", "경고": "#d97706", "진입 가능": "#16a34a",
                 "조건부 진입": "#65a30d", "재평가 보유": "#2563eb", "대기": "#64748b"}
 
@@ -620,6 +709,9 @@ frame_b = engine.frame_b_evaluate(fund_out, synth_out, pb_cs, trend_row=(pb_ind.
 pq_info = fund_out["price_qualification"]
 m_cls = macro_out["classification"]
 arch_info = synth_out["archetype"]
+
+# 7) 이 종목에 투자할 이유 — 피어 비교 (딥다이브 개편 2단계, AGENTS.md 4번). 탭 위에 둔다.
+render_peer_section(ticker_input)
 
 # =====================================================================
 # 종합 결론(첫 번째 탭) + 4대 트랙 상세 탭 구성[cite: 6]

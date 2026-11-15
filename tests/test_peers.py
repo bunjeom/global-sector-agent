@@ -6,6 +6,7 @@ import math, os, sys, tempfile
 import numpy as np
 import pandas as pd
 import engine
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 
 FAILS = []
 
@@ -232,6 +233,24 @@ with open(os.path.join(tmp, "peer_map.csv"), "w", encoding="utf-8-sig") as f:
     f.write("ticker,group,group_name,note\n# 설명 줄\n005930.KS,kr_semi,한국 반도체,\nP2,-,,이상한 피어\n")
 pm = engine.load_peer_map(tmp)
 chk("7 peer_map: 설명 줄 무시, 그룹·제외 읽기", pm["005930.KS"]["group_name"] == "한국 반도체" and pm["P2"]["group"] == "-" and len(pm) == 2, pm)
+
+# 8) 딥다이브 요약 (강점 ≥ 60, 약점 ≤ 40, 피어 중앙값은 하드 킬 제외)
+from _fake_peers import write_fake_peers
+ft = tempfile.mkdtemp(prefix="peers_sum_")
+write_fake_peers(ft, "NVDA")
+sm = engine.peer_summary(engine.latest_peer_view("NVDA", base_dir=ft))
+print("  요약:", sm["value"], sm["leaders"], [(r["label"], round(r["score"])) for r in sm["factors"]])
+chk("8 요약: 묶음 6종목, 가치 2위/5(하드 킬 제외), 1위 PC", sm["n"] == 6 and sm["value"]["rank"] == 2 and sm["value"]["n"] == 5
+    and sm["leaders"]["value"] == "PC" and sm["value"]["top"] is True)
+st_ = {r["label"] for r in sm["strengths"]}
+wk_ = {r["label"] for r in sm["weaknesses"]}
+chk("8-2 강점 = 점수 60 이상(성장·수익성·밸류에이션), 약점 = 40 이하(가격 흐름), 실적 모멘텀 42는 보통",
+    st_ == {"성장", "수익성", "밸류에이션"} and wk_ == {"가격 흐름"}, (st_, wk_))
+grow = [r for r in sm["factors"] if r["factor"] == "growth"][0]
+chk("8-3 피어 중앙값은 하드 킬 종목(PK) 빼고: 매출 성장 중앙 +10.0%", "피어 중앙 +10.0%" in grow["detail"], grow["detail"])
+chk("8-4 순서: 강점은 높은 순(성장 100 먼저)", sm["strengths"][0]["score"] >= sm["strengths"][-1]["score"])
+chk("8-5 다음 실적 발표일·버전", sm["next_earnings_date"] == "2027-01-28" and sm["version"] == engine.PEER_CONFIG["VERSION"])
+chk("8-6 기록 없으면 요약도 없음(이유 전달)", not engine.peer_summary(engine.latest_peer_view("NVDA", base_dir=tempfile.mkdtemp()))["available"])
 
 print(f"\n결과: {'통과' if not FAILS else '실패 ' + str(FAILS)}")
 sys.exit(1 if FAILS else 0)

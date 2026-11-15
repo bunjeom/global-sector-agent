@@ -78,6 +78,7 @@ FUND_COLUMNS: List[str] = [
     "surv_kill", "surv_warning", "surv_applicable", "surv_text", "next_earnings_date", "notes", "version",
     # v1.1 (새 열은 맨 뒤): 야후 분기 손익은 보통 4~5분기라 최근 4분기 합 대 그 전 4분기 합을 못 만든다 → 최근 분기 대 전년 동기
     "rev_q0", "rev_q4", "rev_growth_info", "op_margin_info",
+    "short_name",   # 화면 표시용 회사 이름(야후 shortName)
 ]
 RANK_COLUMNS: List[str] = (
     ["rank_date", "group", "group_name", "group_source", "ticker", "is_coverage", "n_group", "fund_date", "price_as_of",
@@ -322,6 +323,7 @@ def fetch_fund_row(ticker: str, yf: Any, date: str, group_key: str, group: Dict[
     row.update(industry_key=info.get("industryKey"), industry=info.get("industry"), sector=info.get("sector"),
                currency=info.get("currency"), fwd_pe_info=_f(info.get("forwardPE")), roe=_f(info.get("returnOnEquity")),
                rev_growth_info=_f(info.get("revenueGrowth")), op_margin_info=_f(info.get("operatingMargins")),
+               short_name=info.get("shortName") or info.get("longName"),
                price=_f(info.get("currentPrice")) or _f(info.get("regularMarketPrice")))
 
     def table(attr: str, label: str) -> Any:
@@ -582,8 +584,10 @@ def run_daily_peers(today: Optional[str] = None, base_dir: Optional[str] = None,
     return res
 
 
-def latest_peer_view(ticker: str, base_dir: Optional[str] = None, ranks: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
-    """딥다이브용: 이 종목이 속한 묶음의 가장 최근 순위표. 반환 {available, reason, group, group_name, rank_date, table, me}."""
+def latest_peer_view(ticker: str, base_dir: Optional[str] = None, ranks: Optional[pd.DataFrame] = None,
+                     fund: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    """딥다이브용: 이 종목이 속한 묶음의 가장 최근 순위표(+ 재무 기록의 회사 이름·생존성 문구·다음 실적 발표일).
+    반환 {available, reason, group, group_name, group_source, rank_date, fund_date, table, me}."""
     t = _norm_ticker(ticker)
     df = load_peer_ranks(base_dir) if ranks is None else ranks
     if not len(df):
@@ -594,5 +598,88 @@ def latest_peer_view(ticker: str, base_dir: Optional[str] = None, ranks: Optiona
     d = mine["rank_date"].max()
     me = mine[mine["rank_date"] == d].iloc[0]
     tbl = df[(df["rank_date"] == d) & (df["group"] == me["group"])].copy()
-    return {"available": True, "group": me["group"], "group_name": me["group_name"], "rank_date": d,
-            "table": tbl.sort_values("value_score", ascending=False, na_position="last"), "me": me.to_dict()}
+    fd = me.get("fund_date")
+    fu = load_peer_fund(base_dir) if fund is None else fund
+    if len(fu) and fd is not None and not pd.isna(fd):
+        extra = fu[fu["fund_date"] == pd.Timestamp(fd)][["ticker", "short_name", "surv_text", "next_earnings_date"]].drop_duplicates("ticker")
+        tbl = tbl.merge(extra, on="ticker", how="left")
+    for c in ("short_name", "surv_text", "next_earnings_date"):
+        if c not in tbl:
+            tbl[c] = None
+    tbl = tbl.sort_values("value_score", ascending=False, na_position="last").reset_index(drop=True)
+    me_full = tbl[tbl["ticker"].astype(str) == t].iloc[0].to_dict()
+    return {"available": True, "group": me["group"], "group_name": me["group_name"], "group_source": me.get("group_source"),
+            "rank_date": d, "fund_date": fd, "table": tbl, "me": me_full}
+
+
+# ------------------------------------------------------------------ 딥다이브 요약 (강점·약점) — 표시 규칙도 사전 등록
+SUMMARY_RULES: Dict[str, float] = {"STRENGTH_MIN": 60.0, "WEAKNESS_MAX": 40.0, "MAX_ITEMS": 3}
+_PCT_KEYS = {"rev_growth_ttm", "eps_growth_fwd", "op_margin_ttm", "roe", "fy1_change_30d"}
+
+
+def fmt_peer_metric(key: str, v: Any) -> str:
+    """지표 값 → 짧은 문구 (빈칸은 '데이터 없음')."""
+    x = _f(v)
+    if x is None:
+        return NO_DATA
+    if key in _PCT_KEYS:
+        return f"{x * 100:+.1f}%" if key != "op_margin_ttm" and key != "roe" else f"{x * 100:.1f}%"
+    if key == "rs63":
+        return f"{x * 100:+.1f}%p"
+    if key == "rev_net_30d":
+        return f"{x * 100:+.0f}%"
+    if key in ("fwd_pe", "peg"):
+        return f"{x:.1f}배" if key == "fwd_pe" else f"{x:.2f}"
+    if key == "band_z":
+        return f"z {x:+.2f}"
+    if key == "state_pt":
+        return {2.0: STATE_UP, 1.0: STATE_SIDE, 0.0: STATE_DOWN}.get(x, NO_DATA)
+    return f"{x:.2f}"
+
+
+def peer_summary(view: Dict[str, Any]) -> Dict[str, Any]:
+    """latest_peer_view 결과 → 딥다이브 결론 카드용 요약.
+    강점 = 요인 점수 ≥ 60 (높은 순 최대 3개), 약점 = 요인 점수 ≤ 40 (낮은 순 최대 3개), 그 사이는 '보통'.
+    요인마다 이 종목의 지표 값과 피어 중앙값(하드 킬 종목 제외)을 함께 적는다."""
+    if not view.get("available"):
+        return {"available": False, "reason": view.get("reason")}
+    tbl, me = view["table"], view["me"]
+    killed = tbl["surv_kill"].astype(str).str.lower().eq("true") if "surv_kill" in tbl else pd.Series(False, index=tbl.index)
+    base = tbl[~killed]
+    rows = []
+    for fk, flabel in FACTOR_LABELS.items():
+        sc = _f(me.get(f"f_{fk}"))
+        parts = []
+        for key, f2, _, label in PEER_METRICS:
+            if f2 != fk:
+                continue
+            mv = me.get(key)
+            if _f(mv) is None:
+                continue
+            med = pd.to_numeric(base[key], errors="coerce").median() if key in base else None
+            short = label.split("(")[0]
+            parts.append(f"{short} {fmt_peer_metric(key, mv)}" + ("" if med is None or pd.isna(med) else f" (피어 중앙 {fmt_peer_metric(key, med)})"))
+        rows.append({"factor": fk, "label": flabel, "score": sc, "detail": " · ".join(parts) or NO_DATA})
+    scored = [r for r in rows if r["score"] is not None]
+    strengths = sorted([r for r in scored if r["score"] >= SUMMARY_RULES["STRENGTH_MIN"]], key=lambda r: -r["score"])[:int(SUMMARY_RULES["MAX_ITEMS"])]
+    weaknesses = sorted([r for r in scored if r["score"] <= SUMMARY_RULES["WEAKNESS_MAX"]], key=lambda r: r["score"])[:int(SUMMARY_RULES["MAX_ITEMS"])]
+
+    def strat(name: str) -> Dict[str, Any]:
+        rk = _f(me.get(f"{name}_rank"))
+        top = me.get(f"{name}_top")
+        return {"score": _f(me.get(f"{name}_score")), "rank": None if rk is None else int(rk), "n": int(_f(me.get(f"{name}_n")) or 0),
+                "top": (str(top).lower() == "true") if top is not None and not (isinstance(top, float) and math.isnan(top)) else None,
+                "note": "" if me.get(f"{name}_note") is None or pd.isna(me.get(f"{name}_note")) else str(me.get(f"{name}_note"))}
+
+    def leader(name: str) -> Optional[str]:
+        r = tbl.dropna(subset=[f"{name}_rank"])
+        r = r[pd.to_numeric(r[f"{name}_rank"], errors="coerce") == 1]
+        return None if not len(r) else str(r["ticker"].iloc[0])
+
+    return {"available": True, "group_name": view["group_name"], "group_source": view.get("group_source"), "n": len(tbl),
+            "rank_date": view["rank_date"], "fund_date": view.get("fund_date"), "version": me.get("version"),
+            "value": strat("value"), "trend": strat("trend"), "leaders": {"value": leader("value"), "trend": leader("trend")},
+            "factors": rows, "strengths": strengths, "weaknesses": weaknesses,
+            "surv_kill": str(me.get("surv_kill")).lower() == "true", "surv_warning": str(me.get("surv_warning")).lower() == "true",
+            "surv_text": None if me.get("surv_text") is None or pd.isna(me.get("surv_text")) else str(me.get("surv_text")),
+            "next_earnings_date": None if me.get("next_earnings_date") is None or pd.isna(me.get("next_earnings_date")) else str(me.get("next_earnings_date"))}
