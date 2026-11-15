@@ -124,6 +124,7 @@ engine/                     계산 엔진 패키지 (트랙별 분석·데이터
 utils.py                    공통 스타일·사이드바
 check_*.py                  실제 데이터 수집 점검 스크립트 (check_playbook.py: 매매 틀 v2 판정)
 run_backtest.py             판정 규칙·매매 틀 백테스트 실행 (결과 data/backtest/)
+check_kill.py               재무 생존성 하드 킬 점검 (v1·v2 판정 비교)
 snapshot_daily.py           컨센서스·목표가 날짜별 기록 (매일 자동 실행, 결과 data/snapshots/)
 ledger_daily.py             신호 기록 장부: 매매 틀 판정 기록 (매일 자동 실행, 결과 data/ledger/)
 tests/                      회귀 테스트 (가짜 데이터·오프라인, run_all.py로 실행)

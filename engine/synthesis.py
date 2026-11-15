@@ -131,14 +131,12 @@ def synthesize_4tracks(
         kill_codes.append("KILL_DECLINE")
         kill_reasons.append("실적 국면 G5(구조적 쇠퇴: 2분기 연속 P·Q 동반 역성장 및 RPO 감소) 확정")
 
-    # KILL_SURVIVAL: ① 런웨이 < 1.0년 OR ② 차입만기 > 150% OR ③ 희석률 > 15%[cite: 6]
-    rw_str = str(f_surv.get("fcf_runway_years", ""))
-    rw_under_1y = ("위험" in rw_str) and any( rw_str.startswith(p) for p in ["0.", "1.0"] )
-    debt_150 = float(f_surv.get("debt_maturity_1y_ratio") or 0.0) > 1.50    # 값이 없으면(None) 킬 조건으로 보지 않는다
-    dil_15 = float(f_surv.get("share_dilution_yoy") or 0.0) > 0.15
-    if rw_under_1y or debt_150 or dil_15:
+    # KILL_SURVIVAL: 재무 생존성 v2 판정(engine/fundamental.py evaluate_survival)을 그대로 받는다.
+    # ① 영업이 현금을 태우는데 런웨이 < 1년 ② (보유 현금 + 영업현금) ÷ 1년 내 만기 차입 < 1.0배 ③ 희석 > 15%.
+    # 화면 문구를 글자로 읽어 판정하지 않는다(v1의 문자열 판정 제거).
+    if f_surv.get("survival_kill"):
         kill_codes.append("KILL_SURVIVAL")
-        kill_reasons.append("재무 생존성 하드 킬 위반 (FCF 런웨이 1년 미만 / 차입만기 150% 초과 / 주식희석 15% 초과 중 해당)")
+        kill_reasons.append("재무 생존성 하드 킬: " + " / ".join(f_surv.get("kill_reasons") or ["사유 미상"]))
 
     is_frozen = "FROZEN_HALT" in kill_codes
     is_killed = len(kill_codes) > 0

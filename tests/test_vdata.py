@@ -106,7 +106,8 @@ class FakeTicker:
     def quarterly_cashflow(self):
         if MODE["us"] == "empty":
             raise RuntimeError("x")
-        return q_df({"Free Cash Flow": [10.0, 8.0, 6.0, 4.0, 2.0]})
+        return q_df({"Free Cash Flow": [10.0, 8.0, 6.0, 4.0, 2.0], "Operating Cash Flow": [20.0, 15.0, 12.0, 9.0, 5.0],
+                     "Capital Expenditure": [-10.0, -7.0, -6.0, -5.0, -3.0]})
 
     @property
     def quarterly_income_stmt(self):
@@ -161,6 +162,9 @@ check("US: 피어 σ", abs(v["peer_std_per"] - float(np.std(PEER_PE))) < 1e-9)
 check("US: 피어 ROE·성장 중앙값", abs(v["peer_median_roe"] - 0.155) < 1e-9 and abs(v["peer_median_fwd_growth"] - 0.1) < 1e-9)
 check("US: 순현금·단기차입 비율", v["net_cash_krw"] == 20.0 and abs(v["short_term_debt_ratio"] - 0.2) < 1e-9)
 check("US: FCF 4분기 합", v["fcf_ttm_krw"] == 28.0)
+check("US: 생존성 v2 입력 (영업현금·설비투자 4분기 합, 보유 현금, 1년 내 만기 차입, 1년 차입 변화)",
+      v["ocf_ttm_krw"] == 56.0 and v["capex_ttm_krw"] == 28.0 and v["liquid_krw"] == 50.0 and v["current_debt_krw"] == 10.0
+      and v["debt_change_1y_krw"] == 0.0, (v["ocf_ttm_krw"], v["capex_ttm_krw"], v["liquid_krw"], v["current_debt_krw"], v["debt_change_1y_krw"]))
 check("US: 희석률", abs(v["share_dilution_yoy"] - 0.01) < 1e-9, v["share_dilution_yoy"])
 check("US: 현재 P/B = 주가 ÷ (최근 자본÷주식수)", abs(v["current_pb"] - price / 3.0) < 1e-6, v["current_pb"])
 check("US: P/B 밴드 산출", v["pb_5y_mean"] is not None and v["pb_5y_std"] is not None)
@@ -246,6 +250,10 @@ check("KR: ROE는 DART 지배주주순이익 ÷ 지배자본", abs(kv["company_r
 check("KR: 순현금 = (현금+단기금융) − 차입합", kv["net_cash_krw"] == (60000 + 40000) - (20000 + 10000 + 30000), kv["net_cash_krw"])
 check("KR: 단기차입 비율", abs(kv["short_term_debt_ratio"] - 30000 / 100000) < 1e-9, kv["short_term_debt_ratio"])
 check("KR: FCF = OCF − 유형자산 취득", kv["fcf_ttm_krw"] == 40000.0)
+check("KR: 생존성 v2 입력 (영업현금·설비투자·보유 현금·1년 내 만기 차입·1년 차입 변화)",
+      kv["ocf_ttm_krw"] == 70000.0 and kv["capex_ttm_krw"] == 30000.0 and kv["liquid_krw"] == 100000.0 and kv["current_debt_krw"] == 30000.0
+      and kv["debt_change_1y_krw"] == (20000 + 10000 + 30000) - (25000 + 10000 + 30000),
+      (kv["ocf_ttm_krw"], kv["capex_ttm_krw"], kv["liquid_krw"], kv["current_debt_krw"], kv["debt_change_1y_krw"]))
 check("KR: 희석률 = 가중평균 주식수(순이익÷EPS) 증감", abs(kv["share_dilution_yoy"] - ((50000 / 5000) / (42000 / 4000) - 1)) < 1e-9, kv["share_dilution_yoy"])
 check("KR: 피어는 None(미국만 지원)", kv["peer_median_per"] is None and km["peer_count"] == 0)
 check("KR: 자기 PER 밴드 산출 (DART 6년 EPS)", kv["self_5y_mean"] is not None and km["band_points"] >= 24, km["band_points"])
@@ -351,7 +359,7 @@ check("V 전부 없음(TTM 참고용): 가격선·매도목표가·2Y 모두 Non
       and fall["valuation_targets"]["sell_target_2y"] is None and fall["price_qualification"]["status"] == "NA", fall["valuation_targets"]["sell_target_formula"][:70])
 check("V 전부 없음: 2Y CAGR 하한(2%)을 지어내지 않음", fall["rerating_assessment"]["consensus_2y_cagr"] is None)
 check("V 전부 없음: 재평가 방향·선반영도 데이터 없음", fall["rerating_assessment"]["direction"] == NO and fall["rerating_assessment"]["four_axes"]["priced_in"] == NO)
-check("V 전부 없음: 생존성 지표 None", fall["financial_survival"]["debt_maturity_1y_ratio"] is None and fall["financial_survival"]["share_dilution_yoy"] is None
+check("V 전부 없음: 생존성 지표 None", fall["financial_survival"]["coverage_ratio"] is None and fall["financial_survival"]["share_dilution_yoy"] is None
       and fall["financial_survival"]["fcf_runway_years"] == NO and fall["financial_survival"]["survival_warning"] is False)
 check("V 전부 없음: NaN/inf 없음", walk(fall) == [])
 

@@ -288,10 +288,155 @@ def _dart_annual_block(dart: Any, code6: str, cache: Dict[Tuple[int, str], Any],
     return blk
 
 
+# ---------------------------------------------------------------------
+# F9. 재무 생존성 v2 (2026-11-15) — 하드 킬은 '곧 돈이 떨어져 망할 위험'만 거른다.
+# v1 정의 오류(AMZN 사례로 발견): 런웨이를 순현금 ÷ FCF 적자로 계산해, 영업현금이 크게 플러스여도
+# 설비투자로 FCF가 적자이고 차입이 있으면 런웨이 0년 → 하드 킬. 차입만기는 보유 현금만 봐서
+# 현금을 적게 들고 차환하는 회사(전력회사 등)를 걸렀다. 금융업에도 같은 식을 썼다.
+# v2는 기준 숫자(1·2년, 15%·5%)는 그대로 두고 '무엇을 재는지'만 바로잡았다. 결과를 보고 숫자를 바꾸지 않는다.
+# ---------------------------------------------------------------------
+SURVIVAL_CONFIG = {
+    "VERSION": "생존성 v2 (2026-11-15)",
+    "RUNWAY_KILL_YEARS": 1.0,    # 영업이 현금을 태울 때: 보유 현금 ÷ FCF 적자 < 1년 → 하드 킬
+    "RUNWAY_WARN_YEARS": 2.0,    # < 2년 → 경고
+    "COVERAGE_KILL": 1.0,        # (보유 현금 + 12개월 영업현금) ÷ 1년 내 만기 차입 < 1.0배 → 하드 킬
+    "COVERAGE_WARN": 1.5,        # < 1.5배 → 경고
+    "DILUTION_KILL": 0.15,       # 희석 주식수 1년 증가율 > 15% → 하드 킬
+    "DILUTION_WARN": 0.05,       # > 5% → 경고
+}
+
+
+def fmt_amount(v: Any, is_krx: bool) -> str:
+    """큰 금액 문구: 한국 '1.2조 원'·'3,400억 원', 미국 '$42.4B'·'$850M'."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return NO_DATA
+    sign = "−" if f < 0 else ""
+    a = abs(f)
+    if is_krx:
+        return f"{sign}{a / 1e12:,.1f}조 원" if a >= 1e12 else f"{sign}{a / 1e8:,.0f}억 원"
+    return f"{sign}${a / 1e9:,.1f}B" if a >= 1e9 else f"{sign}${a / 1e6:,.0f}M"
+
+
+def evaluate_survival(ocf: Optional[float], fcf: Optional[float], liquid: Optional[float],
+                      current_debt: Optional[float], dilution: Optional[float], is_financial: bool = False,
+                      capex: Optional[float] = None, debt_change: Optional[float] = None,
+                      is_krx: bool = False) -> Dict[str, Any]:
+    """재무 생존성 3지표 판정 (숫자로 판정, 문구는 표시용). 금액 단위는 종목 통화(원·달러).
+
+    ① 런웨이: FCF 흑자면 해당 없음. FCF 적자이면서
+        - 영업현금 < 0 (영업 자체가 현금을 태움) 또는 영업현금 모름 → 보유 현금 ÷ FCF 적자로 판정(킬 < 1년, 경고 < 2년)
+        - 영업현금 ≥ 0 (설비투자가 영업현금을 넘음) → 킬 아님, '투자 지출로 FCF 적자' 경고
+    ② 차입 상환 여력: (보유 현금 + 영업현금) ÷ 1년 내 만기 차입. 킬 < 1.0배, 경고 < 1.5배.
+        영업현금을 모르면 보유 현금만으로 계산하고 킬은 걸지 않는다(경고만, < 1.0배).
+    ③ 희석: 킬 > 15%, 경고 > 5%.
+    금융업(은행·보험·증권)은 예금·차입이 영업 자체라 이 지표가 맞지 않아 '해당 없음'(자본비율 미연결)."""
+    C = SURVIVAL_CONFIG
+    fa = lambda v: fmt_amount(v, is_krx)
+    out: Dict[str, Any] = {"version": C["VERSION"], "kill": False, "warning": False, "kill_reasons": [], "warn_reasons": [],
+                           "runway_years": None, "runway_text": NO_DATA, "capex_driven_deficit": False,
+                           "coverage_ratio": None, "coverage_text": NO_DATA, "dilution": dilution, "dilution_text": NO_DATA,
+                           "checked_count": 0, "applicable": True}
+    if is_financial:
+        out.update(applicable=False, runway_text="해당 없음 (금융업 — 자본비율로 봐야 함, 미연결)",
+                   coverage_text="해당 없음 (금융업)", dilution_text="해당 없음 (금융업)")
+        return out
+
+    # ① 런웨이
+    if fcf is None:
+        pass
+    elif fcf >= 0:
+        out["runway_text"] = f"FCF 흑자 {fa(fcf)} (해당 없음)"
+        out["checked_count"] += 1
+    elif ocf is not None and ocf >= 0:
+        out["capex_driven_deficit"] = True
+        out["checked_count"] += 1
+        bits = [f"영업현금 {fa(ocf)}"] + ([f"설비투자 {fa(-abs(capex))}"] if capex is not None else []) + [f"FCF {fa(fcf)}"]
+        if debt_change is not None:
+            bits.append(f"1년 새 차입 {'+' if debt_change >= 0 else ''}{fa(debt_change)}")
+        out["runway_text"] = "투자 지출로 FCF 적자 — 영업은 현금을 벌고 있음 (" + " · ".join(bits) + ")"
+        out["warning"] = True
+        out["warn_reasons"].append("투자 지출로 FCF 적자")
+    elif liquid is None:
+        out["runway_text"] = f"{NO_DATA} (FCF 적자이나 보유 현금 미확인)"
+    else:
+        yrs = max(0.0, float(liquid)) / abs(float(fcf))
+        out["runway_years"] = round(yrs, 2)
+        out["checked_count"] += 1
+        why = "영업현금 적자" if ocf is not None else "영업현금 미확인"
+        if yrs < C["RUNWAY_KILL_YEARS"]:
+            out["kill"] = True
+            out["kill_reasons"].append(f"현금 소진 런웨이 {yrs:.2f}년 < {C['RUNWAY_KILL_YEARS']:.0f}년 ({why})")
+            tag = "하드 킬"
+        elif yrs < C["RUNWAY_WARN_YEARS"]:
+            out["warning"] = True
+            out["warn_reasons"].append(f"현금 소진 런웨이 {yrs:.2f}년 < {C['RUNWAY_WARN_YEARS']:.0f}년")
+            tag = "경고"
+        else:
+            tag = "양호"
+        out["runway_text"] = f"{yrs:.2f}년 ({tag} — 보유 현금 {fa(liquid)} ÷ FCF 적자 {fa(fcf)}, {why})"
+
+    # ② 차입 상환 여력
+    if current_debt is not None and liquid is not None:
+        out["checked_count"] += 1
+        if current_debt <= 0:
+            out["coverage_text"] = "1년 내 만기 차입 없음"
+        else:
+            if ocf is not None:
+                cov = max(0.0, float(liquid) + float(ocf)) / float(current_debt)
+                out["coverage_ratio"] = round(cov, 2)
+                base = f"(보유 현금 {fa(liquid)} + 영업현금 {fa(ocf)}) ÷ 1년 내 만기 차입 {fa(current_debt)}"
+                if cov < C["COVERAGE_KILL"]:
+                    out["kill"] = True
+                    out["kill_reasons"].append(f"차입 상환 여력 {cov:.2f}배 < {C['COVERAGE_KILL']:.1f}배")
+                    tag = "하드 킬"
+                elif cov < C["COVERAGE_WARN"]:
+                    out["warning"] = True
+                    out["warn_reasons"].append(f"차입 상환 여력 {cov:.2f}배 < {C['COVERAGE_WARN']:.1f}배")
+                    tag = "경고"
+                else:
+                    tag = "양호"
+            else:
+                cov = max(0.0, float(liquid)) / float(current_debt)
+                out["coverage_ratio"] = round(cov, 2)
+                base = f"보유 현금 {fa(liquid)} ÷ 1년 내 만기 차입 {fa(current_debt)}, 영업현금 미확인 — 킬 판정 안 함"
+                if cov < C["COVERAGE_KILL"]:
+                    out["warning"] = True
+                    out["warn_reasons"].append(f"현금만으로 1년 내 만기 차입의 {cov:.2f}배 (영업현금 미확인)")
+                    tag = "경고"
+                else:
+                    tag = "양호"
+            out["coverage_text"] = f"{cov:.2f}배 ({tag} — {base})"
+
+    # ③ 희석
+    if dilution is not None:
+        out["checked_count"] += 1
+        d = float(dilution)
+        if d > C["DILUTION_KILL"]:
+            out["kill"] = True
+            out["kill_reasons"].append(f"주식 희석 {d * 100:.1f}% > {C['DILUTION_KILL'] * 100:.0f}%")
+            tag = "하드 킬"
+        elif d > C["DILUTION_WARN"]:
+            out["warning"] = True
+            out["warn_reasons"].append(f"주식 희석 {d * 100:.1f}% > {C['DILUTION_WARN'] * 100:.0f}%")
+            tag = "경고"
+        else:
+            tag = "양호"
+        out["dilution_text"] = f"{d * 100:.1f}% ({tag})"
+    if out["kill"]:
+        out["warning"] = True
+    return out
+
+
+_SURV_EXTRA_KEYS = ["ocf_ttm_krw", "capex_ttm_krw", "liquid_krw", "current_debt_krw", "debt_change_1y_krw"]
+
+
 def _kr_liquidity_and_survival(blk: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Optional[float]]:
     L, P = blk.get("latest", {}), blk.get("prev", {})
     out: Dict[str, Optional[float]] = {"net_cash_krw": None, "fcf_ttm_krw": None,
-                                       "short_term_debt_ratio": None, "share_dilution_yoy": None}
+                                       "short_term_debt_ratio": None, "share_dilution_yoy": None,
+                                       **{k: None for k in _SURV_EXTRA_KEYS}}
     cash = L.get("cash")
     liquid = None if cash is None else cash + (L.get("sti") or 0.0)
     debt_items = {k: L.get(k) for k in ("debt_short", "debt_cur_ltd", "debt_long", "bonds") if L.get(k) is not None}
@@ -301,7 +446,14 @@ def _kr_liquidity_and_survival(blk: Dict[str, Any], meta: Dict[str, Any]) -> Dic
     short_items = [L.get(k) for k in ("debt_short", "debt_cur_ltd") if L.get(k) is not None]
     if liquid is not None and liquid > 0 and short_items:
         out["short_term_debt_ratio"] = sum(short_items) / liquid
+    out["liquid_krw"] = liquid
+    out["current_debt_krw"] = float(sum(short_items)) if short_items else None
+    prev_debt = [P.get(k) for k in ("debt_short", "debt_cur_ltd", "debt_long", "bonds") if P.get(k) is not None]
+    if debt_items and prev_debt:
+        out["debt_change_1y_krw"] = float(sum(debt_items.values()) - sum(prev_debt))
     ocf, capex = L.get("ocf"), L.get("capex")
+    out["ocf_ttm_krw"] = ocf
+    out["capex_ttm_krw"] = None if capex is None else abs(capex)
     if ocf is not None and capex is not None:
         out["fcf_ttm_krw"] = ocf - abs(capex)
         meta["notes"].append("FCF: 최근 사업연도(연간) OCF − 유형자산 취득")
@@ -316,7 +468,8 @@ def _kr_liquidity_and_survival(blk: Dict[str, Any], meta: Dict[str, Any]) -> Dic
 
 def _us_liquidity_and_survival(tk: Any, meta: Dict[str, Any]) -> Dict[str, Optional[float]]:
     out: Dict[str, Optional[float]] = {"net_cash_krw": None, "fcf_ttm_krw": None,
-                                       "short_term_debt_ratio": None, "share_dilution_yoy": None}
+                                       "short_term_debt_ratio": None, "share_dilution_yoy": None,
+                                       **{k: None for k in _SURV_EXTRA_KEYS}}
     try:
         bs = tk.quarterly_balance_sheet
         liquid = (_stmt_series(bs, ["Cash Cash Equivalents And Short Term Investments"]) or [None])[0]
@@ -328,10 +481,21 @@ def _us_liquidity_and_survival(tk: Any, meta: Dict[str, Any]) -> Dict[str, Optio
             out["net_cash_krw"] = liquid - total_debt
         if liquid is not None and liquid > 0 and cur_debt is not None:
             out["short_term_debt_ratio"] = cur_debt / liquid
+        out["liquid_krw"] = liquid
+        out["current_debt_krw"] = cur_debt
+        td_all = _stmt_series(bs, ["Total Debt"])
+        if len(td_all) >= 5 and td_all[0] is not None and td_all[4] is not None:
+            out["debt_change_1y_krw"] = float(td_all[0] - td_all[4])
     except Exception:
         meta["notes"].append("분기 재무상태표 없음")
     try:
         cf = tk.quarterly_cashflow
+        ocf_q4 = _stmt_series(cf, ["Operating Cash Flow", "Cash Flow From Continuing Operating Activities"])
+        cap_q4 = _stmt_series(cf, ["Capital Expenditure", "Purchase Of PPE"])
+        if len(ocf_q4) >= 4 and all(v is not None for v in ocf_q4[:4]):
+            out["ocf_ttm_krw"] = float(sum(ocf_q4[:4]))
+        if len(cap_q4) >= 4 and all(v is not None for v in cap_q4[:4]):
+            out["capex_ttm_krw"] = float(sum(abs(c) for c in cap_q4[:4]))
         fcf_q = _stmt_series(cf, ["Free Cash Flow"])
         if len(fcf_q) >= 4 and all(v is not None for v in fcf_q[:4]):
             out["fcf_ttm_krw"] = float(sum(fcf_q[:4]))
@@ -372,7 +536,7 @@ def fetch_real_fundamental_inputs(ticker: str, current_price: float) -> Dict[str
             "company_roe", "peer_median_roe", "company_fwd_growth", "peer_median_fwd_growth",
             "shareholder_return_advantage", "price_12m_ago", "eps_lag_12m_ago", "eps_lag_now",
             "mkt_per_12m_ago", "mkt_per_now", "ind_per_12m_ago", "ind_per_now", "historical_max_5y_cagr",
-            "consensus_target_price", "net_cash_krw", "fcf_ttm_krw", "short_term_debt_ratio", "share_dilution_yoy"]
+            "consensus_target_price", "net_cash_krw", "fcf_ttm_krw", "short_term_debt_ratio", "share_dilution_yoy"] + _SURV_EXTRA_KEYS
     vals: Dict[str, Any] = {k: None for k in keys}
 
     try:
@@ -751,26 +915,18 @@ def analyze_fundamental_track(
     # -----------------------------------------------------------------
     fcf_ttm = f.get("fcf_ttm_krw")
     net_cash = f.get("net_cash_krw")
-    runway_warn = False
-    if fcf_ttm is None:
-        runway_str = NO_DATA
-    elif fcf_ttm >= 0:
-        runway_str = "FCF 흑자 (해당 없음)"
-    elif net_cash is None:
-        runway_str = f"{NO_DATA} (FCF 적자이나 순현금 미확인)"
-    elif net_cash > 0 and (net_cash / abs(fcf_ttm)) >= 2.0:
-        runway_str = f"{net_cash / abs(fcf_ttm):.1f}년 (순현금 방어)"
-    else:
-        rw_yrs = max(0.0, net_cash / abs(fcf_ttm)) if net_cash > 0 else 0.0
-        runway_str = f"{rw_yrs:.1f}년 (위험 < 2.0년)"
-        runway_warn = True
-
-    debt_mat_ratio = f.get("short_term_debt_ratio")
-    debt_warn = bool(debt_mat_ratio is not None and debt_mat_ratio > 1.00)
+    liquid = f.get("liquid_krw")
+    if liquid is None and net_cash is not None and net_cash > 0:
+        liquid = net_cash   # 보유 현금을 못 받았을 때: 순현금(> 0)은 보유 현금의 하한이라 보수적인 대용값
     dilution_yoy = f.get("share_dilution_yoy")
-    dilution_warn = bool(dilution_yoy is not None and dilution_yoy > 0.05)
-    survival_warning = bool(runway_warn or debt_warn or dilution_warn)
-    survival_checked = sum(1 for v in (fcf_ttm, debt_mat_ratio, dilution_yoy) if v is not None)
+    surv = evaluate_survival(
+        ocf=f.get("ocf_ttm_krw"), fcf=fcf_ttm, liquid=liquid, current_debt=f.get("current_debt_krw"),
+        dilution=dilution_yoy, is_financial=bool(f.get("is_financial_sector")), capex=f.get("capex_ttm_krw"),
+        debt_change=f.get("debt_change_1y_krw"), is_krx=is_krx)
+    runway_str = surv["runway_text"]
+    dilution_warn = bool(dilution_yoy is not None and dilution_yoy > SURVIVAL_CONFIG["DILUTION_WARN"] and surv["applicable"])
+    survival_warning = bool(surv["warning"])
+    survival_checked = surv["checked_count"]
 
     # -----------------------------------------------------------------
     # F2. 피어 대비 프리미엄·디스카운트 정당화 8대 요인 비교표[cite: 4]
@@ -1354,9 +1510,18 @@ def analyze_fundamental_track(
             },
         },
         "financial_survival": {
+            "version": surv["version"],
+            "applicable": surv["applicable"],
             "fcf_runway_years": runway_str,
-            "debt_maturity_1y_ratio": None if debt_mat_ratio is None else round(float(debt_mat_ratio), 2),
+            "runway_years": surv["runway_years"],
+            "capex_driven_deficit": surv["capex_driven_deficit"],
+            "coverage_ratio": surv["coverage_ratio"],
+            "coverage_text": surv["coverage_text"],
             "share_dilution_yoy": _r4(dilution_yoy),
+            "dilution_text": surv["dilution_text"],
+            "survival_kill": surv["kill"],
+            "kill_reasons": surv["kill_reasons"],
+            "warn_reasons": surv["warn_reasons"],
             "survival_warning": survival_warning,
             "checked_count": survival_checked,
         },

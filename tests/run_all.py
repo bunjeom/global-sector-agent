@@ -37,6 +37,7 @@ ENGINE_TESTS = [
     ("매매 틀 v2 판정 (추세 상태·근거 저울·틀 B 단계)", "test_playbook.py", [], {}),
     ("신호 기록 장부 (하루 기록·중복 없음·채점 손 계산)", "test_ledger.py", [], {}),
     ("섹터 흐름 그래프 (축 밖 꼬리·축 범위·라벨 위치)", "test_rrg_chart.py", [], {}),
+    ("재무 생존성 v2 (투자 주도 FCF 적자·상환 여력·금융업, 하드 킬 연결)", "test_survival.py", [], {}),
 ]
 
 PAGE_TESTS = [

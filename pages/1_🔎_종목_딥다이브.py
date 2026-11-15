@@ -1477,17 +1477,15 @@ with tab_t3:
 
             sr = vt["scenario_returns"]
             cb_str = f" · CycleBear {sr['cycle_bear']*100:+.1f}%" if sr.get("cycle_bear") is not None else ""
-            _dm, _dl = fsurv["debt_maturity_1y_ratio"], fsurv["share_dilution_yoy"]
-            _dm_s = engine.NO_DATA if _dm is None else f"{_dm*100:.0f}% {'(🔴 차환 경고)' if _dm > 1.0 else '(🟢 안정)'}"
-            _dl_s = engine.NO_DATA if _dl is None else f"{_dl*100:.1f}% {'(🔴 희석 경고)' if _dl > 0.05 else '(🟢 적정)'}"
+
             html_md(f"""
             <div class="term-card">
-                <div style="font-weight:700;margin-bottom:6px;">{utils.line_icon("layers", 15)}F7-4 & F9. 시나리오 기대수익률 및 재무 생존성 3지표</div>
+                <div style="font-weight:700;margin-bottom:6px;">{utils.line_icon("layers", 15)}F7-4 & F9. 시나리오 기대수익률 및 재무 생존성 3지표 <span style="font-weight:400;font-size:0.8rem;color:#64748b;">({_esc(fsurv.get("version", ""))})</span></div>
                 <ul class="term-list">
                     <li><b>1Y 시나리오 수익률 (배당 포함):</b> Bull <b>{pct(sr["bull"], True)}</b> · Base <b>{pct(sr["base"], True)}</b> · Bear <b>{pct(sr["bear"], True)}</b>{cb_str}</li>
-                    <li><b>① FCF 소진 런웨이:</b> {fsurv["fcf_runway_years"]}</li>
-                    <li><b>② 1년 내 차입 만기 부담 (현금 대비):</b> {_dm_s}</li>
-                    <li><b>③ 연간 주식 희석률 (YoY):</b> {_dl_s}</li>
+                    <li><b>① 현금 소진 런웨이:</b> {_esc(fsurv["fcf_runway_years"])}</li>
+                    <li><b>② 1년 내 만기 차입 상환 여력:</b> {_esc(fsurv.get("coverage_text"))}</li>
+                    <li><b>③ 연간 주식 희석률 (YoY):</b> {_esc(fsurv.get("dilution_text"))}</li>
                 </ul>
             </div>
             """)
@@ -1529,7 +1527,8 @@ with tab_t3:
             "eps_lag_12m_ago": "12개월 전 후행 EPS", "eps_lag_now": "현재 후행 EPS", "mkt_per_12m_ago": "시장 PER(12개월 전)", "mkt_per_now": "시장 PER(현재)",
             "ind_per_12m_ago": "업종 PER(12개월 전)", "ind_per_now": "업종 PER(현재)", "historical_max_5y_cagr": "역대 최고 5Y CAGR",
             "consensus_target_price": "컨센서스 목표가", "rf_10y": "무위험수익률(10년 국채)", "net_cash_krw": "순현금", "fcf_ttm_krw": "FCF", "short_term_debt_ratio": "단기차입 비율",
-            "share_dilution_yoy": "주식 희석률",
+            "share_dilution_yoy": "주식 희석률", "ocf_ttm_krw": "영업현금흐름(12개월)", "capex_ttm_krw": "설비투자(12개월)",
+            "liquid_krw": "보유 현금", "current_debt_krw": "1년 내 만기 차입", "debt_change_1y_krw": "1년 차입 변화",
         }
         _miss = [_lab.get(k, k) for k in idata.get("missing", [])]
         st.write("못 받은 입력: " + (", ".join(_miss) if _miss else "없음"))
