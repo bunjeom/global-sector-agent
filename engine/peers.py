@@ -28,7 +28,7 @@ from .playbook import STATE_DOWN, STATE_SIDE, STATE_UP, _pb_market, light_band_z
 from .snapshot import _cell, _f, snapshot_universe
 
 PEER_CONFIG: Dict[str, Any] = {
-    "VERSION": "피어 비교 v1.1 (2026-11-15)",
+    "VERSION": "피어 비교 v1.2 (2026-11-16)",
     "DIR": os.path.join("data", "peers"),
     "MAP_FILE": "peer_map.csv",
     "TIMEZONE": "Asia/Seoul",
@@ -118,9 +118,12 @@ def derive_metrics(fund: Dict[str, Any], price: Optional[Dict[str, Any]] = None)
     if e1 is not None and e30 is not None and e30 > 0:
         out["fy1_change_30d"] = e1 / e30 - 1.0
     px = _f((price or {}).get("price")) or g("price")
-    pe = g("fwd_pe_info")
-    if (pe is None or pe <= 0) and px is not None and e1 is not None and e1 > 0:
-        pe = px / e1
+    # v1.2: 선행 PER = 오늘 가격 ÷ FY1(이번 회계연도) 컨센서스 EPS — 모든 종목을 같은 기준으로.
+    # 야후 forwardPE는 EPS 기준 연도가 회사·시기마다 달라 FY1 EPS가 없을 때만 쓴다. FY1 EPS가 적자면 PER 없음.
+    if e1 is not None:
+        pe = px / e1 if (px is not None and e1 > 0) else None
+    else:
+        pe = g("fwd_pe_info")
     out["fwd_pe"] = pe if (pe is not None and pe > 0) else None
     eg = out["eps_growth_fwd"]
     if out["fwd_pe"] is not None and eg is not None and eg > 0:
@@ -601,9 +604,10 @@ def latest_peer_view(ticker: str, base_dir: Optional[str] = None, ranks: Optiona
     fd = me.get("fund_date")
     fu = load_peer_fund(base_dir) if fund is None else fund
     if len(fu) and fd is not None and not pd.isna(fd):
-        extra = fu[fu["fund_date"] == pd.Timestamp(fd)][["ticker", "short_name", "surv_text", "next_earnings_date"]].drop_duplicates("ticker")
+        keep = ["ticker", "short_name", "surv_text", "next_earnings_date", "market", "eps_fy1", "n_fy1", "up_30d", "down_30d"]
+        extra = fu[fu["fund_date"] == pd.Timestamp(fd)][[c for c in keep if c in fu]].drop_duplicates("ticker")
         tbl = tbl.merge(extra, on="ticker", how="left")
-    for c in ("short_name", "surv_text", "next_earnings_date"):
+    for c in ("short_name", "surv_text", "next_earnings_date", "market", "eps_fy1", "n_fy1", "up_30d", "down_30d"):
         if c not in tbl:
             tbl[c] = None
     tbl = tbl.sort_values("value_score", ascending=False, na_position="last").reset_index(drop=True)
@@ -683,3 +687,146 @@ def peer_summary(view: Dict[str, Any]) -> Dict[str, Any]:
             "surv_kill": str(me.get("surv_kill")).lower() == "true", "surv_warning": str(me.get("surv_warning")).lower() == "true",
             "surv_text": None if me.get("surv_text") is None or pd.isna(me.get("surv_text")) else str(me.get("surv_text")),
             "next_earnings_date": None if me.get("next_earnings_date") is None or pd.isna(me.get("next_earnings_date")) else str(me.get("next_earnings_date"))}
+
+
+# ------------------------------------------------------------------ 3단계: 앞서려면 (피어 상위 25% 기준까지 남은 차이) — 사전 등록
+GAP_RULES: Dict[str, float] = {"TOP_Q": 0.25, "TARGET_FACTOR_SCORE": 75.0}
+
+
+def _money(v: Optional[float], market: Any) -> str:
+    x = _f(v)
+    if x is None:
+        return NO_DATA
+    return f"{x:,.0f}원" if str(market) == "KR" else f"${x:,.2f}"
+
+
+def metric_thresholds(tbl: pd.DataFrame) -> Dict[str, Optional[float]]:
+    """지표마다 피어 상위 25% 기준값(좋은 쪽 25% 경계, 하드 킬 제외). 클수록 좋으면 75% 분위, 작을수록 좋으면 25% 분위."""
+    killed = tbl["surv_kill"].astype(str).str.lower().eq("true") if "surv_kill" in tbl else pd.Series(False, index=tbl.index)
+    base = tbl[~killed]
+    out: Dict[str, Optional[float]] = {}
+    for key, _, direction, _ in PEER_METRICS:
+        v = pd.to_numeric(base[key], errors="coerce").dropna() if key in base else pd.Series(dtype=float)
+        if len(v) < 2:
+            out[key] = None
+            continue
+        q = 1.0 - GAP_RULES["TOP_Q"] if direction > 0 else GAP_RULES["TOP_Q"]
+        out[key] = float(v.quantile(q))
+    return out
+
+
+def _metric_condition(key: str, me: Dict[str, Any], target: Optional[float]) -> Optional[Dict[str, Any]]:
+    """한 지표가 상위 25% 기준에 못 미치면 무엇이 얼마나 바뀌어야 하는지(산수). 이미 넘었거나 계산 불가면 None."""
+    cur = _f(me.get(key))
+    if cur is None or target is None:
+        return None
+    direction = next(m[2] for m in PEER_METRICS if m[0] == key)
+    if (direction > 0 and cur >= target) or (direction < 0 and cur <= target):
+        return None
+    mk, eps = me.get("market"), _f(me.get("eps_fy1"))
+    fm = lambda v: fmt_peer_metric(key, v)
+    if key == "fwd_pe":
+        chg = target / cur - 1.0
+        price_now = cur * eps if eps is not None and eps > 0 else None
+        txt = (f"가격 경로: 주가 {_money(target * eps, mk)} 이하(지금 {_money(price_now, mk)}, {chg * 100:+.1f}%)" if price_now else
+               f"가격 경로: 주가 {chg * 100:+.1f}%")
+        if eps is not None and eps > 0:
+            txt += f" · 실적 경로: 주가 그대로면 FY1 EPS {_money(price_now / target, mk)} 이상({(cur / target - 1.0) * 100:+.1f}%)"
+        return {"metric": key, "kind": "가격·실적", "current": cur, "target": target,
+                "text": f"선행 PER {fm(cur)} → {fm(target)} 이하. {txt}"}
+    if key == "peg":
+        g = _f(me.get("eps_growth_fwd"))
+        txt = f"주가 {(target / cur - 1.0) * 100:+.1f}%(성장 그대로)"
+        if g is not None and g > 0:
+            txt += f" 또는 선행 EPS 성장 {g * 100:.1f}% → {g * cur / target * 100:.1f}% 이상(주가 그대로)"
+        return {"metric": key, "kind": "가격·실적", "current": cur, "target": target, "text": f"PEG {fm(cur)} → {fm(target)} 이하: {txt}"}
+    if key == "band_z":
+        return {"metric": key, "kind": "가격", "current": cur, "target": target,
+                "text": f"자기 PER 밴드 {fm(cur)} → {fm(target)} 이하(자기 역사 대비 더 싸져야 — 주가 하락 또는 이익 증가)"}
+    if key == "rev_net_30d":
+        n = _f(me.get("n_fy1"))
+        up, dn = _f(me.get("up_30d")), _f(me.get("down_30d"))
+        extra = ""
+        if n is not None and n > 0:
+            need = math.ceil(target * n - 1e-9)
+            now = f"지금 {int(up - dn):+d}건, " if up is not None and dn is not None else ""
+            extra = f" — 상향 − 하향 {need:+d}건 이상({now}애널리스트 {int(n)}명)"
+        return {"metric": key, "kind": "추정치", "current": cur, "target": target,
+                "text": f"30일 추정치 순상향 {fm(cur)} → {fm(target)} 이상{extra}"}
+    if key == "fy1_change_30d":
+        return {"metric": key, "kind": "추정치", "current": cur, "target": target,
+                "text": f"FY1 추정치 30일 변화 {fm(cur)} → {fm(target)} 이상(추정치가 올라가야)"}
+    if key == "rs63":
+        return {"metric": key, "kind": "가격 흐름", "current": cur, "target": target,
+                "text": f"섹터 ETF 대비 63일 상대강도 {fm(cur)} → {fm(target)} 이상 — 섹터 ETF보다 {(target - cur) * 100:.1f}%p 더 올라야"}
+    if key == "state_pt":
+        want = STATE_UP if target > 1.0 else (STATE_SIDE if target > 0.0 else STATE_DOWN)
+        return {"metric": key, "kind": "가격 흐름", "current": cur, "target": target,
+                "text": f"틀 A 추세 상태 {fm(cur)} → {want}(피어 상위 25% 기준)"}
+    label = next(m[3] for m in PEER_METRICS if m[0] == key).split("(")[0]
+    return {"metric": key, "kind": "실적", "current": cur, "target": target,
+            "text": f"{label} {fm(cur)} → {fm(target)} 이상({(target - cur) * 100:+.1f}%p)"}
+
+
+def peer_gaps(view: Dict[str, Any]) -> Dict[str, Any]:
+    """앞서려면: ① 요인마다(점수 < 75) 지표별로 피어 상위 25% 기준까지 남은 차이 ② 전략별 '가장 가까운 경로' =
+    그 요인 하나만 점수 75(상위 25% 기준)에 닿았을 때 전략 점수가 가장 많이 오르는 요인(다른 종목은 그대로 두고 새 순위도 계산)
+    ③ 다음 실적 발표일에 확인할 항목(실적·추정치 조건)."""
+    if not view.get("available"):
+        return {"available": False, "reason": view.get("reason")}
+    tbl, me = view["table"], view["me"]
+    th = metric_thresholds(tbl)
+    tgt = GAP_RULES["TARGET_FACTOR_SCORE"]
+    factors = []
+    for fk, flabel in FACTOR_LABELS.items():
+        sc = _f(me.get(f"f_{fk}"))
+        conds = [c for c in (_metric_condition(k, me, th.get(k)) for k, f2, _, _ in PEER_METRICS if f2 == fk) if c]
+        factors.append({"factor": fk, "label": flabel, "score": sc, "below": sc is not None and sc < tgt, "conditions": conds})
+    killed_me = str(me.get("surv_kill")).lower() == "true"
+    nearest: Dict[str, Any] = {}
+    for sname, cfg in PEER_CONFIG["STRATEGIES"].items():
+        cur_scores = pd.to_numeric(tbl[f"{sname}_score"], errors="coerce")
+        old = _f(me.get(f"{sname}_score"))
+        old_rank = _f(me.get(f"{sname}_rank"))
+        if killed_me or old is None or old_rank is None:
+            nearest[sname] = {"available": False, "reason": "순위 없음(생존성 하드 킬·피어 부족·자료 부족)"}
+            continue
+        others = cur_scores[tbl["ticker"].astype(str) != str(me.get("ticker"))].dropna()
+        if int(old_rank) == 1:
+            second = others.max() if len(others) else None
+            if second is not None and abs(old - second) < 1e-9:
+                tail = " — 공동 1위"
+            else:
+                tail = "" if second is None else f" — 2위와 {old - second:.1f}점 차"
+            nearest[sname] = {"available": True, "already_top": True, "text": f"{cfg['label']}: 이미 1위{tail}"}
+            continue
+        fs = {fk: _f(me.get(f"f_{fk}")) for fk in FACTOR_LABELS}
+        best = None
+        for fk in [cfg["core"]] + cfg["aux"]:
+            if fs.get(fk) is None or fs[fk] >= tgt:
+                continue
+            new, _ = strategy_score({**fs, fk: tgt}, sname)
+            if new is None:
+                continue
+            gain = new - old
+            new_rank = int((others > new).sum()) + 1
+            if best is None or gain > best["gain"] + 1e-12:
+                best = {"factor": fk, "label": FACTOR_LABELS[fk], "old_score": old, "new_score": new, "gain": gain,
+                        "old_rank": int(old_rank), "new_rank": new_rank}
+        if best is None:
+            nearest[sname] = {"available": True, "already_top": False, "factor": None,
+                              "text": f"{cfg['label']}: 모든 요인이 이미 상위 25% 기준 이상 — 남은 차이는 다른 종목과의 점수 차"}
+        else:
+            conds = next(f["conditions"] for f in factors if f["factor"] == best["factor"])
+            if best["new_rank"] < best["old_rank"]:
+                rk_txt = f"{best['old_rank']}위 → {best['new_rank']}위"
+            else:
+                lead = others.max() if len(others) else None
+                rk_txt = f"순위는 {best['old_rank']}위 그대로" + ("" if lead is None else f"(1위와 {lead - best['new_score']:.1f}점 차가 남음)")
+            best.update(available=True, already_top=False, conditions=conds,
+                        text=f"{cfg['label']}: {best['label']}만 피어 상위 25% 수준이 되면 {best['old_score']:.0f}점 → {best['new_score']:.0f}점, {rk_txt}")
+            nearest[sname] = best
+    check = [c["text"] for f in factors if f["below"] for c in f["conditions"] if c["kind"] in ("실적", "추정치", "가격·실적")]
+    nd = me.get("next_earnings_date")
+    return {"available": True, "thresholds": th, "factors": factors, "nearest": nearest, "check_items": check,
+            "next_earnings_date": None if nd is None or (isinstance(nd, float) and math.isnan(nd)) else str(nd)}

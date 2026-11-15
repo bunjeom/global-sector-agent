@@ -236,11 +236,13 @@ _pb_ok = _pb_ok and _t1 and _bt_ok
 # ---- 피어 비교(이 종목에 투자할 이유): 가짜 기록이면 결론 카드·강점·약점·표, 기록 없으면 안내
 _pc = [m.value for m in at.markdown if "피어 6종목" in m.value]
 _pdf = [d for d in at.dataframe if "종목" in getattr(d.value, "columns", []) and (d.value["종목"] == TICKER).any()] if hasattr(at, "dataframe") else []
+_gc = [m.value for m in at.markdown if "앞서려면 무엇이 얼마나 바뀌어야 하나" in m.value]
 if PEERMODE == "fake":
-    _peer_ok = bool(_pc) and all(k in _pc[0] for k in ("가치 관점", "추세 관점", "강점", "약점", "검증 상태: 미검증")) and bool(_pdf)
+    _peer_ok = (bool(_pc) and all(k in _pc[0] for k in ("가치 관점", "추세 관점", "강점", "약점", "검증 상태: 미검증")) and bool(_pdf)
+                and bool(_gc) and "가장 가까운 경로" in _gc[0] and "산수 · 예측 아님" in _gc[0])
 else:
     _peer_ok = any("피어 비교: 피어 기록 없음" in i.value for i in at.info)
-print("피어 비교:", _peer_ok, "| 카드", bool(_pc), "| 표", bool(_pdf))
+print("피어 비교:", _peer_ok, "| 카드", bool(_pc), "| 표", bool(_pdf), "| 앞서려면", bool(_gc))
 _pb_ok = _pb_ok and _peer_ok
 # 실적 데이터가 전혀 없는 모드(none)는 화면이 종합 탭 전에 멈추는 것이 정상(가짜 값으로 채우지 않음)
 sys.exit(1 if (at.exception or _bad or _hb or (MODE != "none" and not _pb_ok)) else 0)

@@ -42,7 +42,9 @@ chk("2-4 상대강도·추세 점수(상승 2)", close(dm["rs63"], 0.05) and clo
 neg = engine.derive_metrics({**fund, "eps_fy1": -1.0, "eps_fy2": 2.0, "fwd_pe_info": -15.0}, {"price": 100.0})
 chk("2-5 적자 EPS: PER·PEG·선행 성장 없음", neg["fwd_pe"] is None and neg["peg"] is None and neg["eps_growth_fwd"] is None)
 dec = engine.derive_metrics({**fund, "eps_fy2": 4.0, "fwd_pe_info": 18.0}, {"price": 100.0})
-chk("2-6 이익 감소 예상(성장 ≤ 0): PEG 없음, PER은 야후 값 18", dec["peg"] is None and close(dec["fwd_pe"], 18.0))
+chk("2-6 이익 감소 예상(성장 ≤ 0): PEG 없음, PER은 가격 ÷ FY1 = 20(야후 값 18은 쓰지 않음, v1.2)", dec["peg"] is None and close(dec["fwd_pe"], 20.0))
+chk("2-7 FY1 EPS가 없을 때만 야후 forwardPE", close(engine.derive_metrics({"eps_fy1": None, "fwd_pe_info": 18.0}, {"price": 100.0})["fwd_pe"], 18.0))
+chk("2-8 FY1 EPS 적자면 야후 값이 양수여도 PER 없음", engine.derive_metrics({"eps_fy1": -2.0, "fwd_pe_info": 15.0}, {"price": 100.0})["fwd_pe"] is None)
 
 # 3) 전략 점수
 S = engine.strategy_score
@@ -250,6 +252,29 @@ grow = [r for r in sm["factors"] if r["factor"] == "growth"][0]
 chk("8-3 피어 중앙값은 하드 킬 종목(PK) 빼고: 매출 성장 중앙 +10.0%", "피어 중앙 +10.0%" in grow["detail"], grow["detail"])
 chk("8-4 순서: 강점은 높은 순(성장 100 먼저)", sm["strengths"][0]["score"] >= sm["strengths"][-1]["score"])
 chk("8-5 다음 실적 발표일·버전", sm["next_earnings_date"] == "2027-01-28" and sm["version"] == engine.PEER_CONFIG["VERSION"])
+# 9) 앞서려면 (피어 상위 25% 기준, 하드 킬 제외: NVDA·PA·PB·PC·PD)
+gp = engine.peer_gaps(engine.latest_peer_view("NVDA", base_dir=ft))
+th = gp["thresholds"]
+chk("9 상위 25% 기준: 선행 PER(작을수록) 25% 분위 18, 순상향 75% 분위 0.2, 상대강도 75% 분위 +3%p",
+    close(th["fwd_pe"], 18.0) and close(th["rev_net_30d"], 0.2) and close(th["rs63"], 0.03), th)
+cond = {c["metric"]: c for f in gp["factors"] for c in f["conditions"]}
+pe_t = cond["fwd_pe"]["text"]
+chk("9-2 가격 경로: 주가 $18.00 이하(지금 $28.00 = PER 28 × FY1 EPS 1.0, −35.7%), 실적 경로: FY1 EPS $1.56 이상(+55.6%)",
+    "$18.00 이하(지금 $28.00, -35.7%)" in pe_t and "$1.56 이상(+55.6%)" in pe_t, pe_t)
+chk("9-3 추정치: 상향 − 하향 +4건 이상(0.2 × 20명, 지금 +1건)", "+4건 이상(지금 +1건, 애널리스트 20명)" in cond["rev_net_30d"]["text"], cond["rev_net_30d"]["text"])
+chk("9-4 가격 흐름: 섹터 ETF보다 8.0%p 더 (−5% → +3%)", "8.0%p 더 올라야" in cond["rs63"]["text"], cond["rs63"]["text"])
+chk("9-5 이미 기준 이상인 지표(PEG 0.70 ≤ 1.00)는 조건 없음", "peg" not in cond)
+nv, nt = gp["nearest"]["value"], gp["nearest"]["trend"]
+print("  가장 가까운 경로:", nv["text"], "|", nt["text"])
+chk("9-6 가치: 실적 모멘텀 → 75면 66.7 → 75.0점(밸류에이션 → 75면 72.9점보다 큼), 2위 → 1위",
+    nv["factor"] == "revisions" and close(nv["new_score"], 75.0, 1e-6) and nv["old_rank"] == 2 and nv["new_rank"] == 1, nv)
+chk("9-7 추세: 가격 흐름 → 75면 51.0 → 72.9점, 3위 → 1위", nt["factor"] == "price" and close(nt["new_score"], 72.916666, 1e-4)
+    and nt["new_rank"] == 1, nt)
+gpc = engine.peer_gaps(engine.latest_peer_view("PC", base_dir=ft))
+chk("9-8 이미 1위면 2위와 점수 차", gpc["nearest"]["value"].get("already_top") and "2위와" in gpc["nearest"]["value"]["text"], gpc["nearest"]["value"])
+chk("9-9 다음 실적 발표 때 확인할 항목(실적·추정치 조건)", any("상향 − 하향" in x for x in gp["check_items"]) and gp["next_earnings_date"] == "2027-01-28")
+gpk = engine.peer_gaps(engine.latest_peer_view("PK", base_dir=ft))
+chk("9-10 하드 킬 종목은 경로 없음", not gpk["nearest"]["value"]["available"])
 chk("8-6 기록 없으면 요약도 없음(이유 전달)", not engine.peer_summary(engine.latest_peer_view("NVDA", base_dir=tempfile.mkdtemp()))["available"])
 
 print(f"\n결과: {'통과' if not FAILS else '실패 ' + str(FAILS)}")

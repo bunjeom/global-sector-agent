@@ -582,7 +582,46 @@ def render_peer_section(t: str) -> None:
         return ["background-color:#e0f2fe;font-weight:700;" if on else "" for _ in row]
     st.dataframe(disp.style.apply(_hl, axis=1), width="stretch", hide_index=True)
     st.caption("요인 점수는 피어 안 백분위(100이 가장 좋음). 데이터 없음(-)은 계산에서 빠집니다. 피어 묶음은 회사의 주 수익원 기준이며 "
-               "data/peers/peer_map.csv에서 고칩니다. 앞서려면 무엇이 얼마나 바뀌어야 하는지는 다음 단계(3단계)에서 추가합니다.")
+               "data/peers/peer_map.csv에서 고칩니다.")
+    render_peer_gaps(view)
+
+
+def render_peer_gaps(view: dict) -> None:
+    """딥다이브 개편 3단계: 앞서려면 — 피어 상위 25% 기준까지 남은 차이(산수), 전략별 가장 가까운 경로, 다음 실적 발표 때 확인할 것."""
+    gp = engine.peer_gaps(view)
+    if not gp.get("available"):
+        return
+    chart_heading("앞서려면 — 피어 상위 25% 기준까지 남은 차이")
+    blocks = []
+    for sname, lbl in (("value", "가치 관점"), ("trend", "추세 관점")):
+        nr = gp["nearest"].get(sname) or {}
+        if not nr.get("available"):
+            blocks.append(f'<div style="margin-top:6px;"><b>{lbl}</b>: {_esc(nr.get("reason") or "순위 없음")}</div>')
+            continue
+        conds = "".join(f'<li>{_esc(c["text"])}</li>' for c in (nr.get("conditions") or []))
+        blocks.append(f'<div style="margin-top:6px;"><b>가장 가까운 경로</b> — {_esc(nr["text"])}</div>'
+                      + (f'<ul class="term-list">{conds}</ul>' if conds else ""))
+    chk = gp["check_items"]
+    nd = gp.get("next_earnings_date")
+    chk_html = ""
+    if chk:
+        chk_html = (f'<div style="margin-top:8px;"><b>다음 실적 발표{(" " + _esc(nd)) if nd else ""}에 확인할 것</b></div>'
+                    f'<ul class="term-list">{"".join(f"<li>{_esc(x)}</li>" for x in chk[:6])}</ul>')
+    html_md(f"""
+    <div class="term-card">
+        <div>{utils.line_icon("target", 16)} <b>앞서려면 무엇이 얼마나 바뀌어야 하나</b> <span class="term-badge">산수 · 예측 아님</span></div>
+        {"".join(blocks)}
+        {chk_html}
+        <div style="font-size:0.82rem;color:#64748b;margin-top:6px;">기준: 지표마다 피어 상위 25% 경계값(하드 킬 제외). 가장 가까운 경로 = 그 요인 하나만 피어 상위 25% 수준(점수 75)이 됐을 때 전략 점수가 가장 많이 오르는 요인 — 다른 종목은 그대로 둔 계산입니다. 가격 경로는 주가가 그만큼 내려와야 한다는 뜻이고, 실적 경로는 주가가 그대로일 때 이익이 그만큼 늘어야 한다는 뜻입니다.</div>
+    </div>
+    """)
+    rest = [f for f in gp["factors"] if f["below"] and f["conditions"]]
+    if rest:
+        with st.expander("요인별 전체 조건 (피어 상위 25%에 못 미치는 요인)", expanded=False):
+            for f in rest:
+                st.markdown(f"**{f['label']}** ({f['score']:.0f}점)")
+                for c in f["conditions"]:
+                    st.markdown(f"- {c['text']}")
 
 
 _STAGE_COLOR = {"손절 조건": "#dc2626", "매도 조건": "#ea580c", "경고": "#d97706", "진입 가능": "#16a34a",

@@ -22,7 +22,8 @@ def write_fake_peers(base_dir: str, ticker: str, date: str = "2026-11-16", kill_
         funds.append({"fund_date": date, "ticker": t, "market": "KR" if t.endswith((".KS", ".KQ")) else "US", "group": "test_group",
                       "group_name": "테스트 묶음", "group_source": "수동", "is_coverage": t == ticker, "short_name": f"{t} Corp",
                       "surv_kill": t == "PK", "surv_warning": t == "PD", "surv_text": "주식 희석 6.0% > 5%" if t == "PD" else "양호",
-                      "next_earnings_date": "2027-01-28", "version": engine.PEER_CONFIG["VERSION"]})
+                      "next_earnings_date": "2027-01-28", "eps_fy1": 1.0 + i, "n_fy1": 20, "up_30d": 3, "down_30d": 2,
+                      "version": engine.PEER_CONFIG["VERSION"]})
     sdf = engine.score_group(pd.DataFrame(recs).set_index("ticker", drop=False))
     rows = []
     for t, r in sdf.iterrows():
