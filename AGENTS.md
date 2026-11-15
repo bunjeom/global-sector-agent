@@ -13,6 +13,7 @@
 - `ledger_daily.py` — 신호 기록 장부: 오늘의 틀 A v2 판정 기록(매일 GitHub Actions가 컨센서스 기록 다음에 실행, 결과 `data/ledger/frame_a_<연도>.csv`). 채점은 `run_backtest.py --ledger-eval`
 - `check_playbook.py` — 매매 틀 v2(틀 A) 판정 실제 데이터 점검(PC에서 `python check_playbook.py NVDA 005930.KS --gate 1`)
 - `run_backtest.py` — 판정 규칙 백테스트(PC에서 실제 야후 데이터로 실행, 결과 `data/backtest/REPORT.md`·`summary.json`)
+- `peers_daily.py` — 피어 비교 기록(매일 GitHub Actions 4-4, 결과 `data/peers/peer_fund_<연도>.csv`(재무, 7일마다)·`peer_rank_<연도>.csv`(순위, 매일)). 처음 한 번은 `--full`. 점검 `check_peers.py`(묶음별 요약 → `data/peers/peer_census_날짜.md`). 피어 묶음 수정은 `data/peers/peer_map.csv`
 - `snapshot_daily.py` — 컨센서스·목표가 날짜별 기록 실행(매일 GitHub Actions `daily_agent.yml`이 실행, 결과 `data/snapshots/consensus_<연도>.csv`). 관심 종목은 `data/snapshots/watchlist.txt`에 한 줄에 하나씩 추가
 - `tests/` — 회귀 테스트(가짜 데이터·오프라인). `python tests/run_all.py`로 한 번에 실행
 - `.streamlit/config.toml` — Streamlit 기본 페이지 메뉴 숨김(사이드바 메뉴는 utils.py의 st.page_link)
@@ -46,6 +47,7 @@
 | `snapshot.py` | 컨센서스·목표가 날짜별 기록(SNAPSHOT_CONFIG·SNAPSHOT_COLUMNS): 야후에서 받아 연도별 CSV에 붙임, `load_snapshots`로 읽음 |
 | `sec_facts.py` | SEC 공시일 기준 TTM EPS(SEC_CONFIG): 티커→CIK, EPS 개념 받기·캐시(data/sec_cache/), 4분기 = 연간 − 9개월, 정정 값은 제출일부터, 액면분할 단위 맞춤 |
 | `playbook.py` | 매매 틀 v2 판정(PLAYBOOK_CONFIG): `frame_a_evaluate`(추세 상태·근거 저울 7항목·전환 가능성·의견·청산), `frame_b_evaluate`(적용 범위·단계), `fetch_frame_a_live`(실제 데이터), 점검은 check_playbook.py |
+| `peers.py` | 피어 비교(PEER_CONFIG·PEER_METRICS): `build_groups`(peer_map + 야후 산업), `derive_metrics`·`percentile_ranks`·`strategy_score`·`score_group`(사전 등록 순위 규칙), `run_daily_peers`(재무 주 1회·가격 매일 기록), `latest_peer_view`(딥다이브용) |
 | `ledger.py` | 신호 기록 장부(LEDGER_CONFIG·LEDGER_COLUMNS·LEDGER_EVAL): `run_daily_ledger`(판정+원자료 기록), `load_ledger`, `evaluate_frame_a_ledger`(미리 정한 방법으로 채점) |
 | `frame_backtest.py` | 매매 틀 검증. 틀 A(FRAME_A_CONFIG·FRAME_A_CRITERIA): 개별 종목, 보유 기간 맞춘 무작위와 비교. 틀 B(FRAME_B_CONFIG·FRAME_B_CRITERIA): 미국 개별 종목, SEC EPS로 만든 자기 PER 밴드, 같은 날 다른 종목 평균과 비교. 둘 다 월 묶음 표준오차 |
 
@@ -71,6 +73,7 @@
 - T 트랙 재설계(2026-11-13~): 실제 스캐너는 run_backtest.py --scanner(앱 레이더와 같은 입력으로 날짜별 재현, 캐시 data/backtest/scanner_cache/), 재설계 후보는 --redesign. 후보 규칙·매개변수(55·20일, 2×ATR(20), RSI(2)<10, 5일선)와 판정 기준(TBT_CRITERIA)은 결과를 보기 전에 고정했으므로 결과를 보고 바꾸지 않는다. HOLDOUT_UNIVERSE(해외 국가 ETF)는 판정 전용이라 다른 분석에 쓰지 않는다. 결과와 이후 방향은 4번 '검증 상태'·'다음 작업 순서' 참고.
 - pandas 2·3 모두에서 돌아가게 쓴다(PC는 Python 3.14 + pandas 3, GitHub Actions는 Python 3.11). pandas 3은 문자열 열의 None을 NaN으로 바꾸므로 '값 없음'을 None으로 다뤄야 하는 열은 `dtype=object`로 만들고, 비교는 `is None` 대신 `pd.isna`(또는 playbook의 `_isna`)로 한다. 날짜 열을 합칠 때(merge_asof 등)는 정밀도(초·마이크로초·나노초)를 먼저 맞춘다.
 - 신호 기록 장부(engine/ledger.py, 2026-11-15~): 컨센서스 기록과 같은 규칙(원자료도 함께 저장, 빈칸은 빈칸, 열 순서 고정·새 열은 맨 뒤, 손으로 고치거나 지우지 않음). 줄마다 판정 규칙 버전(`PLAYBOOK_VERSION`)을 저장하고 채점도 버전별로 한다 — **engine/playbook.py의 규칙이나 숫자를 바꾸면 PLAYBOOK_VERSION을 반드시 올린다.** 채점 방법(LEDGER_EVAL)은 결과를 보고 바꾸지 않는다.
+- 피어 비교 기록(engine/peers.py, 2026-11-15~): 장부와 같은 규칙(열 순서 고정·새 열은 맨 뒤, 손으로 고치거나 지우지 않음, 줄마다 PEER_CONFIG['VERSION']). 순위 규칙(가중치·요인·백분위·걸러내기)을 바꾸면 VERSION을 올린다. 손으로 고치는 파일은 `data/peers/peer_map.csv`(피어 묶음)와 `data/snapshots/watchlist.txt`(커버리지)뿐이다.
 - 컨센서스 기록(engine/snapshot.py, 2026-11-14~): 판정 결과가 아니라 원자료를 저장한다. 못 받은 값은 빈칸(전날 값·추정으로 채우지 않음). `snapshot_date`는 받은 날(한국 날짜), `price_as_of`는 가격 데이터의 날짜. 열은 SNAPSHOT_COLUMNS 순서로 고정이며 새 열은 맨 뒤에만 추가한다(이미 쌓인 CSV와 어긋나지 않게). 쌓인 CSV는 손으로 고치거나 지우지 않는다 — 다시 만들 수 없는 자료다. daily_agent.yml은 Python 3.11로 돌므로 engine/ 코드는 3.11 문법을 지킨다.
 - 틀 A 검증(engine/frame_backtest.py, run_backtest.py --frame-a): 규칙·매개변수(6·12개월 상대강도, 200·50일선, RSI(2)<10, 60일 최저가)와 판정 기준(FRAME_A_CRITERIA)은 실제 데이터 결과를 보기 전에 고정했다. 결과를 보고 바꾸지 않는다. 무작위 비교는 반드시 **보유 기간을 맞춘다**(주가는 평균적으로 오르므로, 같은 청산 규칙을 무작위 날짜에 쓰면 보유가 짧아져 우위가 없는 가짜 가격에서도 통과로 나온다 — tests/test_frame_backtest.py 4-7이 이를 막는다). HOLDOUT_UNIVERSE(새 개별 종목)는 판정 전용이다.
 - 틀 B 검증(run_backtest.py --frame-b, .env에 `SEC_USER_AGENT=이름 이메일` 필요): 규칙(자기 5년 로그 PER 밴드 ±1σ, TTM EPS 전년 대비, 배수·이익 분해)과 판정 기준(FRAME_B_CRITERIA)은 실제 데이터 결과를 보기 전에 고정했다. EPS는 제출일 다음 거래일부터 쓴다. 보유가 수백 일인 틀은 '같은 종목 무작위 날짜 + 같은 보유일' 비교가 치우치므로(보유일이 그 종목 경로에 달림, 가짜 가격에서 −6%p) **같은 날 사서 같은 날 판 같은 묶음 다른 종목 평균**과 로그 수익률로 비교한다 — tests/test_frame_b.py 6-1·6-2가 우위 없는/있는 가짜 가격으로 이를 확인한다. FRAME_B_CONFIG HOLDOUT_UNIVERSE는 판정 전용이다.
@@ -185,6 +188,7 @@
 | 홈 실행 레이더 | 신호 기록 장부의 최신 기록(틀 A v2)을 읽어 세 칸으로 표시(2026-11-15): 상승 전환 의견(진입 의견, 크기 = 기본 배수 × GATE_SIZE[국면]) · 관찰(하락·횡보 중 전환 우세지만 진입 아님, 또는 팽팽). 칸마다 6개를 보여 주고 나머지는 접음, 국면 때문에 크기가 0이면 칸 위에 한 번만 알림, 티커 옆 이름은 utils.TICKER_NAMES(표시용) · 보유 점검(상승 중 하락 전환 우세). 기록이 3일보다 오래되면 경고. 기존 셋업 스캐너(ST-1~4)는 '기존 셋업 레이더 보기' 스위치를 켤 때만 계산(장기 검증 미통과) |
 | 종합 판정 | 딥다이브: 틀 A·B 카드 아래에 기존 결정 트리(ARCH_1~8)를 '기존 종합 판정(개편 전 방식)'으로 그대로 둠. 기술 트랙 탭은 맨 위에 틀 A 요약, 그 아래 7상태 기계·셋업·T 티켓을 '기존 셋업 진단 — 장기 검증 미통과'로 표시, 10장 백테스트 상자에 표본·장기 검증 경고 |
 | 컨센서스·목표가 날짜별 저장 | 있음(2026-11-14~) — engine/snapshot.py, 매일 자동 실행. 화면에는 아직 쓰지 않음 |
+| 피어 비교 | 1단계 코드 있음(2026-11-15) — engine/peers.py, peers_daily.py(Actions 4-4), check_peers.py, 테스트 tests/test_peers.py. 첫 실행·묶음 점검 전. 화면 연결은 2단계 |
 | 신호 기록 장부 | 있음(2026-11-15~) — engine/ledger.py, 매일 자동 실행(daily_agent.yml 4-3). 틀 A만 기록(틀 B는 가치·실적 결과가 필요해 화면 개편 때 추가) |
 
 ### 재무 생존성 v2.1 (2026-11-15, engine/fundamental.py `SURVIVAL_CONFIG`·`evaluate_survival`)
@@ -221,6 +225,7 @@
 - 커버리지 = 레이더 대상(섹터 ETF 상위 구성 종목) ∪ 장부 대상(대표 종목 + `data/snapshots/watchlist.txt`). watchlist 한 줄 추가로 컨센서스 기록·신호 장부·피어 비교에 함께 들어간다.
 - 매일 GitHub Actions가 피어 표를 `data/peers/`에 쌓고 화면은 읽기만 한다(쌓인 기록 = 앞으로 채점 자료). 커버리지 밖 종목은 그 자리에서 계산하거나 '관심 종목 추가' 안내.
 - 자료가 있는 피어가 5개 미만이면 '피어 부족' — 순위를 매기지 않는다.
+- 구현 세부(1단계, 결과 보기 전): 자동 피어는 야후 산업 상위 기업 8개(AUTO_PEERS_CAP)까지 + 같은 산업의 커버리지 종목 전부, 커버리지의 ETF 상위 구성 종목은 10개. 재무·추정치·자기 밴드·생존성은 마지막 '전체' 갱신 7일 뒤 다시 받고(종목당 야후 호출이 많아서, 갱신 기록 `data/peers/peer_refresh_log.csv`. 종목을 지정한 빠른 점검은 부분 갱신이라 세지 않음), 가격 흐름(섹터 ETF 대비 63일 상대강도·틀 A 추세 상태)은 매일. 섹터 ETF = 야후 섹터 → SPDR(XLK·XLC·XLF·XLV·XLY·XLP·XLI·XLE·XLU·XLB·XLRE), 한국은 KOSPI. 자기 밴드 z와 생존성 걸러내기는 미국만(한국은 DART가 필요해 딥다이브 V 트랙 값). 적자 EPS의 PER, 선행 성장 ≤ 0인 PEG는 정의하지 않음(빈칸). 백분위는 하드 킬 종목을 뺀 묶음 안에서, 같은 값은 평균 순위, 값이 2개 미만인 지표는 빈칸.
 
 **비교 요인.** 지표마다 피어 안 백분위(0~100, 좋은 쪽이 높게)를 매기고 요인 점수 = 지표 백분위 평균.
 
@@ -228,7 +233,7 @@
 |---|---|
 | 성장 | 매출 성장률(1년), 선행 EPS 성장(FY1→FY2) |
 | 수익성 | 영업이익률, ROE |
-| 실적 모멘텀 | 30일 추정치 상향−하향, FY1 추정치 30일 변화 |
+| 실적 모멘텀 | 30일 추정치 순상향 비율 = (상향 − 하향) ÷ FY1 추정 애널리스트 수(종목마다 애널리스트 수가 달라 건수 차이 대신 비율 — 1단계 구현 때 결과 보기 전에 정함), FY1 추정치 30일 변화 |
 | 밸류에이션 | 선행 PER(낮을수록 좋음), PEG(낮을수록 좋음), 자기 밴드 z(낮을수록 좋음) |
 | 재무 건전성 | 생존성 v2.1 (점수 아님 — 걸러내기) |
 | 가격 흐름 | 섹터 ETF 대비 63일 상대강도, 틀 A 추세 상태(상승 > 횡보 > 하락) |
@@ -262,7 +267,7 @@
 4. ~~종합 화면 개편~~ 완료(2026-11-15): 딥다이브 종합 탭 틀 A·B 카드, 기술 트랙 탭 틀 A 요약, 홈 실행 레이더를 신호 기록 장부 기반으로 교체.
 5. 딥다이브 개편 (위 '투자 방향과 딥다이브 개편 기획'):
    - ~~0단계: 생존성 v2.1~~ 완료(2026-11-15) — 희석 킬 한정, 금융 자회사 판정 보류.
-   - 1단계: 피어 데이터층 — peer_map, 요인 지표 수집, 매일 피어 표(`data/peers/`, Actions), 커버리지 전수 점검(정의 오류 확인용).
+   - 1단계: 피어 데이터층 — 코드 완료(2026-11-15: engine/peers.py, peers_daily.py, check_peers.py, peer_map.csv 한국 4묶음). 남은 것: PC에서 `peers_daily.py --full` 첫 실행 → `check_peers.py`로 묶음 점검(이상한 피어는 peer_map.csv로).
    - 2단계: 딥다이브 위쪽 — 결론 카드, 피어 비교 표, 강점·약점.
    - 3단계: 앞서려면 조건 — 가격 경로·실적 경로·가장 가까운 경로·확인 일정.
    - 4단계: 전략 선택 — 카드 3장, 우선순위, 단기 규칙 구현 + 사전 등록 시험.

@@ -121,13 +121,15 @@ python run_backtest.py --ledger-eval  # 신호 기록 장부 채점 (기록이 �
 ```
 app.py                      홈: 시장 국면, 섹터 흐름(RRG), 실행 레이더(신호 기록 장부)
 pages/1_🔎_종목_딥다이브.py   종목 딥다이브 (종합 + 4개 트랙 탭)
-engine/                     계산 엔진 패키지 (트랙별 분석·데이터 수집층·종합 판정·백테스트, 기능별 19개 모듈)
+engine/                     계산 엔진 패키지 (트랙별 분석·데이터 수집층·종합 판정·백테스트, 기능별 20개 모듈)
 utils.py                    공통 스타일·사이드바
 check_*.py                  실제 데이터 수집 점검 스크립트 (check_playbook.py: 매매 틀 v2 판정)
 run_backtest.py             판정 규칙·매매 틀 백테스트 실행 (결과 data/backtest/)
 check_kill.py               재무 생존성 하드 킬 점검 (v1·v2 판정 비교)
 snapshot_daily.py           컨센서스·목표가 날짜별 기록 (매일 자동 실행, 결과 data/snapshots/)
 ledger_daily.py             신호 기록 장부: 매매 틀 판정 기록 (매일 자동 실행, 결과 data/ledger/)
+peers_daily.py              피어 비교 기록: 묶음별 가치 관점·추세 관점 순위 (매일 자동 실행, 결과 data/peers/)
+check_peers.py              피어 묶음 점검 (묶음별 요약, 이상한 피어 찾기)
 tests/                      회귀 테스트 (가짜 데이터·오프라인, run_all.py로 실행)
 AGENTS.md                   작업 규칙과 매매 틀 설계
 ```

@@ -1,0 +1,2 @@
+# 관심 종목 — 한 줄에 하나 (예: AMZN, 005930.KS). '#' 뒤는 설명.
+# 여기 적으면 컨센서스 기록(snapshot_daily.py)·신호 기록 장부(ledger_daily.py)·피어 비교(peers_daily.py)에 함께 들어간다.
