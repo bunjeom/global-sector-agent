@@ -13,6 +13,7 @@
     .venv\\Scripts\\python run_backtest.py --frame-b       틀 B(저평가 매수) 미국 개별 종목 검증, SEC 공시일 기준 EPS (첫 실행 10분 안팎)
                                                      .env에 SEC_USER_AGENT=이름 이메일 필요 (SEC 접속 규칙)
     .venv\\Scripts\\python run_backtest.py --ledger-eval   신호 기록 장부 채점 (data/ledger/ 기록이 쌓인 뒤, 방법은 engine/ledger.py에 고정)
+    .venv\\Scripts\\python run_backtest.py --short-term    단기 규칙(+3% 익절) 검증 — 대표 종목 + 새 HOLDOUT 84종목 (받기 포함 5~10분)
 
 결과 (data/backtest/):
     REPORT.md          사람이 읽는 보고서 (커밋해 두면 다른 AI도 결과를 읽을 수 있음)
@@ -23,6 +24,7 @@
     FRAME_A.md         틀 A(추세반등) 개별 종목 검증 + frame_a.json (거래 목록 frame_a_trades.csv)
     FRAME_B.md         틀 B(저평가 매수) 검증 + frame_b.json (거래 목록 frame_b_trades.csv, SEC 원자료 캐시 data/sec_cache/)
     LEDGER_EVAL.md     신호 기록 장부 채점 + ledger_eval.json
+    SHORT_TERM.md      단기 규칙 검증 + short_term.json (거래 목록 short_term_trades.csv)
     summary.json       숫자 요약 + 주간 누적 수익 곡선 (이후 화면 표시용)
     *.csv              날짜별 게이트·누적 수익·거래 목록 (용량이 커서 .gitignore로 커밋 제외)
 계산은 engine/rule_backtest.py에 있고, 이 파일은 데이터 다운로드와 저장만 한다.
@@ -245,6 +247,33 @@ def run_frame_a_only(engine, args, t0):
     print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'FRAME_A.md')}")
 
 
+def run_short_term_only(engine, args, t0):
+    """단기 규칙 검증: 개발 묶음(대표 종목) + HOLDOUT(어떤 백테스트에도 쓰지 않은 84종목). 규칙·기준은 결과 전에 고정."""
+    cfg = engine.SHORT_BT_CONFIG
+    dev_uni, ho_uni = list(cfg["DEV_UNIVERSE"]), list(cfg["HOLDOUT_UNIVERSE"])
+    start = cfg["DATA_START"]
+    print(f"[1/2] 가격 받기: 개발 묶음 {len(dev_uni)}개 + HOLDOUT {len(ho_uni)}개 ({start}~)", flush=True)
+    dm, f1 = download(dev_uni, start)
+    hm, f2 = download(ho_uni, start)
+    if f1 or f2:
+        print(f"   받지 못함: {', '.join(f1 + f2)}")
+    if len(hm) < len(ho_uni) * 0.8:
+        print(f"   HOLDOUT을 {len(hm)}/{len(ho_uni)}개만 받았습니다 — 판정에 쓰기엔 부족해 멈춥니다. 잠시 뒤 다시 실행해 주세요.")
+        return
+    print("[2/2] 거래 계산 · 무작위 비교 (종목마다 추세 상태를 날짜별로 다시 계산해 몇 분 걸립니다)", flush=True)
+    out = engine.evaluate_short_term(dm, hm)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    summ = {**out["summary"], "failed_downloads": f1 + f2}
+    rep = engine.render_short_term_report(summ, generated_at=now)
+    if f1 or f2:
+        rep += f"\n- 받지 못한 종목(계산에서 빠짐): {', '.join(f1 + f2)}\n"
+    _save("SHORT_TERM.md", "short_term.json", rep, {"generated_at": now, **summ})
+    if len(out["trades"]):
+        out["trades"].to_csv(os.path.join(OUT_DIR, "short_term_trades.csv"), index=False, encoding="utf-8-sig")
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'SHORT_TERM.md')}")
+
+
 def download_splits(symbols):
     """야후 액면분할 기록 (틀 B: 분할 전 보고서의 EPS를 지금 주식 단위로 맞추는 데 씀)."""
     import yfinance as yf
@@ -369,6 +398,7 @@ def main():
     ap.add_argument("--frame-a", action="store_true", help="틀 A(추세반등) 개별 종목 검증")
     ap.add_argument("--frame-b", action="store_true", help="틀 B(저평가 매수) 미국 개별 종목 검증 (SEC)")
     ap.add_argument("--ledger-eval", action="store_true", help="신호 기록 장부 채점")
+    ap.add_argument("--short-term", action="store_true", help="단기 규칙(+3% 익절) 검증")
     args = ap.parse_args()
     t0 = time.time()
     if args.variants:
@@ -391,6 +421,9 @@ def main():
         return
     if args.ledger_eval:
         run_ledger_eval_only(engine, args, t0)
+        return
+    if args.short_term:
+        run_short_term_only(engine, args, t0)
         return
 
     print(f"[1/4] 지수 데이터 받기 (시작 {args.start})", flush=True)

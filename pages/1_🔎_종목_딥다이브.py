@@ -433,6 +433,20 @@ def fetch_playbook_bench(market: str):
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
+def cached_market_gate(market: str) -> dict:
+    """전략 선택용 국면 게이트 — 홈과 같은 계산(지수 레짐·VIX·거시 문구, 최근 거래일 완화 확인). 지수를 못 받으면 방어 폴백 G2."""
+    pm = {}
+    for sym in ("QQQ", "SPY", "^KS11", "^VIX"):
+        try:
+            d = _clean_ohlcv(yf.Ticker(sym).history(period="3y", auto_adjust=False))
+            if d is not None and len(d):
+                pm[sym] = d
+        except Exception:
+            pass
+    return engine.market_gate_from_prices(pm, market)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
 def cached_consensus(t: str) -> dict:
     """오늘 컨센서스(추정치 상향·하향 건수 등). 못 받은 항목은 None."""
     try:
@@ -655,6 +669,88 @@ def render_frame_b_card(fb: dict) -> None:
     """)
 
 
+_ROLE_COLOR = {"진입 전략": "#16a34a", "보조 근거": "#2563eb", "해당 없음": "#94a3b8"}
+
+
+def _peer_top(view: dict, key: str):
+    """피어 순위 기록에서 상위 1/3 여부와 문구. 순위가 없으면 (None, 이유)."""
+    if not view.get("available"):
+        return None, f"피어 순위 없음 — {view.get('reason') or '기록 없음'}"
+    me = view.get("me") or {}
+    rank = me.get(f"{key}_rank")
+    if rank is None or pd.isna(rank):
+        note = me.get(f"{key}_note")
+        return None, "피어 순위 없음 — " + (str(note) if note is not None and not pd.isna(note) and str(note) else "자료 부족")
+    top = str(me.get(f"{key}_top")).lower() == "true"
+    n = me.get(f"{key}_n")
+    n_txt = "" if n is None or pd.isna(n) else f" / {int(n)}종목"
+    return top, f"{int(rank)}위{n_txt}" + (" (상위 1/3)" if top else " (상위 1/3 아님)")
+
+
+def _cond_li(ok, label: str, text: str) -> str:
+    mark, mc = (("✓", "#16a34a") if ok is True else (("✗", "#dc2626") if ok is False else ("—", "#94a3b8")))
+    return (f'<li><span style="color:{mc};font-weight:800;">{mark}</span> {_esc(label)}'
+            + (f' — <span style="color:#475569;">{_esc(text)}</span>' if text else "") + "</li>")
+
+
+def render_strategy_section(t: str, fa: dict, fb: dict, fund: dict, se: dict, gate: dict) -> None:
+    """딥다이브 개편 4단계: 전략 카드 3장(가치 스윙·추세·단기)과 진입 전략 — 사전 등록 우선순위(engine/strategy.py)."""
+    chart_heading("어느 전략으로 들어갈까 — 전략 카드")
+    view = cached_peer_view(t)
+    v_top, v_txt = _peer_top(view, "value")
+    t_top, t_txt = _peer_top(view, "trend")
+    surv = (fund or {}).get("financial_survival") or {}
+    fa_ok = fa.get("available")
+    res = engine.choose_strategy(
+        survival_kill=bool(surv.get("survival_kill")), gate_level=(gate or {}).get("level"),
+        frame_b_stage=(fb or {}).get("stage"), value_top=v_top, value_rank_text=v_txt,
+        frame_a_entry=(fa["opinion"]["entry"] if fa_ok else None),
+        frame_a_label=(fa["opinion"]["label"] if fa_ok else (fa.get("reason") or "판정 없음")),
+        trend_top=t_top, trend_rank_text=t_txt,
+        short_signal=(se["signal"] if se.get("available") else None),
+        short_label=(se["label"] if se.get("available") else (se.get("reason") or "판정 없음")))
+    hc = "#16a34a" if res["chosen"] and not res["block"] else ("#dc2626" if (res["block"] or {}).get("kind") == "survival"
+                                                           else ("#d97706" if res["block"] else "#64748b"))
+    g = gate or {}
+    gate_txt = (f'국면 G{g.get("level")} {_esc(g.get("name"))} · 신규 진입 크기 ×{res["gate_mult"]:g}'
+                if res.get("gate_mult") is not None else "국면 데이터 없음")
+    block = f'<div style="margin-top:4px;color:{hc};">{_esc(res["block"]["text"])}</div>' if res["block"] else ""
+    html_md(f"""
+    <div class="term-card">
+        <div>{utils.line_icon("compass", 16)} <b style="color:{hc};">{_esc(res["headline"])}</b></div>
+        {block}
+        <div style="font-size:0.86rem;margin-top:4px;">{gate_txt} · 우선순위: {_esc(res["rule"])}</div>
+        <div style="font-size:0.82rem;color:#64748b;margin-top:4px;">세 전략 모두 미검증입니다. 이 카드는 미리 정한 규칙의 판정을 모아 보여 줄 뿐 수익을 예측하지 않습니다. {_esc(res["peer_note"])}.</div>
+    </div>
+    """)
+    cols = st.columns(3)
+    for col, cd in zip(cols, res["cards"]):
+        rc = _ROLE_COLOR.get(cd["role"], "#94a3b8")
+        if cd["key"] == "short" and se.get("available"):
+            lis = "".join(_cond_li(x["ok"], x["label"], x["text"]) for x in se["conditions"])
+            pl = se.get("plan")
+            extra = (f'<div style="font-size:0.88rem;margin-top:4px;"><b>내일 진입 조건</b>: 시가가 {_esc(engine.fmt_price(pl["open_min_excl"], is_krx_ticker))} 초과 '
+                     f'{_esc(engine.fmt_price(pl["open_max"], is_krx_ticker))} 이하 · 목표 {_esc(pl["target_text"])} · {_esc(pl["cost_text"])}</div>') if pl else ""
+            head = f'<div style="font-size:0.9rem;margin-top:4px;">{_esc(se["label"])} <span style="color:#94a3b8;">({_esc(se["as_of"])} 종가 기준)</span></div>'
+        else:
+            lis = "".join(_cond_li(x["ok"], x["label"], x["text"]) for x in cd["conditions"])
+            extra, head = "", ""
+        with col:
+            html_md(f"""
+            <div class="term-card" style="min-height:100%;">
+                <div><b>{_esc(cd["label"])}</b> <span style="font-size:0.8rem;color:#64748b;">{_esc(cd["frame"])}</span></div>
+                <div style="margin-top:6px;"><span class="term-badge-inv" style="background:{rc};border-color:{rc};">{_esc(cd["role"])}</span></div>
+                {head}
+                <ul class="term-list" style="margin-top:6px;">{lis}</ul>
+                {extra}
+                <div style="font-size:0.86rem;margin-top:4px;"><b>진입</b> {_esc(cd["entry"])}</div>
+                <div style="font-size:0.86rem;"><b>청산</b> {_esc(cd["exit"])}</div>
+                <div style="font-size:0.86rem;"><b>보유</b> {_esc(cd["hold"])}</div>
+                <div style="font-size:0.8rem;color:#64748b;margin-top:6px;">검증 상태: {_esc(cd["verification"])}</div>
+            </div>
+            """)
+
+
 # 실적 발표까지 남은 거래일: 실제 일정 사용(모르면 None = 일정 미확인). 시뮬레이션을 고르면 D-2로 가정.
 next_earn_date = cached_next_earnings(ticker_input)
 days_to_earn_real = engine.trading_days_until(str(stock_df_raw.index[-1])[:10], next_earn_date)
@@ -751,6 +847,11 @@ arch_info = synth_out["archetype"]
 
 # 7) 이 종목에 투자할 이유 — 피어 비교 (딥다이브 개편 2단계, AGENTS.md 4번). 탭 위에 둔다.
 render_peer_section(ticker_input)
+
+# 8) 어느 전략으로 들어갈까 — 전략 카드 3장 (딥다이브 개편 4단계, engine/strategy.py)
+short_eval = engine.short_term_evaluate(stock_df_raw, ind=pb_ind)
+render_strategy_section(ticker_input, frame_a, frame_b, fund_out, short_eval,
+                        cached_market_gate("KR" if is_krx_ticker else "US"))
 
 # =====================================================================
 # 종합 결론(첫 번째 탭) + 4대 트랙 상세 탭 구성[cite: 6]

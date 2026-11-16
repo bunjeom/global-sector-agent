@@ -368,3 +368,29 @@ def sync_radar_basket_badges(radar_signals: dict, basket_grades: dict) -> dict:
 
 
 # ------------------------------------------------------------------------------
+
+
+def market_gate_from_prices(price_map: dict, market: str) -> dict:
+    """홈과 같은 계산(지수 레짐·VIX·거시 문구 → 게이트, 최근 거래일 히스테리시스 포함)을 가격 묶음 하나로 한다.
+    price_map = {"QQQ", "SPY", "^KS11", "^VIX": 일봉}. 딥다이브 전략 선택(engine/strategy.py choose_strategy)용.
+    기준 지수(미국 SPY·QQQ, 한국 KOSPI)가 없으면 방어 폴백(G2, '데이터 없음')."""
+    em = price_map or {}
+
+    def _naive(df_x):
+        if df_x is None or len(df_x) == 0:
+            return None
+        out = df_x.copy()
+        idx = pd.to_datetime(out.index)
+        if getattr(idx, "tz", None) is not None:
+            idx = idx.tz_localize(None)
+        out.index = idx
+        return out.sort_index()
+
+    em = {k: _naive(em.get(k)) for k in ("QQQ", "SPY", "^KS11", "^VIX")}
+    base = em["^KS11"] if str(market).upper() == "KR" else (em["SPY"] if em["SPY"] is not None else em["QQQ"])
+    if base is None:   # 지수 가격을 못 받음 → evaluate_market_gate의 방어 폴백(G2)과 같게
+        return evaluate_market_gate(market, us_data={}, kr_data={})
+    hdr = build_regime_vix_header(em["QQQ"], em["SPY"], em["^KS11"], em["^VIX"])
+    inp = build_gate_inputs_from_header(hdr, market)
+    hist = build_gate_history_state(em, market)
+    return evaluate_market_gate(market, us_data=inp, kr_data=inp, history_state=hist.get("state_before_last"))
