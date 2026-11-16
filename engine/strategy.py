@@ -39,7 +39,8 @@ SHORT_TERM_CONFIG: Dict[str, Any] = {
     "STATES": (STATE_UP, STATE_SIDE),
 }
 STRATEGY_VERIFICATION: Dict[str, str] = {
-    "short": "미검증 — 사전 등록 시험(run_backtest.py --short-term, SHORT_TERM.md) 결과 전. 비슷한 T-B는 비용 뒤 거래당 +0.10%로 비용에 민감",
+    "short": ("검증 미통과 — 참고만. 사전 등록 시험(SHORT_TERM.md, 2026-11-16, 새 종목 82개·2,543건): 비용 0.30% 뒤 거래당 −0.25%로 "
+              "같은 보유 기간 무작위 진입(−0.20%)보다 낫지 않음(z −0.5), RSI(2) 눌림의 기여도 없음"),
     "trend": "미검증 · 의견 — 틀 A는 과거 검증에서 우위 미확인(FRAME_A.md), 신호 기록 장부로 채점 중",
     "value": "미검증 — 틀 B v1은 우위 미확인(FRAME_B.md), v2 추정치 기준은 2026-11-14부터 기록",
     "peer_rank": "피어 순위가 수익을 예측한다는 검증은 없음(사실 비교) — 매월 상위·하위 1/3 채점 예정",
@@ -218,6 +219,8 @@ def choose_strategy(survival_kill: Optional[bool] = None, gate_level: Optional[i
         headline = f"{labels[chosen]} (의견만 — 국면 크기 0)"
     else:
         headline = f"진입 전략: {labels[chosen]}" + (f" · 보조 근거 {', '.join(labels[k] for k in met[1:])}" if len(met) > 1 else "")
+        if chosen == "short":   # 사전 등록 시험 미통과(SHORT_TERM.md) — 규칙은 그대로 두고 표시만 '참고'
+            headline += " — 검증 미통과, 참고만"
     return {"chosen": chosen, "chosen_label": labels.get(chosen) if chosen else None, "met": met, "block": block,
             "gate_mult": gate_mult, "headline": headline, "cards": cards,
             "rule": "가치 > 추세 > 단기(보유 기간이 긴 쪽 우선), 조건 자료가 없으면 충족 아님",

@@ -100,7 +100,8 @@ chk("5-3 오늘 종가 기준 거리 = (148 − 손절선) ÷ 148, 3% 넘으면 
     and ev["dist_at_close_ok"] == (ev["dist_at_close"] <= 0.03))
 evd = engine.short_term_evaluate(ind, ind=ind.assign(state=DOWN))
 chk("5-4 하락 추세면 해당 없음", not evd["signal"] and "하락" in evd["label"])
-chk("5-5 버전·검증 상태 문구", ev["version"] == C["VERSION"] and "미검증" in ev["verification"])
+chk("5-5 버전·검증 상태 문구(사전 등록 시험 미통과 → 참고만)", ev["version"] == C["VERSION"] and "검증 미통과" in ev["verification"]
+    and "참고만" in ev["verification"])
 
 # 6) 전략 우선순위
 cs = engine.choose_strategy
@@ -111,7 +112,8 @@ b = cs(frame_b_stage="조건부 진입", value_top=None, frame_a_entry=True, tre
 chk("6-2 가치 관점 순위 없음 = 확인 불가 → 충족 아님 → 추세", b["chosen"] == "trend" and "피어 순위 없음" in b["cards"][0]["conditions"][1]["text"]
     and b["cards"][0]["unknown"], b["headline"])
 c2 = cs(frame_b_stage="대기", value_top=True, frame_a_entry=False, trend_top=True, short_signal=True)
-chk("6-3 가치·추세 아님 + 단기 신호 → 단기", c2["chosen"] == "short" and c2["headline"].startswith("진입 전략: 단기"))
+chk("6-3 가치·추세 아님 + 단기 신호 → 단기(검증 미통과 — 참고만 표시)", c2["chosen"] == "short" and c2["headline"].startswith("진입 전략: 단기")
+    and "참고만" in c2["headline"])
 d = cs(frame_b_stage="대기", value_top=False, frame_a_entry=False, trend_top=False, short_signal=False)
 chk("6-4 아무것도 없음 → 대기", d["chosen"] is None and "대기" in d["headline"])
 e = cs(survival_kill=True, frame_b_stage="진입 가능", value_top=True)
