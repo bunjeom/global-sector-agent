@@ -190,5 +190,12 @@ print("  되돌림 있는 가격: 거래", mz["actual"].get("n"), "차이", roun
 chk("8-2 눌림 뒤 되돌림이 있는 가격(전날 수익률의 −0.5배): 무작위보다 나음(차이 > 0, z > 2)", mz["diff"] is not None and mz["diff"] > 0
     and mz["z"] is not None and mz["z"] > 2, (mz.get("diff"), mz.get("z")))
 
+# 9) run_backtest.py 명령줄 도움말이 만들어지는지(도움말의 %는 %%로 — Python 3.14는 add_argument 때 검사)
+import subprocess
+_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+hp = subprocess.run([sys.executable, "run_backtest.py", "--help"], cwd=_root, capture_output=True, text=True, encoding="utf-8",
+                    timeout=120, env={**_os.environ, "PYTHONIOENCODING": "utf-8"})
+chk("9 run_backtest.py --help 정상(--short-term 포함)", hp.returncode == 0 and "--short-term" in hp.stdout, (hp.returncode, hp.stderr[-300:]))
+
 print(f"\n결과: {'통과' if not FAILS else '실패 ' + str(FAILS)}")
 sys.exit(1 if FAILS else 0)

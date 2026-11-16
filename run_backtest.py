@@ -398,7 +398,7 @@ def main():
     ap.add_argument("--frame-a", action="store_true", help="틀 A(추세반등) 개별 종목 검증")
     ap.add_argument("--frame-b", action="store_true", help="틀 B(저평가 매수) 미국 개별 종목 검증 (SEC)")
     ap.add_argument("--ledger-eval", action="store_true", help="신호 기록 장부 채점")
-    ap.add_argument("--short-term", action="store_true", help="단기 규칙(+3% 익절) 검증")
+    ap.add_argument("--short-term", action="store_true", help="단기 규칙(+3%% 익절) 검증")
     args = ap.parse_args()
     t0 = time.time()
     if args.variants:
