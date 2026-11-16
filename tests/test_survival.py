@@ -1,4 +1,4 @@
-"""재무 생존성 v2 (engine/fundamental.py evaluate_survival) 손 계산 검사 + 종합 판정·틀 B 연결.
+"""재무 생존성 v2.2 (engine/fundamental.py evaluate_survival) 손 계산 검사 + 종합 판정·틀 B 연결.
 
 v1 정의 오류(AMZN 사례): 순현금 ÷ FCF 적자로 런웨이를 계산해, 영업현금이 크게 플러스인데도 설비투자로
 FCF가 적자이고 차입이 있으면 런웨이 0년 → 하드 킬. v2는 기준 숫자는 그대로 두고 재는 대상을 바로잡았다.
@@ -35,8 +35,9 @@ b = S(ocf=-30.0, fcf=-40.0, liquid=30.0, current_debt=5.0, dilution=0.02)
 print("  적자 기업:", b["runway_text"], "|", b["coverage_text"])
 chk("2 적자 기업: 런웨이 0.75년", b["runway_years"] == 0.75, b["runway_years"])
 chk("2 적자 기업: 하드 킬(런웨이)", b["kill"] is True and any("런웨이" in r for r in b["kill_reasons"]))
-# 상환 여력 = max(0, 30 − 30) / 5 = 0 → 킬
-chk("2 적자 기업: 상환 여력 0배도 킬 사유", b["coverage_ratio"] == 0.0 and any("상환 여력" in r for r in b["kill_reasons"]))
+# 상환 여력 = max(0, 30 − 30) / 5 = 0 → v2.2부터 '차환 의존' 경고 (킬 사유는 런웨이만)
+chk("2 적자 기업: 상환 여력 0배는 '차환 의존' 경고, 킬 사유는 런웨이만(v2.2)", b["coverage_ratio"] == 0.0
+    and not any("상환 여력" in r for r in b["kill_reasons"]) and any("차환 의존" in r for r in b["warn_reasons"]), b["kill_reasons"])
 b2 = S(ocf=-10.0, fcf=-20.0, liquid=30.0, current_debt=None, dilution=None)   # 1.5년 → 경고
 chk("2-2 런웨이 1.5년: 경고, 킬 아님", b2["runway_years"] == 1.5 and b2["warning"] and not b2["kill"])
 b3 = S(ocf=-10.0, fcf=-20.0, liquid=50.0, current_debt=None, dilution=None)   # 2.5년 → 양호
@@ -46,8 +47,14 @@ chk("2-3 런웨이 2.5년: 경고 없음", b3["runway_years"] == 2.5 and not b3[
 c = S(ocf=12 * B, fcf=-4 * B, liquid=0.3 * B, current_debt=8 * B, dilution=0.02, capex=16 * B)
 print("  전력회사형:", c["coverage_text"])
 chk("3 전력회사형: 상환 여력 1.54배, 킬 아님", c["coverage_ratio"] == 1.54 and not c["kill"], c["coverage_ratio"])
-c2 = S(ocf=6 * B, fcf=1 * B, liquid=0.3 * B, current_debt=8 * B, dilution=0.0)   # (0.3+6)/8 = 0.79 → 킬
-chk("3-2 상환 여력 0.79배: 하드 킬", c2["coverage_ratio"] == 0.79 and c2["kill"])
+c2 = S(ocf=6 * B, fcf=1 * B, liquid=0.3 * B, current_debt=8 * B, dilution=0.0)   # (0.3+6)/8 = 0.79 → 차환 의존 경고
+print("  차환 의존형:", c2["coverage_text"])
+chk("3-2 상환 여력 0.79배: '차환 의존' 경고, 하드 킬 아님(v2.2)", c2["coverage_ratio"] == 0.79 and not c2["kill"] and c2["warning"]
+    and "차환 의존" in c2["coverage_text"] and any("차환 의존" in r for r in c2["warn_reasons"]), c2["coverage_text"])
+sh = S(ocf=3.2 * B, fcf=2.5 * B, liquid=0.2 * B, current_debt=3.7 * B, dilution=-0.01)  # SHW형: (0.2+3.2)/3.7 = 0.92
+chk("3-2b SHW형(FCF 흑자, 기업어음 차환): 상환 여력 0.92배 → 경고만", sh["coverage_ratio"] == 0.92 and not sh["kill"] and sh["warning"],
+    sh["coverage_text"])
+chk("3-2c 버전 v2.2", "v2.2" in engine.SURVIVAL_CONFIG["VERSION"] and "COVERAGE_KILL" not in engine.SURVIVAL_CONFIG)
 c3 = S(ocf=10 * B, fcf=1 * B, liquid=0.3 * B, current_debt=8 * B, dilution=0.0)  # (0.3+10)/8 = 1.29 → 경고
 chk("3-3 상환 여력 1.29배: 경고, 킬 아님", c3["coverage_ratio"] == 1.29 and c3["warning"] and not c3["kill"])
 c4 = S(ocf=None, fcf=1.0, liquid=3.0, current_debt=8.0, dilution=0.0)          # 영업현금 모름 → 킬 안 함, 경고

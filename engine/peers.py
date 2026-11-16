@@ -9,9 +9,12 @@
 데이터 갱신: 재무·추정치·밴드·생존성은 주 1회(FUND_REFRESH_DAYS), 가격 흐름(상대강도·추세 상태)은 매일.
 기록: data/peers/peer_fund_YYYY.csv(주간 재무), data/peers/peer_rank_YYYY.csv(매일 순위). 손으로 고치지 않는다.
 피어 묶음 수정: data/peers/peer_map.csv (ticker,group,group_name,note) — group이 '-'이면 자동 피어에서 뺀다.
+  group이 'yf:<야후 산업 키>'이면 그 야후 산업 자동 묶음에 합류한다(v1.3). peer_map을 바꾸면 다음 실행에 전체 갱신.
 
 engine.py를 기능별로 나눈 모듈. 바깥에서는 `import engine` 후 `engine.이름`으로 쓴다(engine/__init__.py).
 """
+import hashlib
+import json
 import math
 import os
 import time
@@ -28,7 +31,7 @@ from .playbook import STATE_DOWN, STATE_SIDE, STATE_UP, _pb_market, light_band_z
 from .snapshot import _cell, _f, snapshot_universe
 
 PEER_CONFIG: Dict[str, Any] = {
-    "VERSION": "피어 비교 v1.2 (2026-11-16)",
+    "VERSION": "피어 비교 v1.3 (2026-11-16)",
     "DIR": os.path.join("data", "peers"),
     "MAP_FILE": "peer_map.csv",
     "TIMEZONE": "Asia/Seoul",
@@ -257,22 +260,49 @@ def coverage_universe(holdings_fn: Optional[Callable[[str], Optional[Dict[str, A
 
 def build_groups(coverage: List[str], info_map: Dict[str, Dict[str, Any]],
                  industry_members: Callable[[str], List[str]], peer_map: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
-    """피어 묶음 만들기. 반환 {"groups": {key: {name, source, members}}, "no_group": {티커: 이유}, "group_of": {티커: key}}.
+    """피어 묶음 만들기. 반환 {"groups": {key: {name, source, members}}, "no_group": {티커: 이유}, "group_of": {티커: key},
+    "warnings": [문구]}.
     - peer_map에 있는 티커: 그 묶음(수동). group '-'는 자동 피어에서 제외.
+    - v1.3: peer_map group이 'yf:<산업키>'(예: yf:credit-services)이면 그 야후 산업 자동 묶음에 합류한다 — 다른 산업으로
+      옮기거나(주 수익원 원칙) 같은 산업 회사를 피어로 보탤 때. 묶음 이름은 야후 산업 이름(커버리지 종목에서 알 수 있을 때),
+      모르면 peer_map의 group_name. 손으로 합류시킨 종목이 있으면 출처는 '야후 산업+수동'.
     - 그 밖의 미국 커버리지 종목: 야후 산업(industryKey) 묶음 = 같은 산업 커버리지 종목 + 산업 상위 기업(AUTO_PEERS_CAP).
+      peer_map에 적힌 종목(다른 묶음·제외)은 산업 상위 기업에서 빠진다.
     - 한국 종목은 peer_map에 없으면 묶음 없음(한국 피어 목록은 수동)."""
     groups: Dict[str, Dict[str, Any]] = {}
     no_group: Dict[str, str] = {}
+    warnings: List[str] = []
     mapped = {t: m for t, m in peer_map.items()}
+
+    def auto_group(key: str, yahoo_name: Optional[str], map_name: Optional[str] = None) -> Dict[str, Any]:
+        g = groups.setdefault(f"yf:{key}", {"name": None, "source": "야후 산업", "members": [], "_key": key,
+                                            "_yahoo_name": None, "_map_name": None, "_manual": False})
+        g["_yahoo_name"] = g["_yahoo_name"] or yahoo_name
+        g["_map_name"] = g["_map_name"] or map_name
+        return g
+
     for t, m in mapped.items():
-        if m["group"] == "-":
+        grp = m["group"]
+        if grp == "-":
             continue
-        g = groups.setdefault(m["group"], {"name": m["group_name"], "source": "수동", "members": []})
+        if grp.startswith("yf:"):
+            key = grp[3:].strip()
+            if not key:
+                warnings.append(f"{t}: peer_map의 'yf:' 뒤에 산업 키가 없음 — 무시")
+                continue
+            map_name = m["group_name"] if m["group_name"] and m["group_name"] != grp else None
+            g = auto_group(key, None, map_name)
+            g["members"].append(t)
+            g["_manual"] = True
+            continue
+        g = groups.setdefault(grp, {"name": m["group_name"], "source": "수동", "members": []})
         g["members"].append(t)
     for t in coverage:
         if t in mapped:
             if mapped[t]["group"] == "-":
                 no_group[t] = "peer_map에서 제외(-)"
+            elif mapped[t]["group"].startswith("yf:") and not mapped[t]["group"][3:].strip():
+                no_group[t] = "peer_map의 'yf:' 뒤에 산업 키가 없음"
             continue
         if _pb_market(t) == "KR":
             no_group[t] = "한국 종목 — peer_map.csv에 피어 목록 추가 필요"
@@ -282,23 +312,27 @@ def build_groups(coverage: List[str], info_map: Dict[str, Dict[str, Any]],
         if not key:
             no_group[t] = "야후 산업 분류 없음"
             continue
-        gk = f"yf:{key}"
-        g = groups.setdefault(gk, {"name": inf.get("industry") or key, "source": "야후 산업", "members": [], "_key": key})
-        g["members"].append(t)
+        auto_group(key, inf.get("industry"))["members"].append(t)
     for gk, g in groups.items():
-        if g["source"] != "야후 산업":
+        if "_key" not in g:
             continue
         try:
-            extra = [_norm_ticker(s) for s in (industry_members(g["_key"]) or [])]
+            raw = [_norm_ticker(s) for s in (industry_members(g["_key"]) or [])]
         except Exception:
-            extra = []
-        extra = [s for s in extra if s not in mapped and s not in g["members"]][:PEER_CONFIG["AUTO_PEERS_CAP"]]
+            raw = []
+        if not raw and g["_manual"]:
+            warnings.append(f"{gk}: 야후 산업 상위 기업을 못 받음 — peer_map의 산업 키 철자 확인")
+        extra = [s for s in raw if s not in mapped and s not in g["members"]][:PEER_CONFIG["AUTO_PEERS_CAP"]]
         g["members"].extend(extra)
+        g["name"] = g["_yahoo_name"] or g["_map_name"] or g["_key"]
+        if g["_manual"]:
+            g["source"] = "야후 산업+수동"
     for g in groups.values():
         g["members"] = list(dict.fromkeys(g["members"]))
-        g.pop("_key", None)
+        for k in ("_key", "_yahoo_name", "_map_name", "_manual"):
+            g.pop(k, None)
     group_of = {t: gk for gk, g in groups.items() for t in g["members"]}
-    return {"groups": groups, "no_group": no_group, "group_of": group_of}
+    return {"groups": groups, "no_group": no_group, "group_of": group_of, "warnings": warnings}
 
 
 # ------------------------------------------------------------------ 데이터 받기 (yfinance, 주 1회)
@@ -452,7 +486,16 @@ def _load_many(base_dir: Optional[str], prefix: str, columns: List[str], date_co
     return df
 
 
-REFRESH_LOG_COLUMNS: List[str] = ["refresh_date", "mode", "n_coverage", "n_groups", "n_members", "fund_saved", "n_failed", "version"]
+REFRESH_LOG_COLUMNS: List[str] = ["refresh_date", "mode", "n_coverage", "n_groups", "n_members", "fund_saved", "n_failed", "version",
+                                   "config_sig"]   # v1.3: 설정 서명(새 열은 맨 뒤)
+
+
+def peer_config_signature(base_dir: Optional[str] = None) -> str:
+    """재무를 다시 받아야 하는 설정의 서명 = 피어 비교 버전 + 생존성 버전 + 묶음표(peer_map의 티커·묶음·묶음 이름).
+    설명(note)·줄 순서·줄바꿈 방식은 서명에 들어가지 않는다."""
+    m = load_peer_map(base_dir)
+    body = json.dumps(sorted((t, v["group"], v["group_name"]) for t, v in m.items()), ensure_ascii=False)
+    return f"{PEER_CONFIG['VERSION']} | {SURVIVAL_CONFIG['VERSION']} | 묶음표 {hashlib.sha1(body.encode('utf-8')).hexdigest()[:10]}"
 
 
 def refresh_log_path(base_dir: Optional[str] = None) -> str:
@@ -470,6 +513,18 @@ def last_full_refresh(base_dir: Optional[str] = None) -> Optional[pd.Timestamp]:
     return pd.to_datetime(d["refresh_date"], errors="coerce").max() if len(d) else None
 
 
+def last_full_signature(base_dir: Optional[str] = None) -> str:
+    """마지막 전체 갱신 때의 설정 서명. 서명 열이 생기기 전 기록이면 빈 문자열(= 설정이 바뀐 것으로 본다)."""
+    p = refresh_log_path(base_dir)
+    if not os.path.exists(p):
+        return ""
+    d = pd.read_csv(p, dtype=str, encoding="utf-8-sig", keep_default_na=False)
+    d = d[d["mode"] == "full"]
+    if not len(d) or "config_sig" not in d:
+        return ""
+    return str(d["config_sig"].iloc[-1])
+
+
 def load_peer_fund(base_dir: Optional[str] = None) -> pd.DataFrame:
     return _load_many(base_dir, "peer_fund_", FUND_COLUMNS, ["fund_date"])
 
@@ -478,7 +533,8 @@ def load_peer_ranks(base_dir: Optional[str] = None) -> pd.DataFrame:
     return _load_many(base_dir, "peer_rank_", RANK_COLUMNS, ["rank_date", "fund_date"])
 
 
-def _append(path: str, rows: List[Dict[str, Any]], columns: List[str], key_cols: List[str]) -> Dict[str, int]:
+def _append(path: str, rows: List[Dict[str, Any]], columns: List[str], key_cols: Optional[List[str]]) -> Dict[str, int]:
+    """기록 파일에 줄 이어 붙이기. key_cols가 같은 줄은 건너뛴다(None이면 건너뛰지 않음 — 갱신 기록처럼 같은 날 여러 번 남는 파일)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if os.path.exists(path):   # 열이 늘었으면(새 열은 맨 뒤) 기존 줄은 그대로 두고 빈 새 열만 붙여 다시 쓴다 — 값은 바꾸지 않는다
         head = list(pd.read_csv(path, nrows=0, encoding="utf-8-sig").columns)
@@ -488,10 +544,11 @@ def _append(path: str, rows: List[Dict[str, Any]], columns: List[str], key_cols:
             old = pd.read_csv(path, dtype=str, encoding="utf-8-sig", keep_default_na=False)
             old.reindex(columns=columns).to_csv(path, index=False, encoding="utf-8-sig")
     have = set()
-    if os.path.exists(path):
+    if key_cols and os.path.exists(path):
         d = pd.read_csv(path, usecols=key_cols, dtype=str, encoding="utf-8-sig").fillna("")
         have = set(map(tuple, d[key_cols].values.tolist()))
-    new = [{c: r.get(c) for c in columns} for r in rows if tuple(str(r.get(k) if r.get(k) is not None else "") for k in key_cols) not in have]
+    new = [{c: r.get(c) for c in columns} for r in rows
+           if not key_cols or tuple(str(r.get(k) if r.get(k) is not None else "") for k in key_cols) not in have]
     if new:
         exists = os.path.exists(path)
         pd.DataFrame(new, columns=columns).to_csv(path, mode="a", header=not exists, index=False,
@@ -505,6 +562,8 @@ def run_daily_peers(today: Optional[str] = None, base_dir: Optional[str] = None,
                     snapshot_dir: Optional[str] = None, full: bool = False, tickers: Optional[List[str]] = None,
                     pause: Optional[float] = None, progress: Optional[Callable[[int, int, str], None]] = None) -> Dict[str, Any]:
     """① 재무 기록이 없거나 FUND_REFRESH_DAYS일 이상 지났으면(또는 full) 커버리지·피어 묶음·재무를 다시 받는다.
+       v1.3: 설정 서명(피어 비교·생존성 버전, peer_map 묶음표)이 마지막 전체 갱신 때와 다르면 그날 전체 갱신한다.
+       단 마지막 전체 갱신이 오늘이면 다음 날로 미룬다(같은 날 재무 기록은 종목마다 한 번만 저장되므로).
     ② 오늘 가격 지표를 받아 묶음별 순위를 기록한다(같은 날·같은 종목·같은 묶음은 한 번만).
     tickers를 주면 커버리지를 그 종목들로 줄인다(빠른 점검용)."""
     if yf is None:
@@ -515,7 +574,13 @@ def run_daily_peers(today: Optional[str] = None, base_dir: Optional[str] = None,
     fund = load_peer_fund(base_dir)
     last_full = last_full_refresh(base_dir)
     stale = last_full is None or pd.isna(last_full) or (pd.Timestamp(date) - pd.Timestamp(last_full)).days >= PEER_CONFIG["FUND_REFRESH_DAYS"]
-    if full or stale or tickers:
+    sig = peer_config_signature(base_dir)
+    changed = not stale and last_full_signature(base_dir) != sig
+    if changed and not full and pd.Timestamp(last_full) == pd.Timestamp(date):
+        res["note"] = "설정(피어 묶음표·버전)이 바뀌었지만 오늘 이미 전체 갱신을 함 — 다음 실행(내일)에 전체 갱신으로 반영"
+        changed = False
+    res["config_changed"] = changed
+    if full or stale or changed or tickers:
         cov = [_norm_ticker(t) for t in tickers] if tickers else coverage_universe(holdings_fn, snapshot_dir)
         info_map: Dict[str, Dict[str, Any]] = {}
         for t in cov:
@@ -527,6 +592,7 @@ def run_daily_peers(today: Optional[str] = None, base_dir: Optional[str] = None,
                 info_map[t] = {}
         built = build_groups(cov, info_map, _yf_industry_members(yf), load_peer_map(base_dir))
         res["no_group"] = built["no_group"]
+        res["warnings"] = built.get("warnings", [])
         members = list(built["group_of"].keys())
         rows: List[Dict[str, Any]] = []
         for i, t in enumerate(members, 1):
@@ -542,10 +608,8 @@ def run_daily_peers(today: Optional[str] = None, base_dir: Optional[str] = None,
         r = _append(fund_path(date, base_dir), rows, FUND_COLUMNS, ["fund_date", "ticker"])
         mode = "partial" if tickers else "full"
         log = {"refresh_date": date, "mode": mode, "n_coverage": len(cov), "n_groups": len(built["groups"]), "n_members": len(members),
-               "fund_saved": r["saved"], "n_failed": len(res["failed"]), "version": PEER_CONFIG["VERSION"]}
-        lp = refresh_log_path(base_dir)
-        pd.DataFrame([log], columns=REFRESH_LOG_COLUMNS).to_csv(lp, mode="a", header=not os.path.exists(lp), index=False,
-                                                                 encoding="utf-8" if os.path.exists(lp) else "utf-8-sig")
+               "fund_saved": r["saved"], "n_failed": len(res["failed"]), "version": PEER_CONFIG["VERSION"], "config_sig": sig}
+        _append(refresh_log_path(base_dir), [log], REFRESH_LOG_COLUMNS, None)
         res.update(refreshed=True, refresh_mode=mode, fund_saved=r["saved"], n_coverage=len(cov), n_members=len(members),
                    n_groups=len(built["groups"]))
         fund = load_peer_fund(base_dir)
@@ -592,6 +656,9 @@ def latest_peer_view(ticker: str, base_dir: Optional[str] = None, ranks: Optiona
     """딥다이브용: 이 종목이 속한 묶음의 가장 최근 순위표(+ 재무 기록의 회사 이름·생존성 문구·다음 실적 발표일).
     반환 {available, reason, group, group_name, group_source, rank_date, fund_date, table, me}."""
     t = _norm_ticker(ticker)
+    pm = load_peer_map(base_dir).get(t)
+    if pm and pm["group"] == "-":
+        return {"available": False, "reason": "피어 비교에서 제외한 종목 — " + (pm["note"] or "data/peers/peer_map.csv에서 제외(-)")}
     df = load_peer_ranks(base_dir) if ranks is None else ranks
     if not len(df):
         return {"available": False, "reason": "피어 기록 없음 — peers_daily.py가 아직 실행되지 않음"}

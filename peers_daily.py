@@ -6,7 +6,7 @@
     .venv\\Scripts\\python peers_daily.py AMZN NVDA        이 종목들이 속한 묶음만(빠른 점검)
 
 결과: data/peers/peer_fund_<연도>.csv(재무, 주 1회), data/peers/peer_rank_<연도>.csv(순위, 매일). 같은 날 다시 실행해도 중복되지 않는다.
-피어 묶음 수정: data/peers/peer_map.csv. 커버리지 추가: data/snapshots/watchlist.txt 한 줄.
+피어 묶음 수정: data/peers/peer_map.csv(바꾸면 다음 실행에 전체 갱신). 커버리지 추가: data/snapshots/watchlist.txt 한 줄.
 계산 규칙은 AGENTS.md 4번 '투자 방향과 딥다이브 개편 기획', 코드는 engine/peers.py.
 """
 import sys
@@ -30,7 +30,11 @@ def main():
 
     res = engine.run_daily_peers(full=full, tickers=tickers, progress=progress)
     print(f"기록일 {res['date']} · {engine.PEER_CONFIG['VERSION']}")
+    if res.get("note"):
+        print("   " + res["note"])
     if res.get("refreshed"):
+        if res.get("config_changed"):
+            print("   설정(피어 묶음표·버전)이 바뀌어 전체 갱신")
         print(f"   재무 다시 받음: 커버리지 {res.get('n_coverage')}종목 → 피어 묶음 {res.get('n_groups')}개 · 묶음 구성 {res.get('n_members')}종목 · "
               f"새로 저장 {res['fund_saved']} · 못 받음 {len(res['failed'])}")
         if res["failed"]:
@@ -38,6 +42,8 @@ def main():
         if res.get("no_group"):
             print(f"   묶음 없는 커버리지 종목 {len(res['no_group'])}개: " +
                   "; ".join(f"{k} {v}" for k, v in list(res["no_group"].items())[:15]))
+        for w in res.get("warnings") or []:
+            print("   확인 필요: " + w)
     if res.get("error"):
         print("   " + res["error"])
         sys.exit(1)

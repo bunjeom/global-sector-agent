@@ -289,17 +289,17 @@ def _dart_annual_block(dart: Any, code6: str, cache: Dict[Tuple[int, str], Any],
 
 
 # ---------------------------------------------------------------------
-# F9. 재무 생존성 v2 (2026-11-15) — 하드 킬은 '곧 돈이 떨어져 망할 위험'만 거른다.
+# F9. 재무 생존성 v2 (2026-11-15, v2.2 2026-11-16) — 하드 킬은 '곧 돈이 떨어져 망할 위험'만 거른다.
 # v1 정의 오류(AMZN 사례로 발견): 런웨이를 순현금 ÷ FCF 적자로 계산해, 영업현금이 크게 플러스여도
 # 설비투자로 FCF가 적자이고 차입이 있으면 런웨이 0년 → 하드 킬. 차입만기는 보유 현금만 봐서
 # 현금을 적게 들고 차환하는 회사(전력회사 등)를 걸렀다. 금융업에도 같은 식을 썼다.
 # v2는 기준 숫자(1·2년, 15%·5%)는 그대로 두고 '무엇을 재는지'만 바로잡았다. 결과를 보고 숫자를 바꾸지 않는다.
 # ---------------------------------------------------------------------
 SURVIVAL_CONFIG = {
-    "VERSION": "생존성 v2.1 (2026-11-15)",
+    "VERSION": "생존성 v2.2 (2026-11-16)",
     "RUNWAY_KILL_YEARS": 1.0,    # 영업이 현금을 태울 때: 보유 현금 ÷ FCF 적자 < 1년 → 하드 킬
     "RUNWAY_WARN_YEARS": 2.0,    # < 2년 → 경고
-    "COVERAGE_KILL": 1.0,        # (보유 현금 + 12개월 영업현금) ÷ 1년 내 만기 차입 < 1.0배 → 하드 킬
+    "COVERAGE_REFI": 1.0,        # (보유 현금 + 12개월 영업현금) ÷ 1년 내 만기 차입 < 1.0배 → '차환 의존' 경고 (v2.2: 하드 킬 아님)
     "COVERAGE_WARN": 1.5,        # < 1.5배 → 경고
     "DILUTION_KILL": 0.15,       # 희석 주식수 1년 증가율 > 15% → 하드 킬
     "DILUTION_WARN": 0.05,       # > 5% → 경고
@@ -307,6 +307,9 @@ SURVIVAL_CONFIG = {
     # 영업현금·FCF를 모두 모르면 단정하지 않고 경고만.
     # v2.1: 연결 재무제표에 대형 금융 자회사(할부·리스·카드)를 포함하는 회사는 차입·영업현금이 금융업 숫자에 섞여
     # 제조 부문의 생존성을 잴 수 없다 → '판정 보류'. 원칙으로 정한 목록이며(결과로 고르지 않음), 추가하면 VERSION을 올린다.
+    # v2.2: 상환 여력 < 1.0배는 하드 킬에서 빼고 '차환 의존' 경고로만 둔다. 데이터(야후)에 쓰지 않은 약정 대출 한도가 없어
+    # 이 지표만으로는 '곧 망할 위험'과 '신용 좋은 회사의 평범한 차환(기업어음·만기 회사채)'을 구분할 수 없다.
+    # 하드 킬은 실제로 돈이 말라가는 경우(영업현금 적자 런웨이 < 1년, 현금흐름 적자 기업의 희석 > 15%)만 남는다. 기준 숫자는 그대로.
     "CAPTIVE_FINANCE": {
         "005380.KS": "현대캐피탈·현대카드 연결", "CAT": "Cat Financial 연결", "DE": "John Deere Financial 연결",
         "F": "Ford Credit 연결", "GM": "GM Financial 연결", "PCAR": "PACCAR Financial 연결",
@@ -337,8 +340,8 @@ def evaluate_survival(ocf: Optional[float], fcf: Optional[float], liquid: Option
     ① 런웨이: FCF 흑자면 해당 없음. FCF 적자이면서
         - 영업현금 < 0 (영업 자체가 현금을 태움) 또는 영업현금 모름 → 보유 현금 ÷ FCF 적자로 판정(킬 < 1년, 경고 < 2년)
         - 영업현금 ≥ 0 (설비투자가 영업현금을 넘음) → 킬 아님, '투자 지출로 FCF 적자' 경고
-    ② 차입 상환 여력: (보유 현금 + 영업현금) ÷ 1년 내 만기 차입. 킬 < 1.0배, 경고 < 1.5배.
-        영업현금을 모르면 보유 현금만으로 계산하고 킬은 걸지 않는다(경고만, < 1.0배).
+    ② 차입 상환 여력: (보유 현금 + 영업현금) ÷ 1년 내 만기 차입. 경고 < 1.5배, < 1.0배는 '차환 의존' 경고(v2.2부터 킬 아님).
+        영업현금을 모르면 보유 현금만으로 계산하고 경고만(< 1.0배).
     ③ 희석: 경고 > 5%. 킬 > 15%는 영업현금 또는 FCF가 적자일 때만(새 주식을 찍어 버팀). 흑자 기업의 희석은 경고.
     금융업(은행·보험·증권)은 예금·차입이 영업 자체라 이 지표가 맞지 않아 '해당 없음'(자본비율 미연결).
     captive_finance(금융 자회사 연결 설명 문구)가 있으면 '판정 보류'."""
@@ -402,10 +405,10 @@ def evaluate_survival(ocf: Optional[float], fcf: Optional[float], liquid: Option
                 cov = max(0.0, float(liquid) + float(ocf)) / float(current_debt)
                 out["coverage_ratio"] = round(cov, 2)
                 base = f"(보유 현금 {fa(liquid)} + 영업현금 {fa(ocf)}) ÷ 1년 내 만기 차입 {fa(current_debt)}"
-                if cov < C["COVERAGE_KILL"]:
-                    out["kill"] = True
-                    out["kill_reasons"].append(f"차입 상환 여력 {cov:.2f}배 < {C['COVERAGE_KILL']:.1f}배")
-                    tag = "하드 킬"
+                if cov < C["COVERAGE_REFI"]:
+                    out["warning"] = True
+                    out["warn_reasons"].append(f"차환 의존 — 차입 상환 여력 {cov:.2f}배 < {C['COVERAGE_REFI']:.1f}배")
+                    tag = "경고 — 차환 의존: 1년 내 만기 차입 일부를 새 차입으로 갚아야 함, 쓰지 않은 대출 한도는 자료 없음"
                 elif cov < C["COVERAGE_WARN"]:
                     out["warning"] = True
                     out["warn_reasons"].append(f"차입 상환 여력 {cov:.2f}배 < {C['COVERAGE_WARN']:.1f}배")
@@ -416,7 +419,7 @@ def evaluate_survival(ocf: Optional[float], fcf: Optional[float], liquid: Option
                 cov = max(0.0, float(liquid)) / float(current_debt)
                 out["coverage_ratio"] = round(cov, 2)
                 base = f"보유 현금 {fa(liquid)} ÷ 1년 내 만기 차입 {fa(current_debt)}, 영업현금 미확인 — 킬 판정 안 함"
-                if cov < C["COVERAGE_KILL"]:
+                if cov < C["COVERAGE_REFI"]:
                     out["warning"] = True
                     out["warn_reasons"].append(f"현금만으로 1년 내 만기 차입의 {cov:.2f}배 (영업현금 미확인)")
                     tag = "경고"

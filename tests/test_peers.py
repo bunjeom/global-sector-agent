@@ -89,6 +89,35 @@ chk("5-2 수동 묶음(CCC → my)", G["my"]["members"] == ["CCC"] and G["my"]["
 chk("5-3 묶음 없음 사유(산업 분류 없음·한국·제외)", "산업 분류 없음" in built["no_group"]["DDD"] and "한국" in built["no_group"]["005930.KS"]
     and "제외" in built["no_group"]["EEE"])
 
+# 5-4) v1.3 'yf:<산업 키>' 합류: 다른 산업으로 옮기기(커버리지 SSS: software → semis), 같은 산업 피어 보태기(MP1),
+#      커버리지 종목이 없는 산업 키로 옮기기(TTT → yf:foods, 이름은 peer_map), 그 산업 상위 기업에 있던 P2는 '-'로 제외
+info2 = {"AAA": {"industryKey": "semis", "industry": "Semiconductors"}, "SSS": {"industryKey": "software", "industry": "Software"},
+         "TTT": {"industryKey": "candy", "industry": "Confectioners"}}
+pm2 = {"SSS": {"group": "yf:semis", "group_name": "yf:semis", "note": ""},
+       "MP1": {"group": "yf:semis", "group_name": "yf:semis", "note": ""},
+       "TTT": {"group": "yf:foods", "group_name": "Packaged Foods", "note": ""},
+       "P2": {"group": "-", "group_name": "-", "note": ""},
+       "BADKEY": {"group": "yf:", "group_name": "", "note": ""}}
+tops = {"semis": ["P1", "P2", "SSS", "P3"], "software": ["Q1", "Q2"], "foods": ["F1", "F2", "TTT"], "candy": ["C1"]}
+b2 = engine.build_groups(["AAA", "SSS", "TTT", "BADKEY"], info2, lambda k: tops.get(k, []), pm2)
+G2 = b2["groups"]
+print("  yf: 합류:", {k: (v["name"], v["source"], v["members"]) for k, v in G2.items()})
+chk("5-4 합류: 야후 semis 묶음 = 손으로 넣은 SSS·MP1 + 커버리지 AAA + 상위 기업(P2 제외, SSS 중복 없음)",
+    G2["yf:semis"]["members"] == ["SSS", "MP1", "AAA", "P1", "P3"], G2["yf:semis"]["members"])
+chk("5-4b 이름은 야후 산업 이름, 출처는 '야후 산업+수동'", G2["yf:semis"]["name"] == "Semiconductors"
+    and G2["yf:semis"]["source"] == "야후 산업+수동")
+chk("5-4c 옮긴 종목의 원래 산업 묶음은 생기지 않음(software·candy 없음)", "yf:software" not in G2 and "yf:candy" not in G2, list(G2))
+chk("5-4d 커버리지 종목이 없는 산업 키: 이름은 peer_map(Packaged Foods), 상위 기업이 붙음",
+    G2["yf:foods"]["name"] == "Packaged Foods" and G2["yf:foods"]["members"] == ["TTT", "F1", "F2"], G2["yf:foods"])
+chk("5-4e group_of: SSS → yf:semis", b2["group_of"]["SSS"] == "yf:semis" and b2["group_of"]["MP1"] == "yf:semis")
+chk("5-4f 'yf:' 뒤 키 없음: 묶음 없음 + 확인 필요 문구", "산업 키가 없음" in b2["no_group"].get("BADKEY", "")
+    and any("BADKEY" in w for w in b2["warnings"]), (b2["no_group"], b2["warnings"]))
+b3 = engine.build_groups(["AAA"], info2, lambda k: [] if k == "typo" else tops.get(k, []),
+                         {"ZZ": {"group": "yf:typo", "group_name": "yf:typo", "note": ""}})
+chk("5-4g 산업 키 오타(상위 기업 0개): 확인 필요 문구", any("yf:typo" in w and "철자" in w for w in b3["warnings"]), b3["warnings"])
+chk("5-4h 손으로 넣은 종목이 없는 자동 묶음은 경고 없이 '야후 산업'", b3["groups"]["yf:semis"]["source"] == "야후 산업"
+    and not any("semis" in w for w in b3["warnings"]))
+
 # 6) 하루 실행 (가짜 yfinance)
 DATES = pd.bdate_range(end="2026-11-13", periods=520)
 
@@ -276,6 +305,42 @@ chk("9-9 다음 실적 발표 때 확인할 항목(실적·추정치 조건)", a
 gpk = engine.peer_gaps(engine.latest_peer_view("PK", base_dir=ft))
 chk("9-10 하드 킬 종목은 경로 없음", not gpk["nearest"]["value"]["available"])
 chk("8-6 기록 없으면 요약도 없음(이유 전달)", not engine.peer_summary(engine.latest_peer_view("NVDA", base_dir=tempfile.mkdtemp()))["available"])
+
+# 10) v1.3 설정 서명: peer_map을 바꾸면 다음 실행에 전체 갱신(같은 날이면 다음 날로), 옛 갱신 기록(서명 열 없음)도 전체 갱신
+cg = tempfile.mkdtemp(prefix="peers_cfg_")
+engine.snapshot_universe = lambda d=None: ["AAA", "BBB"]
+try:
+    c1 = engine.run_daily_peers(today="2026-11-16", base_dir=cg, yf=FakeYF, holdings_fn=lambda e: None, pause=0.0)
+    sig1 = engine.last_full_signature(cg)
+    chk("10 첫 전체 갱신: 서명 기록(피어 비교·생존성 버전 포함)", c1.get("refresh_mode") == "full"
+        and engine.PEER_CONFIG["VERSION"] in sig1 and engine.SURVIVAL_CONFIG["VERSION"] in sig1, sig1)
+    with open(os.path.join(cg, "peer_map.csv"), "w", encoding="utf-8-sig") as f:
+        f.write("ticker,group,group_name,note\nP3,-,,테스트 제외\n")
+    c2 = engine.run_daily_peers(today="2026-11-16", base_dir=cg, yf=FakeYF, holdings_fn=lambda e: None, pause=0.0)
+    chk("10-2 같은 날 설정 변경: 전체 갱신을 내일로 미룸(안내 문구)", not c2["refreshed"] and "내일" in c2.get("note", ""), c2)
+    c3 = engine.run_daily_peers(today="2026-11-17", base_dir=cg, yf=FakeYF, holdings_fn=lambda e: None, pause=0.0)
+    f3 = engine.load_peer_fund(cg)
+    f3 = f3[f3["fund_date"] == f3["fund_date"].max()]
+    chk("10-3 다음 날: 설정 변경으로 전체 갱신, 제외한 P3는 빠짐", c3["refreshed"] and c3.get("config_changed")
+        and c3["fund_date"] == "2026-11-17" and "P3" not in set(f3["ticker"]) and len(f3) == 5, (c3, sorted(f3["ticker"])))
+    with open(os.path.join(cg, "peer_map.csv"), "w", encoding="utf-8-sig") as f:
+        f.write("ticker,group,group_name,note\r\n# 설명 줄 추가\r\nP3,-,,설명만 바꿈\r\n")
+    c4 = engine.run_daily_peers(today="2026-11-18", base_dir=cg, yf=FakeYF, holdings_fn=lambda e: None, pause=0.0)
+    chk("10-4 설명·줄바꿈만 바뀜: 서명 같음 → 재무 그대로", not c4["refreshed"] and c4["rank_saved"] == 5, c4)
+    v3 = engine.latest_peer_view("P3", base_dir=cg)
+    chk("10-5 제외한 종목의 딥다이브: 옛 순위 대신 제외 이유", not v3["available"] and "설명만 바꿈" in v3["reason"], v3)
+    # 옛 형식 갱신 기록(서명 열 없음) → 열을 붙여 다시 쓰고(기존 값 보존) 다음 실행은 전체 갱신
+    old = tempfile.mkdtemp(prefix="peers_oldlog_")
+    pd.DataFrame([{"refresh_date": "2026-11-16", "mode": "full", "n_coverage": 2, "n_groups": 1, "n_members": 6, "fund_saved": 6,
+                   "n_failed": 0, "version": "피어 비교 v1.2 (2026-11-16)"}]).to_csv(engine.refresh_log_path(old), index=False, encoding="utf-8-sig")
+    chk("10-6 옛 기록: 서명 없음 = 빈 문자열", engine.last_full_signature(old) == "")
+    c5 = engine.run_daily_peers(today="2026-11-17", base_dir=old, yf=FakeYF, holdings_fn=lambda e: None, pause=0.0)
+    lg5 = pd.read_csv(engine.refresh_log_path(old), dtype=str, encoding="utf-8-sig", keep_default_na=False)
+    chk("10-7 옛 기록 다음 날: 전체 갱신 + 갱신 기록 머리글 이전(옛 줄 값 보존)", c5["refreshed"] and c5.get("config_changed")
+        and list(lg5.columns) == engine.REFRESH_LOG_COLUMNS and lg5["version"].tolist()[0] == "피어 비교 v1.2 (2026-11-16)"
+        and lg5["config_sig"].tolist()[0] == "" and lg5["config_sig"].tolist()[1] != "", lg5.to_dict("records"))
+finally:
+    engine.snapshot_universe = _orig_uni
 
 print(f"\n결과: {'통과' if not FAILS else '실패 ' + str(FAILS)}")
 sys.exit(1 if FAILS else 0)

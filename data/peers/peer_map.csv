@@ -2,6 +2,10 @@
 # 피어 묶음 직접 지정 (engine/peers.py가 읽음). 여기 있는 종목은 야후 산업 자동 분류보다 이 지정을 따른다.
 # group이 '-'이면 자동 피어에서 뺀다(엉뚱한 종목을 빼고 싶을 때). 같은 group을 쓰는 줄끼리 한 묶음이 된다.
 # 한국 종목은 야후 산업 분류가 없어 여기 적은 묶음만 비교한다(묶음마다 5종목 이상이어야 순위가 나옴).
+# group이 'yf:<야후 산업 키>'(예: yf:credit-services)이면 그 야후 산업 자동 묶음에 합류한다 — 다른 산업으로 옮기거나 같은 산업 회사를 피어로 보탤 때.
+#   group_name은 그 산업 종목이 커버리지에 없을 때만 묶음 이름으로 쓴다. 산업 키는 peer_fund_YYYY.csv의 industry_key 열에서 확인.
+# 이 파일을 바꾸면 다음 실행(peers_daily.py)에 재무·묶음을 전체로 다시 받는다(같은 날 이미 전체 갱신했으면 그다음 날). note·설명 줄만 바꾸면 다시 받지 않는다.
+# 칸 안에는 쉼표(,)를 쓰지 않는다(칸 구분 기호) — 나열은 '·'로.
 # 묶음 원칙(2026-11-15): 회사의 주 수익원 — 영업이익의 대부분이 나오는 사업 — 이 속한 산업. 야후 분류가 이와 다르면 여기서 고친다.
 005930.KS,kr_semi,한국 반도체,
 000660.KS,kr_semi,한국 반도체,
@@ -29,3 +33,45 @@ MSFT,us_mega_platform,대형 플랫폼(클라우드·광고·소프트웨어),�
 GOOGL,us_mega_platform,대형 플랫폼(클라우드·광고·소프트웨어),검색·유튜브 광고 + 클라우드
 META,us_mega_platform,대형 플랫폼(클라우드·광고·소프트웨어),광고
 ORCL,us_mega_platform,대형 플랫폼(클라우드·광고·소프트웨어),데이터베이스·클라우드 인프라
+# --- 2026-11-16 묶음 점검(peer_census_2026-11-16.md) 반영 ---
+# 제외: 같은 회사 중복·자료 없음·본업이 묶음과 다름
+GOOG,-,,GOOGL과 같은 회사(의결권 없는 C주) — GOOGL로 비교(대형 플랫폼 묶음)
+TLNE,-,,야후 자료 없음(이름·가격 비어 있음)
+WCHS,-,,자료 거의 없음(EPS 추정치 없음) — 완성차 피어로 부적합
+CYD,-,,China Yuchai — 엔진 제조사라 완성차가 아님
+BMNR,-,,본업이 이더리움 보유(암호화폐 트레저리) — 투자은행·증권사와 비교 불가
+CRCL,-,,본업이 스테이블코인 준비금 이자 — 투자은행·증권사와 비교 불가
+MSTR,-,,본업이 비트코인 보유 — 맞는 피어 없음(생존성 하드 킬 대상이기도 함)
+# 옮기기: 주 수익원 원칙
+UBER,us_mobility,모빌리티·배달 플랫폼,차량 호출·배달이 본업 — 야후 분류 Software - Application에서 옮김
+DASH,us_mobility,모빌리티·배달 플랫폼,음식 배달(DoorDash)
+LYFT,us_mobility,모빌리티·배달 플랫폼,차량 호출
+GRAB,us_mobility,모빌리티·배달 플랫폼,동남아 차량 호출·배달
+CART,us_mobility,모빌리티·배달 플랫폼,장보기 배달(Instacart)
+XYZ,yf:credit-services,Credit Services,Block — Cash App·Square 결제가 본업 — 야후 분류 Software - Infrastructure에서 옮김
+HON,yf:specialty-industrial-machinery,Specialty Industrial Machinery,항공 부문(HONA) 분사 뒤 빌딩·산업 자동화 중심 — 야후 분류 Conglomerates에서 옮김
+SRE,yf:utilities-regulated-electric,Utilities - Regulated Electric,규제 전력(SDG&E·Oncor) 중심 — 야후 분류 Utilities - Diversified에서 옮김
+MDLZ,yf:packaged-foods,Packaged Foods,과자·초콜릿 포장식품 — 야후 분류 Confectioners(3종목)에서 옮김
+AAPL,us_device_hw,개인용 기기(스마트폰·PC·주변기기·웨어러블),제품(아이폰·맥 등) 매출총이익이 서비스보다 큼 — 야후 분류 Consumer Electronics(초소형주)에서 옮김
+HPQ,us_device_hw,개인용 기기(스마트폰·PC·주변기기·웨어러블),HP — PC와 프린터(영업이익은 프린팅이 더 큼)
+LOGI,us_device_hw,개인용 기기(스마트폰·PC·주변기기·웨어러블),로지텍 — PC 주변기기
+GRMN,us_device_hw,개인용 기기(스마트폰·PC·주변기기·웨어러블),가민 — 피트니스·아웃도어 웨어러블 중심
+SONO,us_device_hw,개인용 기기(스마트폰·PC·주변기기·웨어러블),소노스 — 가정용 오디오 기기
+# 보태기: 같은 산업 회사(피어 부족 풀기)
+TM,yf:auto-manufacturers,Auto Manufacturers,도요타
+STLA,yf:auto-manufacturers,Auto Manufacturers,스텔란티스
+RACE,yf:auto-manufacturers,Auto Manufacturers,페라리
+SHEL,yf:oil-gas-integrated,Oil & Gas Integrated,셸
+BP,yf:oil-gas-integrated,Oil & Gas Integrated,BP
+TTE,yf:oil-gas-integrated,Oil & Gas Integrated,토탈에너지스
+EQNR,yf:oil-gas-integrated,Oil & Gas Integrated,에퀴노르
+SU,yf:oil-gas-integrated,Oil & Gas Integrated,선코어(오일샌드 생산 + 정유)
+TECK,yf:copper,Copper,테크 리소스 — 석탄 사업 매각 뒤 구리·아연 중심
+HBM,yf:copper,Copper,허드베이 미네랄
+ERO,yf:copper,Copper,에로 코퍼
+NTES,yf:electronic-gaming-multimedia,Electronic Gaming & Multimedia,넷이즈 — 게임이 매출 대부분
+AES,yf:utilities-independent-power-producers,Utilities - Independent Power Producers,발전 사업(에너지 인프라·재생에너지) 중심 — 야후 분류 Utilities - Diversified에서 옮김
+# 넣지 않은 회사(원칙 확인 결과): 혼다(HMC)는 영업이익의 과반이 이륜차(FY2025 6,634억 엔 / 1조 2,134억 엔)라 완성차 묶음에 넣지 않음.
+#   소니(SONY)는 게임·음악·이미지센서 이익이 대부분이고 가전(ET&S)은 약 15%라 개인용 기기 묶음에 넣지 않음.
+#   델(DELL)은 서버·스토리지(ISG)가 사업부 영업이익의 72%(FY2026)라 개인용 기기 묶음에 넣지 않음.
+# 그대로 둔 곳: 홈인테리어 소매(HD·LOW)·담배(PM·MO)·한국 화학·2차전지 — 같은 산업 회사가 부족하거나 대부분 적자. 다른 업종을 넣지 않고 '순위 없음'을 보여 준다.
