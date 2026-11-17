@@ -51,6 +51,7 @@
 | `strategy.py` | 전략 선택(SHORT_TERM_CONFIG·STRATEGY_VERIFICATION): `short_indicators`·`short_term_evaluate`(단기 규칙 — 지지선·손절선·내일 시가 허용 범위), `support_stop_levels`(지지선·손절선·거리·매수 비중 한도 — 진입 신호 아님, LEVEL_CONFIG·LEVEL_VERIFICATION), `choose_strategy`(공통 차단 → 가치 > 추세) |
 | `short_backtest.py` | 단기 규칙 검증(SHORT_BT_CONFIG·SHORT_TERM_CRITERIA): `simulate_short_trade`·`short_trades`, 보유 기간 맞춘 무작위·'눌림 없이' 비교, `evaluate_short_term`·`render_short_term_report` (run_backtest.py --short-term) |
 | `level_backtest.py` | 지지선·손절선 검증(LEVEL_BT_CONFIG·LEVEL_CRITERIA·LEVEL_VERDICT_TEXT): `support_events`·`support_placebo`(같은 ATR 거리의 가짜 선), `stop_events`·`stop_baseline`, `evaluate_levels`·`render_levels_report` (run_backtest.py --levels) |
+| `reclaim_backtest.py` | 지지선 이탈 뒤 회복 검증(RECLAIM_BT_CONFIG·RECLAIM_CRITERIA·RECLAIM_VERDICT_TEXT): `approach_outcomes`(버팀·깼다가 회복·못 돌아옴 집계), `break_events`·`reclaim_events`, `evaluate_reclaim`·`render_reclaim_report` (run_backtest.py --reclaim) |
 | `ledger.py` | 신호 기록 장부(LEDGER_CONFIG·LEDGER_COLUMNS·LEDGER_EVAL): `run_daily_ledger`(판정+원자료 기록), `load_ledger`, `evaluate_frame_a_ledger`(미리 정한 방법으로 채점) |
 | `frame_backtest.py` | 매매 틀 검증. 틀 A(FRAME_A_CONFIG·FRAME_A_CRITERIA): 개별 종목, 보유 기간 맞춘 무작위와 비교. 틀 B(FRAME_B_CONFIG·FRAME_B_CRITERIA): 미국 개별 종목, SEC EPS로 만든 자기 PER 밴드, 같은 날 다른 종목 평균과 비교. 둘 다 월 묶음 표준오차 |
 
@@ -272,6 +273,7 @@
   - 질문 1(지지선): 사건 = 저가 ≤ 지지선 + 0.5×ATR 이고 종가 ≥ 손절선인 날. 결과 = 이후 10거래일 종가가 그날 손절선 아래로 내려간 비율. 판정 비교 = 같은 종목에서 최근 5거래일 변화(ATR 단위)가 사건일과 ±0.5 이내인 다른 날 20곳의 종가에서 같은 ATR 거리만큼 아래 그은 가짜 선. **통과 = HOLDOUT 사건 ≥ 100, (실제 − 가짜) < 0, z ≤ −3, 개발 묶음 앞·뒤 기간 모두 차이 < 0.** 참고: 하락 폭을 맞추지 않은 무작위 날 가짜 선, 10거래일 수익률.
   - 질문 2(손절선): 사건 = 종가가 손절선 아래로 처음 내려온 날. 결과 = 다음 날 시가 → 10거래일 뒤 종가 수익률. 판정 비교 = 같은 종목 무작위 날 20곳. **통과 = HOLDOUT 사건 ≥ 100, (이탈 뒤 − 무작위) < 0, z ≤ −3, 개발 묶음 앞·뒤 모두 차이 < 0.** 참고: 하락 폭 맞춘 날, 20거래일 수익률·−10% 이하 비율.
   - 결과별 화면 문구는 LEVEL_VERDICT_TEXT에 미리 적었다(통과 '검증됨 — …', 미통과 '검증 안 됨 — 위험 계산용/손실 한도로만'). 결과가 나오면 LEVEL_VERIFICATION에 옮겨 적기만 한다.
+- **지지선 이탈 뒤 회복(2026-11-17 사전 등록, 결과 보기 전 고정 — engine/reclaim_backtest.py):** 사용자 가설 '지지선을 한 번 깼다가 올라오는 패턴이 많다'. LEVELS.md 결과를 본 뒤 나온 질문이라 새 질문(가격 기반 열 번째, z 기준 3)으로 등록하고 새 HOLDOUT 148종목(미국 123·한국 25, 이전 모든 묶음과 겹치지 않음)을 쓴다. 지지선 정의는 그대로. 이탈 = 종가가 지지선 아래로 처음 내려옴(전날 종가는 지지선 이상), 회복 = 이후 10거래일 안에 종가가 이탈일의 지지선 위로, 이탈 뒤 10거래일은 새 이탈을 세지 않음. A(집계, 판정 없음): 접근 뒤 버팀·깼다가 회복·못 돌아옴 비율, 이탈 뒤 회복 비율·걸린 일수·깊이. B(판정): 회복일 다음 날 시가 → 10거래일 뒤 종가 수익률이 같은 종목 무작위 날 20곳보다 좋은가 — **통과 = HOLDOUT 사건 ≥ 100, 차이 > 0, z ≥ 3, 개발 묶음 앞·뒤 기간 모두 차이 > 0.** 참고: 하락 폭 맞춘 날, 20거래일, 회복 뒤 다시 이탈 비율. 결과별 화면 문구는 RECLAIM_VERDICT_TEXT. 주의: 효과가 전혀 없는 무작위 걸음에서도 '깼다가 회복'은 접근 사건의 약 43%, 이탈 뒤 회복은 약 72%로 흔하다(tests/test_reclaim.py 3) — 흔하다는 것만으로는 신호가 아니며 B가 통과해야 한다.
 - 전략 선택 구현 세부(2026-11-16, 결과 보기 전): 조건 자료가 없으면(피어 순위 없음·판정 불가) '확인 불가' = 충족 아님. 국면은 홈과 같은 계산(지수 레짐·VIX·거시 문구 + 최근 거래일 완화 확인, engine/gate.py `market_gate_from_prices`), 기준 지수를 못 받으면 방어 폴백 G2. 생존성 하드 킬이면 조건 충족 여부는 보여 주되 '신규 진입 없음', 국면 크기 0이면 '의견만'.
 
 **검증.** 화면 문구: 피어 비교는 사실 비교이며 순위가 수익을 예측한다는 검증은 없음. 앞으로 채점(미리 고정): 매월 피어 묶음별 전략 순위 상위 1/3 vs 하위 1/3의 이후 6·12개월 상대 수익, 판정은 기록 12개월 뒤. 과거 검증은 미국만 부분 가능(SEC 공시일 기준 매출·EPS·마진 + 가격 흐름, 추정치 변화 제외) — 새 질문이므로 시도 횟수 +1, 홀드아웃 판정.

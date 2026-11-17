@@ -29,6 +29,7 @@
     strategy           전략 선택 — 단기 규칙 판정과 진입 전략 우선순위(가치 > 추세 > 단기)
     short_backtest     단기 규칙 검증 (run_backtest.py --short-term)
     level_backtest     지지선·손절선 검증 (run_backtest.py --levels)
+    reclaim_backtest   지지선 이탈 뒤 회복 검증 (run_backtest.py --reclaim)
 
 테스트에서 `engine.이름 = 가짜함수`로 바꿔 끼우면, 그 이름을 쓰는 모든 하위 모듈에도
 같이 반영된다(아래 _EngineModule). 한 파일이던 시절과 똑같이 동작하게 하려는 장치다.
@@ -45,11 +46,11 @@ if "_SUBMODULES" in globals():
 
 from . import common, technical_signals, backtest, technical, earnings, macro, fundamental
 from . import synthesis, home, gate, rrg, radar, rule_backtest, t_backtest, snapshot, sec_facts, frame_backtest, playbook, ledger, peers
-from . import strategy, short_backtest, level_backtest
+from . import strategy, short_backtest, level_backtest, reclaim_backtest
 
 _SUBMODULES = (common, technical_signals, backtest, technical, earnings, macro, fundamental,
                synthesis, home, gate, rrg, radar, rule_backtest, t_backtest, snapshot, sec_facts, frame_backtest, playbook, ledger, peers,
-               strategy, short_backtest, level_backtest)
+               strategy, short_backtest, level_backtest, reclaim_backtest)
 _SUBMODULE_NAMES = {m.__name__.rsplit(".", 1)[1] for m in _SUBMODULES}
 
 # 하위 모듈의 모든 이름(밑줄로 시작하는 내부 함수 포함)을 engine.이름으로 내보낸다.
