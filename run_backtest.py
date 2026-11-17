@@ -13,6 +13,7 @@
     .venv\\Scripts\\python run_backtest.py --frame-b       틀 B(저평가 매수) 미국 개별 종목 검증, SEC 공시일 기준 EPS (첫 실행 10분 안팎)
                                                      .env에 SEC_USER_AGENT=이름 이메일 필요 (SEC 접속 규칙)
     .venv\\Scripts\\python run_backtest.py --ledger-eval   신호 기록 장부 채점 (data/ledger/ 기록이 쌓인 뒤, 방법은 engine/ledger.py에 고정)
+    .venv\\Scripts\\python run_backtest.py --peer-eval     피어 순위 채점 (data/peers/ 기록, 방법은 engine/peer_eval.py에 고정, 판정은 2028년 무렵)
     .venv\\Scripts\\python run_backtest.py --short-term    단기 규칙(+3% 익절) 검증 — 대표 종목 + 새 HOLDOUT 84종목 (받기 포함 5~10분)
     .venv\\Scripts\\python run_backtest.py --levels        지지선·손절선 검증 — 대표 종목 + 새 HOLDOUT 110종목 (받기 포함 5~10분)
     .venv\\Scripts\\python run_backtest.py --reclaim       지지선 이탈 뒤 회복 검증 — 대표 종목 + 새 HOLDOUT 148종목 (받기 포함 10분 안팎)
@@ -29,6 +30,7 @@
     FRAME_A.md         틀 A(추세반등) 개별 종목 검증 + frame_a.json (거래 목록 frame_a_trades.csv)
     FRAME_B.md         틀 B(저평가 매수) 검증 + frame_b.json (거래 목록 frame_b_trades.csv, SEC 원자료 캐시 data/sec_cache/)
     LEDGER_EVAL.md     신호 기록 장부 채점 + ledger_eval.json
+    PEER_EVAL.md       피어 순위 채점 + peer_eval.json
     SHORT_TERM.md      단기 규칙 검증 + short_term.json (거래 목록 short_term_trades.csv)
     LEVELS.md          지지선·손절선 검증 + levels.json
     RECLAIM.md         지지선 이탈 뒤 회복 검증 + reclaim.json
@@ -483,6 +485,31 @@ def run_ledger_eval_only(engine, args, t0):
     print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'LEDGER_EVAL.md')}")
 
 
+def run_peer_eval_only(engine, args, t0):
+    """피어 순위 채점: data/peers/ 순위 기록 + 기록된 종목들의 가격. 방법은 engine/peer_eval.py PEER_EVAL에 고정."""
+    rk = engine.load_peer_ranks()
+    fds = engine.formation_dates(rk) if len(rk) else []
+    if not fds:
+        print(f"채점할 순위 기록이 없습니다(시작일 {engine.PEER_EVAL['START']} 이후 data/peers/peer_rank_*.csv).")
+        return
+    use = rk[pd.to_datetime(rk["rank_date"]).isin(fds)]
+    tickers = sorted(use["ticker"].dropna().astype(str).unique().tolist())
+    start = (pd.to_datetime(use["price_as_of"], errors="coerce").min() - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+    print(f"[1/2] 가격 받기: {len(tickers)}종목 ({start}~) · 줄 세운 달 {len(fds)}개 ({fds[0].date()}~{fds[-1].date()})", flush=True)
+    pm, fail = download(tickers, start)
+    if fail:
+        print(f"   받지 못함: {', '.join(fail)}")
+    print("[2/2] 채점 (방법은 engine/peer_eval.py PEER_EVAL에 고정)", flush=True)
+    res = engine.evaluate_peer_ranks(rk, pm)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    rep = engine.render_peer_eval_report(res, generated_at=now)
+    if fail:
+        rep += f"\n- 받지 못한 종목(계산에서 빠짐): {', '.join(fail)}\n"
+    _save("PEER_EVAL.md", "peer_eval.json", rep, {"generated_at": now, **res, "failed_downloads": fail})
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'PEER_EVAL.md')}")
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8")   # Windows 콘솔에서 한글 깨짐 방지
@@ -503,6 +530,7 @@ def main():
     ap.add_argument("--frame-a", action="store_true", help="틀 A(추세반등) 개별 종목 검증")
     ap.add_argument("--frame-b", action="store_true", help="틀 B(저평가 매수) 미국 개별 종목 검증 (SEC)")
     ap.add_argument("--ledger-eval", action="store_true", help="신호 기록 장부 채점")
+    ap.add_argument("--peer-eval", action="store_true", help="피어 순위 채점")
     ap.add_argument("--short-term", action="store_true", help="단기 규칙(+3%% 익절) 검증")
     ap.add_argument("--levels", action="store_true", help="지지선·손절선 검증")
     ap.add_argument("--reclaim", action="store_true", help="지지선 이탈 뒤 회복 검증")
@@ -530,6 +558,9 @@ def main():
         return
     if args.ledger_eval:
         run_ledger_eval_only(engine, args, t0)
+        return
+    if args.peer_eval:
+        run_peer_eval_only(engine, args, t0)
         return
     if args.short_term:
         run_short_term_only(engine, args, t0)
