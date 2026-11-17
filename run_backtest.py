@@ -16,6 +16,9 @@
     .venv\\Scripts\\python run_backtest.py --short-term    단기 규칙(+3% 익절) 검증 — 대표 종목 + 새 HOLDOUT 84종목 (받기 포함 5~10분)
     .venv\\Scripts\\python run_backtest.py --levels        지지선·손절선 검증 — 대표 종목 + 새 HOLDOUT 110종목 (받기 포함 5~10분)
     .venv\\Scripts\\python run_backtest.py --reclaim       지지선 이탈 뒤 회복 검증 — 대표 종목 + 새 HOLDOUT 148종목 (받기 포함 10분 안팎)
+    .venv\\Scripts\\python run_backtest.py --explore list  탐색할 수 있는 가설 이름 보기
+    .venv\\Scripts\\python run_backtest.py --explore 이름  가설 탐색(이미 쓴 종목 전부, 증거 아님). 처음 한 번만 가격 받기 15분 안팎,
+                                                     그 뒤는 저장해 둔 가격(data/backtest/price_cache/)으로 1~2분. --refresh로 다시 받기
 
 결과 (data/backtest/):
     REPORT.md          사람이 읽는 보고서 (커밋해 두면 다른 AI도 결과를 읽을 수 있음)
@@ -29,6 +32,7 @@
     SHORT_TERM.md      단기 규칙 검증 + short_term.json (거래 목록 short_term_trades.csv)
     LEVELS.md          지지선·손절선 검증 + levels.json
     RECLAIM.md         지지선 이탈 뒤 회복 검증 + reclaim.json
+    EXPLORE_<이름>.md  가설 탐색 결과(증거 아님) + EXPLORE_LOG.md(볼 때마다 한 줄)
     summary.json       숫자 요약 + 주간 누적 수익 곡선 (이후 화면 표시용)
     *.csv              날짜별 게이트·누적 수익·거래 목록 (용량이 커서 .gitignore로 커밋 제외)
 계산은 engine/rule_backtest.py에 있고, 이 파일은 데이터 다운로드와 저장만 한다.
@@ -328,6 +332,46 @@ def run_reclaim_only(engine, args, t0):
     print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'RECLAIM.md')}")
 
 
+def run_explore_only(engine, args, t0):
+    """가설 탐색: 지금까지 쓴 개별 종목 전부로 사건 뒤 수익률을 본다. 결과는 증거가 아니다(EXPLORE_LOG.md에 본 횟수가 남는다)."""
+    cfg = engine.EXPLORE_CONFIG
+    hyp = engine.EXPLORE_HYPOTHESES
+    name = args.explore
+    if name == "list" or name not in hyp:
+        if name != "list":
+            print(f"등록되지 않은 가설: {name}")
+        print("탐색할 수 있는 가설:")
+        for k, h in hyp.items():
+            print(f"   {k:<16} {h['label']}" + (f"  ({h['note']})" if h.get("note") else ""))
+        return
+    uni = list(cfg["UNIVERSE"])
+    pm = {} if args.refresh else engine.load_price_cache(uni)
+    need = [s for s in uni if s not in pm]
+    print(f"[1/2] 가격: 저장해 둔 것 {len(pm)}개" + (f", 새로 받기 {len(need)}개 ({cfg['DATA_START']}~, 종목이 많아 시간이 걸립니다)" if need else ""), flush=True)
+    failed = []
+    if need:
+        got, failed = download(need, cfg["DATA_START"])
+        engine.save_price_cache(got)
+        pm.update(got)
+        if failed:
+            print(f"   받지 못함: {', '.join(failed)}")
+    if len(pm) < len(uni) * 0.8:
+        print(f"   가격을 {len(pm)}/{len(uni)}개만 확보했습니다 — 잠시 뒤 다시 실행해 주세요.")
+        return
+    print(f"[2/2] 사건 찾기 · 무작위 비교 ({hyp[name]['label']})", flush=True)
+    res = engine.run_explore(name, pm)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    rep = engine.render_explore_report(res, generated_at=now)
+    if failed:
+        rep += f"\n- 받지 못한 종목(계산에서 빠짐): {', '.join(failed)}\n"
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(os.path.join(OUT_DIR, f"EXPLORE_{name}.md"), "w", encoding="utf-8") as f:
+        f.write(rep)
+    engine.append_explore_log(res, now, OUT_DIR)
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, f'EXPLORE_{name}.md')} · 기록: {os.path.join(OUT_DIR, cfg['LOG_FILE'])}")
+
+
 def download_splits(symbols):
     """야후 액면분할 기록 (틀 B: 분할 전 보고서의 EPS를 지금 주식 단위로 맞추는 데 씀)."""
     import yfinance as yf
@@ -455,6 +499,8 @@ def main():
     ap.add_argument("--short-term", action="store_true", help="단기 규칙(+3%% 익절) 검증")
     ap.add_argument("--levels", action="store_true", help="지지선·손절선 검증")
     ap.add_argument("--reclaim", action="store_true", help="지지선 이탈 뒤 회복 검증")
+    ap.add_argument("--explore", metavar="NAME", help="가설 탐색(이미 쓴 종목, 증거 아님). list = 가설 이름 보기")
+    ap.add_argument("--refresh", action="store_true", help="--explore에서 저장해 둔 가격을 쓰지 않고 다시 받기")
     args = ap.parse_args()
     t0 = time.time()
     if args.variants:
@@ -486,6 +532,9 @@ def main():
         return
     if args.reclaim:
         run_reclaim_only(engine, args, t0)
+        return
+    if args.explore:
+        run_explore_only(engine, args, t0)
         return
 
     print(f"[1/4] 지수 데이터 받기 (시작 {args.start})", flush=True)
