@@ -128,6 +128,8 @@ def run_explore(name: str, price_map: Dict[str, pd.DataFrame],
     c = EXPLORE_CONFIG
     h = EXPLORE_HYPOTHESES.get(name, {})
     f = fn or h.get("fn")
+    if f is None and h.get("custom"):
+        raise KeyError(f"{name}은(는) 전용 계산을 쓰는 가설입니다 (run_backtest.py --explore {name})")
     if f is None:
         raise KeyError(f"등록되지 않은 가설: {name} (등록된 이름: {', '.join(EXPLORE_HYPOTHESES)})")
     parts: Dict[str, List[pd.DataFrame]] = {"ev": [], "rnd": [], "mat": []}

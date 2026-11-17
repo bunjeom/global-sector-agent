@@ -359,9 +359,13 @@ def run_explore_only(engine, args, t0):
         print(f"   가격을 {len(pm)}/{len(uni)}개만 확보했습니다 — 잠시 뒤 다시 실행해 주세요.")
         return
     print(f"[2/2] 사건 찾기 · 무작위 비교 ({hyp[name]['label']})", flush=True)
-    res = engine.run_explore(name, pm)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    rep = engine.render_explore_report(res, generated_at=now)
+    if hyp[name].get("custom") == "touch":     # 수평선 터치 횟수별 뚫림 비율(전용 계산)
+        res = engine.run_touch_explore(pm)
+        rep = engine.render_touch_report(res, generated_at=now)
+    else:
+        res = engine.run_explore(name, pm)
+        rep = engine.render_explore_report(res, generated_at=now)
     if failed:
         rep += f"\n- 받지 못한 종목(계산에서 빠짐): {', '.join(failed)}\n"
     os.makedirs(OUT_DIR, exist_ok=True)
