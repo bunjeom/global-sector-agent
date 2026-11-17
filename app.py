@@ -879,7 +879,34 @@ if show_legacy:
     radar_res = legacy_radar()
 
 # =====================================================================
-# 6. 데이터 점검 (접이식)
+# 6. 피어 비교 바로가기 (딥다이브 개편 5단계) — 내 종목(대표·관심 종목)이 있는 묶음의 오늘 1위
+# =====================================================================
+st.markdown("---")
+st.markdown("#### 피어 비교")
+try:
+    peer_ov = engine.peer_groups_overview()
+except Exception as e:   # 기록 파일이 깨져도 홈은 그린다
+    peer_ov = {"available": False, "reason": f"피어 기록을 읽지 못함({type(e).__name__})"}
+if not peer_ov.get("available"):
+    st.caption(f"피어 비교: {peer_ov.get('reason')}")
+else:
+    pg = peer_ov["groups"]
+    pg_cov = pg[pg["n_mine"] > 0]
+    st.caption(f"같은 사업을 하는 회사끼리 묶어 가치 관점·추세 관점 순위를 매긴 표입니다(순위 기준일 {kr_date(str(peer_ov['rank_date'])[:10])}, "
+               f"묶음 {len(pg)}개). 순위가 이후 수익을 예측한다는 검증은 없습니다.")
+
+    def _lead(t):
+        return "순위 없음" if not t else t + (f" {utils.TICKER_NAMES[t]}" if t in utils.TICKER_NAMES else "")
+
+    top_rows = pg_cov.head(6)
+    if len(top_rows):
+        st.dataframe(pd.DataFrame({"묶음": top_rows["group_name"], "내 종목": [", ".join(m[:4]) for m in top_rows["mine"]], "종목 수": top_rows["n"],
+                                   "가치 관점 1위": [_lead(t) for t in top_rows["value_leader"]],
+                                   "추세 관점 1위": [_lead(t) for t in top_rows["trend_leader"]]}), width="stretch", hide_index=True)
+    st.page_link("pages/2_🧭_피어_비교.py", label=f"피어 비교 전체 보기 (내 종목이 있는 묶음 {len(pg_cov)}개)", icon="🧭")
+
+# =====================================================================
+# 7. 데이터 점검 (접이식)
 # =====================================================================
 violations = list(dash.get("consistency_violations", []))
 for e_item in radar_res.get("errors", []):

@@ -57,6 +57,8 @@ PAGE_TESTS = [
     ("화면: 가치·금리·거시 일부만 받음", "test_page.py", ["full", "NVDA"], {"VMODE": "partial", "MACROMODE": "partial"}),
     ("화면: 가치·금리·거시 모두 못 받음", "test_page.py", ["full", "NVDA"], {"VMODE": "none", "RFMODE": "off", "MACROMODE": "off"}),
     ("화면: 피어 기록 없음 안내", "test_page.py", ["full", "NVDA"], {"PEERMODE": "none"}),
+    ("화면: 피어 비교 페이지(가짜 기록 2묶음)", "test_peer_page.py", ["fake"], {}),
+    ("화면: 피어 비교 페이지(기록 없음)", "test_peer_page.py", ["none"], {}),
     ("홈: 장부 기반 실행 레이더 (칸 나누기·크기 안내)", "test_home.py", ["ledger"], {}),
     ("홈: 장부 없음 안내", "test_home.py", ["empty"], {}),
     ("홈: 오래된 장부 경고", "test_home.py", ["stale"], {}),

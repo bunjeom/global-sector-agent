@@ -125,5 +125,12 @@ if any("지수 레짐" in g or "yfinance (" in g for g in gate_md):
 if not any("지수 추세(레짐)란?" in e.label for e in at.expander):
     fails.append("레짐 설명 접기 칸 없음")
 
+# 피어 비교 바로가기(5단계): 제목은 늘 있고, 기록이 있으면 표·링크, 없으면 이유 한 줄
+peer_head = any("#### 피어 비교" in m.value for m in at.markdown)
+peer_cap = [c.value for c in at.caption if c.value.startswith(("같은 사업을 하는 회사끼리", "피어 비교:"))]
+print("피어 비교 칸:", peer_head, peer_cap[:1])
+if not (peer_head and peer_cap):
+    fails.append("홈 피어 비교 칸 없음")
+
 print("결과:", "통과" if not fails else f"실패 — {fails}")
 sys.exit(1 if fails else 0)

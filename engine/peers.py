@@ -651,6 +651,22 @@ def run_daily_peers(today: Optional[str] = None, base_dir: Optional[str] = None,
     return res
 
 
+_VIEW_EXTRA = ["short_name", "surv_text", "next_earnings_date", "market", "eps_fy1", "n_fy1", "up_30d", "down_30d"]
+
+
+def _group_table(df: pd.DataFrame, d: Any, group: str, fd: Any, base_dir: Optional[str], fund: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """그날·그 묶음의 순위표 + 같은 날 재무 기록의 회사 이름·생존성 문구·다음 실적 발표일 등. 가치 점수 높은 순."""
+    tbl = df[(df["rank_date"] == d) & (df["group"] == group)].copy()
+    fu = load_peer_fund(base_dir) if fund is None else fund
+    if len(fu) and fd is not None and not pd.isna(fd):
+        extra = fu[fu["fund_date"] == pd.Timestamp(fd)][[c for c in ["ticker"] + _VIEW_EXTRA if c in fu]].drop_duplicates("ticker")
+        tbl = tbl.merge(extra, on="ticker", how="left")
+    for c in _VIEW_EXTRA:
+        if c not in tbl:
+            tbl[c] = None
+    return tbl.sort_values("value_score", ascending=False, na_position="last").reset_index(drop=True)
+
+
 def latest_peer_view(ticker: str, base_dir: Optional[str] = None, ranks: Optional[pd.DataFrame] = None,
                      fund: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
     """딥다이브용: 이 종목이 속한 묶음의 가장 최근 순위표(+ 재무 기록의 회사 이름·생존성 문구·다음 실적 발표일).
@@ -667,20 +683,66 @@ def latest_peer_view(ticker: str, base_dir: Optional[str] = None, ranks: Optiona
         return {"available": False, "reason": "커버리지 밖 종목 — data/snapshots/watchlist.txt에 추가하면 다음 갱신부터 비교"}
     d = mine["rank_date"].max()
     me = mine[mine["rank_date"] == d].iloc[0]
-    tbl = df[(df["rank_date"] == d) & (df["group"] == me["group"])].copy()
     fd = me.get("fund_date")
-    fu = load_peer_fund(base_dir) if fund is None else fund
-    if len(fu) and fd is not None and not pd.isna(fd):
-        keep = ["ticker", "short_name", "surv_text", "next_earnings_date", "market", "eps_fy1", "n_fy1", "up_30d", "down_30d"]
-        extra = fu[fu["fund_date"] == pd.Timestamp(fd)][[c for c in keep if c in fu]].drop_duplicates("ticker")
-        tbl = tbl.merge(extra, on="ticker", how="left")
-    for c in ("short_name", "surv_text", "next_earnings_date", "market", "eps_fy1", "n_fy1", "up_30d", "down_30d"):
-        if c not in tbl:
-            tbl[c] = None
-    tbl = tbl.sort_values("value_score", ascending=False, na_position="last").reset_index(drop=True)
+    tbl = _group_table(df, d, me["group"], fd, base_dir, fund)
     me_full = tbl[tbl["ticker"].astype(str) == t].iloc[0].to_dict()
     return {"available": True, "group": me["group"], "group_name": me["group_name"], "group_source": me.get("group_source"),
             "rank_date": d, "fund_date": fd, "table": tbl, "me": me_full}
+
+
+def peer_group_view(group: str, base_dir: Optional[str] = None, ranks: Optional[pd.DataFrame] = None,
+                    fund: Optional[pd.DataFrame] = None) -> Dict[str, Any]:
+    """피어 비교 페이지용: 묶음 하나의 가장 최근 순위표. 반환 {available, reason, group, group_name, group_source, rank_date, fund_date, table}."""
+    df = load_peer_ranks(base_dir) if ranks is None else ranks
+    if not len(df):
+        return {"available": False, "reason": "피어 기록 없음 — peers_daily.py가 아직 실행되지 않음"}
+    g = df[df["group"].astype(str) == str(group)]
+    if not len(g):
+        return {"available": False, "reason": f"묶음 없음: {group}"}
+    d = g["rank_date"].max()
+    first = g[g["rank_date"] == d].iloc[0]
+    fd = first.get("fund_date")
+    return {"available": True, "group": str(group), "group_name": first["group_name"], "group_source": first.get("group_source"),
+            "rank_date": d, "fund_date": fd, "table": _group_table(df, d, str(group), fd, base_dir, fund)}
+
+
+def _truthy(v: Any) -> bool:
+    return v is True or str(v).lower() == "true"
+
+
+def peer_groups_overview(base_dir: Optional[str] = None, ranks: Optional[pd.DataFrame] = None,
+                         mine: Optional[List[str]] = None) -> Dict[str, Any]:
+    """피어 비교 페이지·홈용: 가장 최근 순위 기록의 묶음별 요약.
+    반환 {available, reason, rank_date, groups: DataFrame(group, group_name, group_source, market, n, n_coverage, coverage,
+    members, mine, n_mine, value_leader, value_ranked, trend_leader, trend_ranked, note)}.
+    mine = 내 종목(기본: 장부 대상 = 대표 종목 + data/snapshots/watchlist.txt). 커버리지(ETF 상위 구성 종목 포함)는 모든 묶음에 있어 거르는 데 못 쓴다. 시장은 묶음 종목의 시장(섞였으면 '미국·한국')."""
+    df = load_peer_ranks(base_dir) if ranks is None else ranks
+    if not len(df):
+        return {"available": False, "reason": "피어 기록 없음 — peers_daily.py가 아직 실행되지 않음", "rank_date": None, "groups": pd.DataFrame()}
+    d = df["rank_date"].max()
+    cur = df[df["rank_date"] == d]
+    my = {_norm_ticker(t) for t in (snapshot_universe() if mine is None else mine)}
+    rows = []
+    for gk, g in cur.groupby("group", sort=False):
+        cov = g[g["is_coverage"].map(_truthy)]["ticker"].astype(str).tolist()
+        mk = sorted({"한국" if str(t).endswith((".KS", ".KQ")) else "미국" for t in g["ticker"]})
+        out = {"group": str(gk), "group_name": g["group_name"].iloc[0], "group_source": g["group_source"].iloc[0],
+               "market": "·".join(mk), "n": int(len(g)), "n_coverage": len(cov), "coverage": cov,
+               "members": g["ticker"].astype(str).tolist()}
+        out["mine"] = [t for t in out["members"] if t in my]
+        out["n_mine"] = len(out["mine"])
+        notes = []
+        for s in ("value", "trend"):
+            r = g[g[f"{s}_rank"] == 1]
+            out[f"{s}_leader"] = str(r["ticker"].iloc[0]) if len(r) else None
+            out[f"{s}_ranked"] = bool(g[f"{s}_rank"].notna().any())
+            if not out[f"{s}_ranked"]:
+                nt = g[f"{s}_note"].dropna().astype(str)
+                notes.append(nt.iloc[0] if len(nt) else "순위 없음")
+        out["note"] = " · ".join(dict.fromkeys(notes))
+        rows.append(out)
+    gdf = pd.DataFrame(rows).sort_values(["n_mine", "n_coverage", "group_name"], ascending=[False, False, True]).reset_index(drop=True)
+    return {"available": True, "reason": None, "rank_date": d, "groups": gdf}
 
 
 # ------------------------------------------------------------------ 딥다이브 요약 (강점·약점) — 표시 규칙도 사전 등록
