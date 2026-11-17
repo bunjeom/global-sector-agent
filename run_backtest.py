@@ -360,7 +360,10 @@ def run_explore_only(engine, args, t0):
         return
     print(f"[2/2] 사건 찾기 · 무작위 비교 ({hyp[name]['label']})", flush=True)
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    if hyp[name].get("custom") in ("touch", "touch_b"):     # 수평선 터치 횟수별 뚫림 비율(전용 계산)
+    if hyp[name].get("custom") == "mom":     # 모멘텀: 매달 줄 세워 상위·하위 20% 비교(전용 계산)
+        res = engine.run_momentum_explore(pm, signal=name)
+        rep = engine.render_momentum_report(res, generated_at=now)
+    elif hyp[name].get("custom") in ("touch", "touch_b"):     # 수평선 터치 횟수별 뚫림 비율(전용 계산)
         res = engine.run_touch_explore(pm, decisive=hyp[name]["custom"] == "touch_b")
         rep = engine.render_touch_report(res, generated_at=now)
     else:
