@@ -780,6 +780,7 @@ def render_levels_card(lv: dict) -> None:
         <div style="font-size:0.8rem;color:#64748b;margin-top:6px;">단기 진입 규칙(+3% 익절)은 과거 검증 미통과(무작위 진입보다 낫지 않음)라 진입 여부를 알려 주지 않습니다.</div>
         <div style="font-size:0.8rem;color:#64748b;">지지선: {_esc(ver["support"])}</div>
         <div style="font-size:0.8rem;color:#64748b;">손절선: {_esc(ver["stop"])}</div>
+        <div style="font-size:0.8rem;color:#64748b;">깼다가 회복: {_esc(ver["reclaim"])}. 지지선을 깬 뒤 10거래일 안에 다시 올라오는 일은 과거 약 68%로 흔했지만, 무작위로 움직이는 가짜 가격에서도 약 72%였습니다</div>
         <div style="font-size:0.8rem;color:#64748b;">위험 계산: {_esc(ver["risk"])} · {_esc(lv["version"])}</div>
     </div>
     """)

@@ -60,6 +60,8 @@ LEVEL_VERIFICATION: Dict[str, str] = {
     # 2026-11-17 결과(LEVELS.md): 둘 다 미통과 → engine/level_backtest.py LEVEL_VERDICT_TEXT의 미통과 문구 그대로
     "support": "검증 안 됨 — 과거에 같은 거리의 임의의 선보다 덜 깨지지 않았음(LEVELS.md). 위험 계산용 기준선으로만",
     "stop": "검증 안 됨 — 과거에 이탈 뒤 수익이 평소보다 나쁘지 않았음(LEVELS.md). 추가 하락 예고가 아니라 손실 한도로만",
+    # 2026-11-17 결과(RECLAIM.md): 미통과 → engine/reclaim_backtest.py RECLAIM_VERDICT_TEXT의 미통과 문구 그대로
+    "reclaim": "검증 안 됨 — 과거에 지지선을 깼다가 다시 올라온 뒤 수익이 평소보다 좋지 않았음(RECLAIM.md). 회복 여부는 참고 표시만",
     "risk": "손절선까지 거리로 매수 비중을 정하는 것은 예측이 아니라 산수(손실 한도) — 검증 대상 아님",
 }
 
