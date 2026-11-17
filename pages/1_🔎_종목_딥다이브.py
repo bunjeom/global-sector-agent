@@ -693,8 +693,9 @@ def _cond_li(ok, label: str, text: str) -> str:
             + (f' — <span style="color:#475569;">{_esc(text)}</span>' if text else "") + "</li>")
 
 
-def render_strategy_section(t: str, fa: dict, fb: dict, fund: dict, se: dict, gate: dict) -> None:
-    """딥다이브 개편 4단계: 전략 카드 3장(가치 스윙·추세·단기)과 진입 전략 — 사전 등록 우선순위(engine/strategy.py)."""
+def render_strategy_section(t: str, fa: dict, fb: dict, fund: dict, lv: dict, gate: dict) -> None:
+    """딥다이브 개편 4단계: 진입 전략 카드 2장(가치 스윙·추세) + 지지·손절선 카드. 단기는 사전 등록 시험 미통과(SHORT_TERM.md)라
+    진입 여부를 알려 주지 않고 선과 위험 계산만 보여 준다(2026-11-17, engine/strategy.py support_stop_levels)."""
     chart_heading("어느 전략으로 들어갈까 — 전략 카드")
     view = cached_peer_view(t)
     v_top, v_txt = _peer_top(view, "value")
@@ -706,9 +707,7 @@ def render_strategy_section(t: str, fa: dict, fb: dict, fund: dict, se: dict, ga
         frame_b_stage=(fb or {}).get("stage"), value_top=v_top, value_rank_text=v_txt,
         frame_a_entry=(fa["opinion"]["entry"] if fa_ok else None),
         frame_a_label=(fa["opinion"]["label"] if fa_ok else (fa.get("reason") or "판정 없음")),
-        trend_top=t_top, trend_rank_text=t_txt,
-        short_signal=(se["signal"] if se.get("available") else None),
-        short_label=(se["label"] if se.get("available") else (se.get("reason") or "판정 없음")))
+        trend_top=t_top, trend_rank_text=t_txt)
     hc = "#16a34a" if res["chosen"] and not res["block"] else ("#dc2626" if (res["block"] or {}).get("kind") == "survival"
                                                            else ("#d97706" if res["block"] else "#64748b"))
     g = gate or {}
@@ -720,35 +719,70 @@ def render_strategy_section(t: str, fa: dict, fb: dict, fund: dict, se: dict, ga
         <div>{utils.line_icon("compass", 16)} <b style="color:{hc};">{_esc(res["headline"])}</b></div>
         {block}
         <div style="font-size:0.86rem;margin-top:4px;">{gate_txt} · 우선순위: {_esc(res["rule"])}</div>
-        <div style="font-size:0.82rem;color:#64748b;margin-top:4px;">세 전략 모두 미검증입니다. 이 카드는 미리 정한 규칙의 판정을 모아 보여 줄 뿐 수익을 예측하지 않습니다. {_esc(res["peer_note"])}.</div>
+        <div style="font-size:0.82rem;color:#64748b;margin-top:4px;">두 전략 모두 미검증입니다. 이 카드는 미리 정한 규칙의 판정을 모아 보여 줄 뿐 수익을 예측하지 않습니다. {_esc(res["peer_note"])}.</div>
     </div>
     """)
     cols = st.columns(3)
     for col, cd in zip(cols, res["cards"]):
         rc = _ROLE_COLOR.get(cd["role"], "#94a3b8")
-        if cd["key"] == "short" and se.get("available"):
-            lis = "".join(_cond_li(x["ok"], x["label"], x["text"]) for x in se["conditions"])
-            pl = se.get("plan")
-            extra = (f'<div style="font-size:0.88rem;margin-top:4px;"><b>내일 진입 조건</b>: 시가가 {_esc(engine.fmt_price(pl["open_min_excl"], is_krx_ticker))} 초과 '
-                     f'{_esc(engine.fmt_price(pl["open_max"], is_krx_ticker))} 이하 · 목표 {_esc(pl["target_text"])} · {_esc(pl["cost_text"])}</div>') if pl else ""
-            head = f'<div style="font-size:0.9rem;margin-top:4px;">{_esc(se["label"])} <span style="color:#94a3b8;">({_esc(se["as_of"])} 종가 기준)</span></div>'
-        else:
-            lis = "".join(_cond_li(x["ok"], x["label"], x["text"]) for x in cd["conditions"])
-            extra, head = "", ""
+        lis = "".join(_cond_li(x["ok"], x["label"], x["text"]) for x in cd["conditions"])
         with col:
             html_md(f"""
             <div class="term-card" style="min-height:100%;">
                 <div><b>{_esc(cd["label"])}</b> <span style="font-size:0.8rem;color:#64748b;">{_esc(cd["frame"])}</span></div>
                 <div style="margin-top:6px;"><span class="term-badge-inv" style="background:{rc};border-color:{rc};">{_esc(cd["role"])}</span></div>
-                {head}
                 <ul class="term-list" style="margin-top:6px;">{lis}</ul>
-                {extra}
                 <div style="font-size:0.86rem;margin-top:4px;"><b>진입</b> {_esc(cd["entry"])}</div>
                 <div style="font-size:0.86rem;"><b>청산</b> {_esc(cd["exit"])}</div>
                 <div style="font-size:0.86rem;"><b>보유</b> {_esc(cd["hold"])}</div>
                 <div style="font-size:0.8rem;color:#64748b;margin-top:6px;">검증 상태: {_esc(cd["verification"])}</div>
             </div>
             """)
+    with cols[2]:
+        render_levels_card(lv)
+
+
+_LEVEL_COLOR = {"손절선 이탈": "#dc2626", "지지선 접근": "#d97706", "지지선 위": "#64748b"}
+
+
+def render_levels_card(lv: dict) -> None:
+    """단기 — 지지·손절선 카드: 진입 신호가 아니라 선의 위치와 손절선까지 거리(위험 계산)."""
+    head = ('<div><b>단기 — 지지·손절선</b> <span style="font-size:0.8rem;color:#64748b;">진입 신호 아님</span></div>')
+    if not lv.get("available"):
+        html_md(f"""
+        <div class="term-card" style="min-height:100%;">
+            {head}
+            <div style="margin-top:6px;color:#64748b;">{_esc(lv.get("reason") or engine.NO_DATA)}</div>
+        </div>
+        """)
+        return
+    fp = lambda v: _esc(engine.fmt_price(v, is_krx_ticker))
+    sc = _LEVEL_COLOR.get(lv["status"], "#64748b")
+    ver = lv["verification"]
+    if lv["max_weight"] is None:
+        risk = '<li><b>매수 비중 한도</b> — 손절선 아래라 계산하지 않음</li>'
+    else:
+        eq = st.session_state.get("total_equity")
+        amt = f' (총자산 {eq / 1e8:,.1f}억 원 기준 약 {eq * lv["max_weight"] / 1e4:,.0f}만 원)' if eq else ""
+        risk = (f'<li><b>매수 비중 한도</b> — 계좌의 {lv["max_weight"] * 100:.0f}%{amt}: 손절선에서 팔 때 손실이 계좌의 '
+                f'{lv["risk_pct"] * 100:.0f}%가 되는 크기(= {lv["risk_pct"] * 100:.0f}% ÷ 거리 {lv["dist"] * 100:.1f}%). 갭 하락이면 손실이 더 클 수 있음</li>')
+    html_md(f"""
+    <div class="term-card" style="min-height:100%;">
+        {head}
+        <div style="margin-top:6px;"><span class="term-badge-inv" style="background:{sc};border-color:{sc};">{_esc(lv["status"])}</span>
+            <span style="font-size:0.88rem;color:#475569;">{_esc(lv["status_detail"])} · {_esc(lv["as_of"])} 종가 기준</span></div>
+        <ul class="term-list" style="margin-top:6px;">
+            <li><b>지지선</b> {fp(lv["support"])} — 확정된 최근 스윙 저점({_esc(lv["support_date"])})</li>
+            <li><b>손절선</b> {fp(lv["stop"])} — 지지선 − 0.5×ATR({fp(lv["atr"])}). 종가가 이 아래면 '이탈'</li>
+            <li><b>손절선까지 거리</b> — 종가 {fp(lv["close"])} 기준 {lv["dist"] * 100:+.1f}%</li>
+            {risk}
+        </ul>
+        <div style="font-size:0.8rem;color:#64748b;margin-top:6px;">단기 진입 규칙(+3% 익절)은 과거 검증 미통과(무작위 진입보다 낫지 않음)라 진입 여부를 알려 주지 않습니다.</div>
+        <div style="font-size:0.8rem;color:#64748b;">지지선: {_esc(ver["support"])}</div>
+        <div style="font-size:0.8rem;color:#64748b;">손절선: {_esc(ver["stop"])}</div>
+        <div style="font-size:0.8rem;color:#64748b;">위험 계산: {_esc(ver["risk"])} · {_esc(lv["version"])}</div>
+    </div>
+    """)
 
 
 # 실적 발표까지 남은 거래일: 실제 일정 사용(모르면 None = 일정 미확인). 시뮬레이션을 고르면 D-2로 가정.
@@ -848,9 +882,9 @@ arch_info = synth_out["archetype"]
 # 7) 이 종목에 투자할 이유 — 피어 비교 (딥다이브 개편 2단계, AGENTS.md 4번). 탭 위에 둔다.
 render_peer_section(ticker_input)
 
-# 8) 어느 전략으로 들어갈까 — 전략 카드 3장 (딥다이브 개편 4단계, engine/strategy.py)
-short_eval = engine.short_term_evaluate(stock_df_raw, ind=pb_ind)
-render_strategy_section(ticker_input, frame_a, frame_b, fund_out, short_eval,
+# 8) 어느 전략으로 들어갈까 — 진입 전략 카드 2장 + 지지·손절선 카드 (딥다이브 개편 4단계, engine/strategy.py)
+level_eval = engine.support_stop_levels(stock_df_raw, ind=pb_ind)
+render_strategy_section(ticker_input, frame_a, frame_b, fund_out, level_eval,
                         cached_market_gate("KR" if is_krx_ticker else "US"))
 
 # =====================================================================

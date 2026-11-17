@@ -244,15 +244,18 @@ else:
     _peer_ok = any("피어 비교: 피어 기록 없음" in i.value for i in at.info)
 print("피어 비교:", _peer_ok, "| 카드", bool(_pc), "| 표", bool(_pdf), "| 앞서려면", bool(_gc))
 _pb_ok = _pb_ok and _peer_ok
-# ---- 전략 카드 3장(딥다이브 4단계): 결론 줄 + 가치 스윙·추세·단기 카드, 각 카드에 역할·검증 상태
-_sh = [m.value for m in at.markdown if "세 전략 모두 미검증" in m.value]
+# ---- 전략 카드(딥다이브 4단계): 결론 줄 + 가치 스윙·추세 카드(역할·검증 상태) + 지지·손절선 카드(진입 신호 아님)
+_sh = [m.value for m in at.markdown if "두 전략 모두 미검증" in m.value]
 _sc = {k: [m.value for m in at.markdown if f"<b>{k}</b>" in m.value and "검증 상태:" in m.value and "term-badge-inv" in m.value]
-       for k in ("가치 스윙", "추세", "단기")}
+       for k in ("가치 스윙", "추세")}
+_lvc = [m.value for m in at.markdown if "<b>단기 — 지지·손절선</b>" in m.value]
 _roles = [_r2.findall(r"term-badge-inv\" style=\"background:#[0-9a-f]+;border-color:#[0-9a-f]+;\">([^<]*)", v[0])[:1] for v in _sc.values() if v]
-_st_ok = bool(_sh) and all(_sc.values()) and ("국면 G" in _sh[0]) and ("RSI(2)" in (_sc["단기"][0] if _sc["단기"] else ""))
+_st_ok = (bool(_sh) and all(_sc.values()) and ("국면 G" in _sh[0]) and bool(_lvc) and "진입 신호 아님" in _lvc[0]
+          and all(k in _lvc[0] for k in ("<b>지지선</b>", "<b>손절선</b>", "손절선까지 거리", "매수 비중 한도", "위험 계산:")))
 if PEERMODE != "fake":   # 피어 기록이 없으면 가치·추세 카드의 순위 조건은 '확인 불가'
     _st_ok = _st_ok and "피어 순위 없음" in (_sc["가치 스윙"][0] if _sc["가치 스윙"] else "")
-print("전략 카드:", _st_ok, "| 결론", [_r2.sub("<[^>]+>", "", _sh[0])[:80]] if _sh else None, "| 역할", _roles)
+print("전략 카드:", _st_ok, "| 결론", [_r2.sub("<[^>]+>", "", _sh[0])[:80]] if _sh else None, "| 역할", _roles,
+      "| 지지·손절선", _r2.findall(r"border-color:#[0-9a-f]+;\">([^<]*)", _lvc[0])[:1] if _lvc else None)
 _pb_ok = _pb_ok and _st_ok
 # 실적 데이터가 전혀 없는 모드(none)는 화면이 종합 탭 전에 멈추는 것이 정상(가짜 값으로 채우지 않음)
 sys.exit(1 if (at.exception or _bad or _hb or (MODE != "none" and not _pb_ok)) else 0)

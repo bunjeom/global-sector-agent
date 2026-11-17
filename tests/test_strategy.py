@@ -105,16 +105,15 @@ chk("5-5 버전·검증 상태 문구(사전 등록 시험 미통과 → 참고�
 
 # 6) 전략 우선순위
 cs = engine.choose_strategy
-a = cs(frame_b_stage="진입 가능", value_top=True, frame_a_entry=True, trend_top=True, short_signal=True)
-chk("6 셋 다 충족 → 가치(보유 기간이 가장 긴 쪽), 추세·단기는 보조 근거", a["chosen"] == "value" and a["met"] == ["value", "trend", "short"]
-    and [c_["role"] for c_ in a["cards"]] == ["진입 전략", "보조 근거", "보조 근거"], a["headline"])
-b = cs(frame_b_stage="조건부 진입", value_top=None, frame_a_entry=True, trend_top=True, short_signal=False)
+a = cs(frame_b_stage="진입 가능", value_top=True, frame_a_entry=True, trend_top=True)
+chk("6 둘 다 충족 → 가치(보유 기간이 긴 쪽), 추세는 보조 근거 (단기는 2026-11-17부터 진입 후보 아님)", a["chosen"] == "value"
+    and a["met"] == ["value", "trend"] and [c_["role"] for c_ in a["cards"]] == ["진입 전략", "보조 근거"], a["headline"])
+b = cs(frame_b_stage="조건부 진입", value_top=None, frame_a_entry=True, trend_top=True)
 chk("6-2 가치 관점 순위 없음 = 확인 불가 → 충족 아님 → 추세", b["chosen"] == "trend" and "피어 순위 없음" in b["cards"][0]["conditions"][1]["text"]
     and b["cards"][0]["unknown"], b["headline"])
-c2 = cs(frame_b_stage="대기", value_top=True, frame_a_entry=False, trend_top=True, short_signal=True)
-chk("6-3 가치·추세 아님 + 단기 신호 → 단기(검증 미통과 — 참고만 표시)", c2["chosen"] == "short" and c2["headline"].startswith("진입 전략: 단기")
-    and "참고만" in c2["headline"])
-d = cs(frame_b_stage="대기", value_top=False, frame_a_entry=False, trend_top=False, short_signal=False)
+c2 = cs(frame_b_stage="대기", value_top=True, frame_a_entry=False, trend_top=True)
+chk("6-3 가치·추세 아님 → 대기 (단기 신호로 넘어가지 않음)", c2["chosen"] is None and "대기" in c2["headline"])
+d = cs(frame_b_stage="대기", value_top=False, frame_a_entry=False, trend_top=False)
 chk("6-4 아무것도 없음 → 대기", d["chosen"] is None and "대기" in d["headline"])
 e = cs(survival_kill=True, frame_b_stage="진입 가능", value_top=True)
 chk("6-5 생존성 하드 킬 → 신규 진입 없음(조건 충족 여부는 보여 줌)", e["block"]["kind"] == "survival" and e["chosen"] == "value"

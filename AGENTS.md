@@ -48,8 +48,9 @@
 | `sec_facts.py` | SEC 공시일 기준 TTM EPS(SEC_CONFIG): 티커→CIK, EPS 개념 받기·캐시(data/sec_cache/), 4분기 = 연간 − 9개월, 정정 값은 제출일부터, 액면분할 단위 맞춤 |
 | `playbook.py` | 매매 틀 v2 판정(PLAYBOOK_CONFIG): `frame_a_evaluate`(추세 상태·근거 저울 7항목·전환 가능성·의견·청산), `frame_b_evaluate`(적용 범위·단계), `fetch_frame_a_live`(실제 데이터), 점검은 check_playbook.py |
 | `peers.py` | 피어 비교(PEER_CONFIG·PEER_METRICS): `build_groups`(peer_map + 야후 산업, `yf:` 합류), `derive_metrics`·`percentile_ranks`·`strategy_score`·`score_group`(사전 등록 순위 규칙), `run_daily_peers`(재무 주 1회·가격 매일 기록), `latest_peer_view`(딥다이브용) |
-| `strategy.py` | 전략 선택(SHORT_TERM_CONFIG·STRATEGY_VERIFICATION): `short_indicators`·`short_term_evaluate`(단기 규칙 — 지지선·손절선·내일 시가 허용 범위), `choose_strategy`(공통 차단 → 가치 > 추세 > 단기) |
+| `strategy.py` | 전략 선택(SHORT_TERM_CONFIG·STRATEGY_VERIFICATION): `short_indicators`·`short_term_evaluate`(단기 규칙 — 지지선·손절선·내일 시가 허용 범위), `support_stop_levels`(지지선·손절선·거리·매수 비중 한도 — 진입 신호 아님, LEVEL_CONFIG·LEVEL_VERIFICATION), `choose_strategy`(공통 차단 → 가치 > 추세) |
 | `short_backtest.py` | 단기 규칙 검증(SHORT_BT_CONFIG·SHORT_TERM_CRITERIA): `simulate_short_trade`·`short_trades`, 보유 기간 맞춘 무작위·'눌림 없이' 비교, `evaluate_short_term`·`render_short_term_report` (run_backtest.py --short-term) |
+| `level_backtest.py` | 지지선·손절선 검증(LEVEL_BT_CONFIG·LEVEL_CRITERIA·LEVEL_VERDICT_TEXT): `support_events`·`support_placebo`(같은 ATR 거리의 가짜 선), `stop_events`·`stop_baseline`, `evaluate_levels`·`render_levels_report` (run_backtest.py --levels) |
 | `ledger.py` | 신호 기록 장부(LEDGER_CONFIG·LEDGER_COLUMNS·LEDGER_EVAL): `run_daily_ledger`(판정+원자료 기록), `load_ledger`, `evaluate_frame_a_ledger`(미리 정한 방법으로 채점) |
 | `frame_backtest.py` | 매매 틀 검증. 틀 A(FRAME_A_CONFIG·FRAME_A_CRITERIA): 개별 종목, 보유 기간 맞춘 무작위와 비교. 틀 B(FRAME_B_CONFIG·FRAME_B_CRITERIA): 미국 개별 종목, SEC EPS로 만든 자기 PER 밴드, 같은 날 다른 종목 평균과 비교. 둘 다 월 묶음 표준오차 |
 
@@ -80,6 +81,7 @@
 - 틀 A 검증(engine/frame_backtest.py, run_backtest.py --frame-a): 규칙·매개변수(6·12개월 상대강도, 200·50일선, RSI(2)<10, 60일 최저가)와 판정 기준(FRAME_A_CRITERIA)은 실제 데이터 결과를 보기 전에 고정했다. 결과를 보고 바꾸지 않는다. 무작위 비교는 반드시 **보유 기간을 맞춘다**(주가는 평균적으로 오르므로, 같은 청산 규칙을 무작위 날짜에 쓰면 보유가 짧아져 우위가 없는 가짜 가격에서도 통과로 나온다 — tests/test_frame_backtest.py 4-7이 이를 막는다). HOLDOUT_UNIVERSE(새 개별 종목)는 판정 전용이다.
 - 틀 B 검증(run_backtest.py --frame-b, .env에 `SEC_USER_AGENT=이름 이메일` 필요): 규칙(자기 5년 로그 PER 밴드 ±1σ, TTM EPS 전년 대비, 배수·이익 분해)과 판정 기준(FRAME_B_CRITERIA)은 실제 데이터 결과를 보기 전에 고정했다. EPS는 제출일 다음 거래일부터 쓴다. 보유가 수백 일인 틀은 '같은 종목 무작위 날짜 + 같은 보유일' 비교가 치우치므로(보유일이 그 종목 경로에 달림, 가짜 가격에서 −6%p) **같은 날 사서 같은 날 판 같은 묶음 다른 종목 평균**과 로그 수익률로 비교한다 — tests/test_frame_b.py 6-1·6-2가 우위 없는/있는 가짜 가격으로 이를 확인한다. FRAME_B_CONFIG HOLDOUT_UNIVERSE는 판정 전용이다.
 - 단기 규칙 검증(engine/short_backtest.py, run_backtest.py --short-term): 규칙(engine/strategy.py SHORT_TERM_CONFIG)과 판정 기준(SHORT_TERM_CRITERIA, z ≥ 3)은 결과 전에 고정했다. 보유 기간 맞춘 무작위와 비교하고, tests/test_strategy.py 8·8-2가 우위 없는 가짜 가격(무작위 걸음)에서는 통과하지 않고 되돌림이 있는 가짜 가격에서는 무작위보다 낫게 나오는지 확인한다. SHORT_BT_CONFIG HOLDOUT_UNIVERSE는 판정 전용이다.
+- 지지선·손절선 검증(engine/level_backtest.py, run_backtest.py --levels): 선의 정의·판정 기준(LEVEL_CRITERIA)·결과별 화면 문구(LEVEL_VERDICT_TEXT)는 결과 전에 고정했다. 지지선은 '최근 하락 폭이 비슷한 날에 같은 ATR 거리로 그은 가짜 선'과 비교한다(무작위 날과만 비교하면 하락 뒤 되돌림 때문에 선이 특별하지 않아도 통과할 수 있다). tests/test_levels.py 5~5-4가 효과 없는 가짜 가격에서는 통과하지 않고, 바닥에서 튕기는 가격·이탈 뒤 더 떨어지는 가격에서는 통과하는지 확인한다. LEVEL_BT_CONFIG HOLDOUT_UNIVERSE는 판정 전용이다.
 - 국면 게이트 입력은 `build_gate_inputs_from_header(macro_header, "US"|"KR")`로 홈 헤더의 실제 데이터에서 만든다.
 - 화면에서는 '지수 레짐'을 '지수 추세'로 쓰고 결정 요인 옆에 지수 이름과 단계 뜻(예: 나스닥 위기 = 200일 EMA 아래)을 붙인다(app.py `REGIME_PLAIN`). 게이트 상자·레이더 아래 작은 글씨는 기준일(+'미검증')만, 긴 설명은 도움말(?)로 옮긴다.
 - 실적 트랙(analyze_earnings_track) 입력은 `fetch_real_earnings_inputs` 한 곳에서만 만든다(미국 yfinance, 한국 DART + yfinance 추정치). 못 받은 값은 None이고 화면에는 '데이터 없음'. 삼성전자식 기본값을 다시 넣지 않는다.
@@ -192,7 +194,7 @@
 | 종합 판정 | 딥다이브: 틀 A·B 카드 아래에 기존 결정 트리(ARCH_1~8)를 '기존 종합 판정(개편 전 방식)'으로 그대로 둠. 기술 트랙 탭은 맨 위에 틀 A 요약, 그 아래 7상태 기계·셋업·T 티켓을 '기존 셋업 진단 — 장기 검증 미통과'로 표시, 10장 백테스트 상자에 표본·장기 검증 경고 |
 | 컨센서스·목표가 날짜별 저장 | 있음(2026-11-14~) — engine/snapshot.py, 매일 자동 실행. 화면에는 아직 쓰지 않음 |
 | 피어 비교 | 1단계(2026-11-15) — engine/peers.py, peers_daily.py(Actions 4-4), check_peers.py, 테스트 tests/test_peers.py. 2단계(2026-11-16) — 딥다이브 탭 위 결론 카드·피어 표(`render_peer_section`). 화면 검사는 가짜 피어 기록(tests/_fake_peers.py, PEERMODE=fake/none) |
-| 전략 선택 | 4단계(2026-11-16) — engine/strategy.py(단기 규칙 판정·우선순위), engine/gate.py `market_gate_from_prices`(홈과 같은 국면 계산), 딥다이브 피어 비교 아래 '어느 전략으로 들어갈까'(결론 줄 + 카드 3장, `render_strategy_section`). 단기 규칙 과거 검증은 engine/short_backtest.py(run_backtest.py --short-term, 결과 전) |
+| 전략 선택 | 4단계(2026-11-16, 단기는 11-17부터 지지·손절선 카드 `render_levels_card`) — engine/strategy.py(단기 규칙 판정·우선순위), engine/gate.py `market_gate_from_prices`(홈과 같은 국면 계산), 딥다이브 피어 비교 아래 '어느 전략으로 들어갈까'(결론 줄 + 카드 3장, `render_strategy_section`). 단기 규칙 과거 검증은 engine/short_backtest.py(run_backtest.py --short-term, 결과 전) |
 | 신호 기록 장부 | 있음(2026-11-15~) — engine/ledger.py, 매일 자동 실행(daily_agent.yml 4-3). 틀 A만 기록(틀 B는 가치·실적 결과가 필요해 화면 개편 때 추가) |
 
 ### 재무 생존성 v2.2 (v2 2026-11-15, v2.2 2026-11-16, engine/fundamental.py `SURVIVAL_CONFIG`·`evaluate_survival`)
@@ -219,7 +221,7 @@
 
 | 전략 | 진입 | 매도 | 판정 코드 | 검증 상태 |
 |---|---|---|---|---|
-| 단기 | 지지선 근처 눌림(아래 '단기 규칙') | +3% 익절 또는 진입 근거 소멸 | engine/strategy.py | **미통과**(SHORT_TERM.md) — 화면은 '참고만' |
+| 단기 | (2026-11-17 변경) 진입 신호 없음 — 지지선·손절선과 손절선까지 거리(위험 계산)만 표시. 진입·청산은 본인 판단 | — | engine/strategy.py `support_stop_levels` | 진입 규칙 **미통과**(SHORT_TERM.md) · 선 자체는 시험 중(LEVELS.md) |
 | 추세 | 틀 A v2 진입 의견 | 추세 종료·전환 실패(실패 근거 > 전환 근거) | engine/playbook.py | 미검증(장부로 채점 중) |
 | 가치 스윙 | 틀 B v2 진입 가능·조건부 | 고평가 도달(배수 주도) 또는 손절 조건 | engine/playbook.py | 미검증 |
 
@@ -260,12 +262,16 @@
 1. 공통 차단: 생존성 하드 킬 → 신규 진입 없음. 국면 게이트 크기 0(G3 등) → 의견만.
 2. 가치: 틀 B '진입 가능'·'조건부' 그리고 가치 관점 순위 피어 상위 1/3.
 3. 추세: 틀 A 진입 의견 그리고 추세 관점 순위 피어 상위 1/3.
-4. 단기: 가치·추세가 아니고 단기 규칙 진입 조건 충족.
-5. 여럿 충족: 보유 기간이 긴 쪽(가치 > 추세 > 단기)을 진입 전략으로, 나머지는 보조 근거로 표시.
+4. ~~단기: 가치·추세가 아니고 단기 규칙 진입 조건 충족.~~ (2026-11-17 삭제 — 단기 규칙이 사전 등록 시험 미통과라 사용자 결정으로 진입 후보에서 뺌. 결과를 보고 규칙 숫자를 고친 것이 아니라 미통과한 규칙을 신호로 쓰지 않기로 한 것)
+5. 여럿 충족: 보유 기간이 긴 쪽(가치 > 추세)을 진입 전략으로, 나머지는 보조 근거로 표시.
 
 **단기 규칙.** 진입: 틀 A 상태가 상승 또는 횡보 + RSI(2) < 10 눌림(T-B와 같은 눌림 정의) + 다음 날 시가에서 손절선까지 거리 ≤ 3%(손익비 ≥ 1). 지지선 = 진입 신호일 기준 최근 확정 스윙 저점(틀 A ZigZag 3×ATR), 손절선 = 지지선 − 0.5×ATR(20). 청산(먼저 오는 것): ① 장중 +3% 도달 → +3%(시가가 이미 위면 시가) ② 종가 < 손절선 → 다음 날 시가 ③ 틀 A 상태가 '하락' → 다음 날 시가 ④ 10거래일 안에 +3% 미도달 → 다음 날 시가. 왕복 비용 0.30%. 숫자는 관행값으로 고정, 사전 등록한 새 시험으로 확인(시도 횟수 +1, 홀드아웃 판정).
 - 구현 세부(2026-11-16, 결과 보기 전 고정): RSI(2)는 와일더 식(T-B·틀 A 검증과 같음). 지지선 = 신호일까지 확정된 가장 최근 스윙 저점(추세 상태와 무관하게 마지막 L). 진입일 장중에도 +3% 익절을 본다. 10거래일은 진입일 포함, 10번째 날 종가 뒤 다음 날 시가. 같은 날 종가 조건은 손절선 → '하락' → 시간 순으로 이름만 붙인다(모두 다음 날 시가). 종목당 1포지션(청산 실행일 종가부터 새 신호).
 - **시험 설계(2026-11-16 결과 보기 전 고정, engine/short_backtest.py):** 개발 묶음 = 대표 종목 64(틀 A와 같음), 판정 묶음(HOLDOUT) = 지금까지 어떤 백테스트에도 쓰지 않은 84종목(미국 11개 섹터 59 · 한국 25, 목록은 SHORT_BT_CONFIG), 2001년~. 판정 기준: HOLDOUT 전체 기간 거래 ≥ 30, 거래당 순수익률(비용 뒤) > 0, (실제 − 보유 기간 맞춘 무작위) ≥ 월 묶음 표준오차 × **3**, 그리고 개발 묶음 앞·뒤 기간(2014 분할) 모두 > 0. 가격 기반 타이밍의 일곱 번째 시험이라 z 기준을 2에서 3으로 높였다(여러 번 시험하면 우연히 z ≥ 2가 나올 확률이 커짐 — Harvey·Liu·Zhu 2016, 새 요인에 t > 3 권고). 무작위 비교는 거래마다 같은 종목 무작위 날짜 20곳, 같은 보유일(실제가 장중 익절이면 그날 종가, 시가 청산이면 시가에 팖). 참고: '눌림 없이'(추세 상승·횡보 + 지지선, RSI 조건만 뺌) 대비, 비용 0·0.30·0.60%, z ≥ 2. 통과·미통과 모두 결과를 보고 숫자를 바꿔 다시 시험하지 않는다 — 미통과면 단기 카드는 '검증 미통과 — 참고만'.
+- **지지·손절선 표시와 검증(2026-11-17 사전 등록, 결과 보기 전 고정 — engine/strategy.py LEVEL_CONFIG, engine/level_backtest.py):** 단기는 진입 여부 대신 지지선(확정된 최근 스윙 저점)·손절선(지지선 − 0.5×ATR(20))·손절선까지 거리·매수 비중 한도(= 계좌 위험 1% ÷ 거리, 최대 100% — 산수라 검증 대상 아님)를 보여 준다. 상태: 종가 < 손절선 '손절선 이탈' / 저가 ≤ 지지선 + 0.5×ATR '지지선 접근' / 그 외 '지지선 위'. 선의 정의는 단기 규칙 그대로이며 시험 결과를 보고 바꾸지 않는다. 가격 기반 시험의 여덟·아홉 번째 질문이라 z 기준 3. 개발 묶음 = 대표 종목 64, HOLDOUT = 어떤 백테스트에도 쓰지 않은 110종목(미국 11개 섹터 85 · 한국 25), 2001년~, 사건 뒤 10거래일은 같은 종목의 새 사건을 세지 않음, 표준오차는 월 묶음.
+  - 질문 1(지지선): 사건 = 저가 ≤ 지지선 + 0.5×ATR 이고 종가 ≥ 손절선인 날. 결과 = 이후 10거래일 종가가 그날 손절선 아래로 내려간 비율. 판정 비교 = 같은 종목에서 최근 5거래일 변화(ATR 단위)가 사건일과 ±0.5 이내인 다른 날 20곳의 종가에서 같은 ATR 거리만큼 아래 그은 가짜 선. **통과 = HOLDOUT 사건 ≥ 100, (실제 − 가짜) < 0, z ≤ −3, 개발 묶음 앞·뒤 기간 모두 차이 < 0.** 참고: 하락 폭을 맞추지 않은 무작위 날 가짜 선, 10거래일 수익률.
+  - 질문 2(손절선): 사건 = 종가가 손절선 아래로 처음 내려온 날. 결과 = 다음 날 시가 → 10거래일 뒤 종가 수익률. 판정 비교 = 같은 종목 무작위 날 20곳. **통과 = HOLDOUT 사건 ≥ 100, (이탈 뒤 − 무작위) < 0, z ≤ −3, 개발 묶음 앞·뒤 모두 차이 < 0.** 참고: 하락 폭 맞춘 날, 20거래일 수익률·−10% 이하 비율.
+  - 결과별 화면 문구는 LEVEL_VERDICT_TEXT에 미리 적었다(통과 '검증됨 — …', 미통과 '검증 안 됨 — 위험 계산용/손실 한도로만'). 결과가 나오면 LEVEL_VERIFICATION에 옮겨 적기만 한다.
 - 전략 선택 구현 세부(2026-11-16, 결과 보기 전): 조건 자료가 없으면(피어 순위 없음·판정 불가) '확인 불가' = 충족 아님. 국면은 홈과 같은 계산(지수 레짐·VIX·거시 문구 + 최근 거래일 완화 확인, engine/gate.py `market_gate_from_prices`), 기준 지수를 못 받으면 방어 폴백 G2. 생존성 하드 킬이면 조건 충족 여부는 보여 주되 '신규 진입 없음', 국면 크기 0이면 '의견만'.
 
 **검증.** 화면 문구: 피어 비교는 사실 비교이며 순위가 수익을 예측한다는 검증은 없음. 앞으로 채점(미리 고정): 매월 피어 묶음별 전략 순위 상위 1/3 vs 하위 1/3의 이후 6·12개월 상대 수익, 판정은 기록 12개월 뒤. 과거 검증은 미국만 부분 가능(SEC 공시일 기준 매출·EPS·마진 + 가격 흐름, 추정치 변화 제외) — 새 질문이므로 시도 횟수 +1, 홀드아웃 판정.
@@ -280,7 +286,7 @@
    - 1단계: 피어 데이터층 — 코드 완료(2026-11-15: engine/peers.py, peers_daily.py, check_peers.py, peer_map.csv 한국 4묶음). 첫 점검(peer_census_2026-11-15.md, AMZN·NVDA 부분 갱신 39종목)에서 정의·데이터 문제 2개 → v1.1: ① 매출 성장률이 전 종목 빈칸(야후 분기 손익은 4~5분기뿐이라 '최근 4분기 대 그 전 4분기'를 못 만듦) → 최근 분기 대 전년 동기(모자라면 야후 revenueGrowth, 같은 정의) ② AMZN처럼 분기 손익 한 칸이 비면 영업이익률이 빈칸 → 야후 operatingMargins로 대신. 가중치·기준은 그대로. 기록 파일에 새 열이 생기면 기존 줄은 그대로 두고 빈 새 열을 붙인다(engine/peers.py `_append`). 첫 전체 갱신(2026-11-16: 커버리지 157 → 62묶음·564종목) 점검 반영 완료 — peer_map 제외 7·옮기기 6·보태기, 생존성 v2.2.
    - ~~2단계: 딥다이브 위쪽~~ 완료(2026-11-16): 탭 위에 '이 종목에 투자할 이유 — 피어 비교' — 결론 카드(묶음·피어 수, 가치 관점·추세 관점 순위와 점수, 상위 1/3 표시, 각 1위, 강점·약점, 생존성, 기준일·다음 실적 발표일, 검증 상태)와 피어 비교 표(이 종목 강조). 표시 규칙(결과 보기 전 고정, engine/peers.py `SUMMARY_RULES`): 강점 = 요인 점수 ≥ 60(높은 순 최대 3개), 약점 = ≤ 40(낮은 순 최대 3개), 그 사이는 보통. 요인마다 이 종목 지표 값과 피어 중앙값(하드 킬 제외)을 함께 쓴다. 자료: `latest_peer_view`(순위 기록 + 같은 날 재무 기록의 회사 이름·생존성 문구·다음 실적 발표일) → `peer_summary`. 커버리지 밖 종목은 watchlist 안내.
    - ~~3단계: 앞서려면 조건~~ 완료(2026-11-16, engine/peers.py `peer_gaps`·`GAP_RULES`, 딥다이브 `render_peer_gaps`): 지표마다 피어 상위 25% 경계값(하드 킬 제외, 클수록 좋으면 75% 분위·작을수록 좋으면 25% 분위, 선형 보간)까지 남은 차이를 산수로 — 선행 PER은 가격 경로(목표 PER × FY1 EPS 이하의 주가, %)와 실적 경로(주가 그대로일 때 필요한 FY1 EPS, %), PEG는 주가 변화율 또는 필요한 선행 EPS 성장, 순상향은 필요한 '상향 − 하향' 건수(기준 × 애널리스트 수, 올림), 상대강도는 섹터 ETF 대비 더 올라야 할 %p, 추세 상태는 필요한 상태. 가장 가까운 경로 = 점수 75 미만 요인 하나를 75로 올렸을 때 전략 점수가 가장 많이 오르는 요인(다른 종목은 그대로, 새 순위 함께). 이미 1위면 2위와 점수 차(같으면 공동 1위). 실적·추정치 조건은 '다음 실적 발표 때 확인할 것'으로 모아 보여 준다.
-   - 4단계: 전략 선택 — 코드 완료(2026-11-16): 단기 규칙 판정·우선순위·딥다이브 카드 3장, 단기 규칙 시험 코드(engine/short_backtest.py, 기준 사전 고정). 단기 규칙 시험 결과(2026-11-16) 미통과 → 단기 카드·결론 줄에 '검증 미통과 — 참고만'(규칙은 그대로).
+   - 4단계: 전략 선택 — 단기 변경(2026-11-17): 진입 후보에서 빼고 지지·손절선 카드로, 선 검증 코드(--levels, 결과 전). 코드 완료(2026-11-16): 단기 규칙 판정·우선순위·딥다이브 카드 3장, 단기 규칙 시험 코드(engine/short_backtest.py, 기준 사전 고정). 단기 규칙 시험 결과(2026-11-16) 미통과 → 단기 카드·결론 줄에 '검증 미통과 — 참고만'(규칙은 그대로).
    - 5단계: 피어 비교 페이지 + 홈 연결.
    - 6단계: Streamlit Cloud 배포 + 피어 순위 채점 기록 시작.
 6. 연구(분기마다 한 질문, 사전 등록·홀드아웃): 국면 게이트를 비중 조절에 쓸 때 지수 보유의 위험 대비 수익 개선 여부, 한국 틀 B 재현 시험(DART 공시일 기준, v1 규칙 그대로), 틀 B 장부 기록. 같은 미국 자료로 새 틀을 만들지 않고 트랙을 늘리지 않는다.

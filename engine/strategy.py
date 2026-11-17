@@ -15,8 +15,8 @@
     1 공통 차단: 생존성 하드 킬 → 신규 진입 없음. 국면 게이트 크기 0(G2·G3) → 의견만.
     2 가치: 틀 B '진입 가능'·'조건부 진입' 그리고 가치 관점 순위 피어 상위 1/3.
     3 추세: 틀 A 진입 의견 그리고 추세 관점 순위 피어 상위 1/3.
-    4 단기: 가치·추세가 아니고 단기 규칙 진입 조건 충족.
-    5 여럿 충족: 보유 기간이 긴 쪽(가치 > 추세 > 단기)이 진입 전략, 나머지는 보조 근거.
+    4 (2026-11-17 삭제) 단기: 사전 등록 시험 미통과(SHORT_TERM.md)라 진입 후보에서 뺐다 — 지지·손절선과 위험 계산만 표시.
+    5 여럿 충족: 보유 기간이 긴 쪽(가치 > 추세)이 진입 전략, 나머지는 보조 근거.
     (구현 때 정함, 결과 보기 전) 조건 자료가 없으면(피어 순위 없음 등) '확인 불가' = 충족 아님.
 """
 import math
@@ -46,6 +46,21 @@ STRATEGY_VERIFICATION: Dict[str, str] = {
     "peer_rank": "피어 순위가 수익을 예측한다는 검증은 없음(사실 비교) — 매월 상위·하위 1/3 채점 예정",
 }
 VALUE_ENTRY_STAGES = ("진입 가능", "조건부 진입")
+
+# 지지·손절선 표시 (2026-11-17 사용자 결정): 단기 규칙이 사전 등록 시험에서 미통과(SHORT_TERM.md)라 단기는 '진입 여부'를
+# 알려 주지 않고 지지선·손절선과 손절선까지 거리(위험 계산)만 보여 준다. 선의 정의는 단기 규칙 그대로(바꾸지 않음).
+LEVEL_CONFIG: Dict[str, Any] = {
+    "VERSION": "지지·손절선 v1 (2026-11-17)",
+    "NEAR_ATR": 0.5,      # 지지선 접근 = 그날 저가가 지지선 + 0.5×ATR(20) 이하 (그리고 종가 ≥ 손절선)
+    "RISK_PCT": 0.01,     # 위험 계산 예시: 손절선에서 팔 때 계좌의 1% 손실(관행값) → 매수 비중 = 1% ÷ 손절선까지 거리
+}
+# 선의 검증 상태 문구. 사전 등록 시험(engine/level_backtest.py, run_backtest.py --levels → LEVELS.md) 결과가 나오면
+# 미리 정한 문구(AGENTS.md 4번 '지지·손절선')로 바꾼다.
+LEVEL_VERIFICATION: Dict[str, str] = {
+    "support": "미검증 — 사전 등록 시험(LEVELS.md) 결과 전. 지지선이 임의의 선보다 덜 깨진다는 확인은 아직 없음",
+    "stop": "미검증 — 사전 등록 시험(LEVELS.md) 결과 전. 손절선 이탈 뒤 수익이 더 나쁘다는 확인은 아직 없음",
+    "risk": "손절선까지 거리로 매수 비중을 정하는 것은 예측이 아니라 산수(손실 한도) — 검증 대상 아님",
+}
 
 
 # ---------------------------------------------------------------------
@@ -159,6 +174,45 @@ def short_term_evaluate(df: pd.DataFrame, ind: Optional[pd.DataFrame] = None, at
             "conditions": conds, "plan": plan}
 
 
+def support_stop_levels(df: pd.DataFrame, ind: Optional[pd.DataFrame] = None, at: Any = None,
+                        risk_pct: Optional[float] = None) -> Dict[str, Any]:
+    """오늘(또는 at일) 종가 기준 지지선·손절선과 위험 계산. 진입 신호가 아니다.
+    지지선 = 그날까지 확정된 가장 최근 스윙 저점, 손절선 = 지지선 − 0.5×ATR(20). 거리 = (종가 − 손절선) ÷ 종가.
+    매수 비중 한도 = risk_pct ÷ 거리(최대 100%) — 손절선에서 팔 때 계좌 손실이 risk_pct가 되는 크기(갭 하락은 반영 안 됨)."""
+    lc = LEVEL_CONFIG
+    rp = lc["RISK_PCT"] if risk_pct is None else float(risk_pct)
+    base = {"version": lc["VERSION"], "verification": dict(LEVEL_VERIFICATION), "risk_pct": rp}
+    d = _bt_naive(df)
+    if d is None or not len(d):
+        return {**base, "available": False, "reason": "가격 데이터 없음"}
+    si = short_indicators(d, ind)
+    if at is not None:
+        si = si.loc[:pd.Timestamp(at)]
+    if not len(si):
+        return {**base, "available": False, "reason": "가격 데이터 없음"}
+    row = si.iloc[-1]
+    as_of = str(si.index[-1].date())
+    if pd.isna(row["stop"]) or pd.isna(row["ATR20"]):
+        return {**base, "available": False, "as_of": as_of, "reason": "확정된 스윙 저점이 아직 없음(가격 이력 부족)"}
+    close, low = float(row["Close"]), float(row["Low"])
+    sup, stop, atr = float(row["support"]), float(row["stop"]), float(row["ATR20"])
+    sup_date = str(si.index[int(row["support_idx"])].date())
+    dist = (close - stop) / close if close > 0 else None
+    broken = close < stop
+    near = (not broken) and low <= sup + lc["NEAR_ATR"] * atr
+    if broken:
+        status, detail = "손절선 이탈", f"종가 {_px(close)}가 손절선 {_px(stop)} 아래"
+    elif near:
+        status, detail = "지지선 접근", f"오늘 저가 {_px(low)}가 지지선 + 0.5×ATR({_px(sup + lc['NEAR_ATR'] * atr)}) 이하"
+    else:
+        status, detail = "지지선 위", f"종가가 손절선보다 {dist * 100:.1f}% 위"
+    max_w = None if (broken or dist is None or dist <= 0) else min(1.0, rp / dist)
+    state = None if _isna(row.get("state")) else row.get("state")
+    return {**base, "available": True, "as_of": as_of, "close": close, "atr": atr, "support": sup, "support_date": sup_date,
+            "stop": stop, "dist": dist, "status": status, "status_detail": detail, "broken": bool(broken), "near": bool(near),
+            "max_weight": max_w, "state": state}
+
+
 # ---------------------------------------------------------------------
 # 전략 선택 우선순위
 # ---------------------------------------------------------------------
@@ -169,9 +223,9 @@ def _cond(label: str, ok: Optional[bool], text: str) -> Dict[str, Any]:
 def choose_strategy(survival_kill: Optional[bool] = None, gate_level: Optional[int] = None,
                     frame_b_stage: Optional[str] = None, value_top: Optional[bool] = None, value_rank_text: Optional[str] = None,
                     frame_a_entry: Optional[bool] = None, frame_a_label: Optional[str] = None,
-                    trend_top: Optional[bool] = None, trend_rank_text: Optional[str] = None,
-                    short_signal: Optional[bool] = None, short_label: Optional[str] = None) -> Dict[str, Any]:
-    """전략 카드 3장과 진입 전략. ok=None(자료 없음)은 충족 아님으로 본다."""
+                    trend_top: Optional[bool] = None, trend_rank_text: Optional[str] = None) -> Dict[str, Any]:
+    """진입 전략 카드 2장(가치 스윙·추세)과 진입 전략. ok=None(자료 없음)은 충족 아님으로 본다.
+    단기는 2026-11-17부터 진입 후보가 아니다(사전 등록 시험 미통과 → 지지·손절선 표시만, support_stop_levels)."""
     def rank_cond(label: str, top: Optional[bool], text: Optional[str]) -> Dict[str, Any]:
         if top is None:
             return _cond(label, None, text or "피어 순위 없음 — 확인 불가")
@@ -182,7 +236,6 @@ def choose_strategy(survival_kill: Optional[bool] = None, gate_level: Optional[i
                    rank_cond("가치 관점 순위 피어 상위 1/3", value_top, value_rank_text)]
     trend_conds = [_cond("틀 A 진입 의견(상승 전환 의견)", frame_a_entry, frame_a_label or ("판정 없음" if frame_a_entry is None else "")),
                    rank_cond("추세 관점 순위 피어 상위 1/3", trend_top, trend_rank_text)]
-    short_conds = [_cond("단기 규칙 진입 신호(추세 상승·횡보 + RSI(2) < 10 + 지지선)", short_signal, short_label or "판정 없음")]
     cards = [
         {"key": "value", "label": "가치 스윙", "frame": "틀 B v2", "conditions": value_conds,
          "entry": "틀 B 단계에 따라 분할 매수(조건부는 축소)",
@@ -192,15 +245,11 @@ def choose_strategy(survival_kill: Optional[bool] = None, gate_level: Optional[i
          "entry": "상승 전환 의견 — 다음 날 시가, 크기는 근거 차이(+3 이상 1배, +2 절반) × 국면 크기",
          "exit": "추세 종료·전환 실패(하락 쪽 근거 합 > 상승 쪽 근거 합) → 다음 날 시가",
          "hold": "수주~수개월", "verification": STRATEGY_VERIFICATION["trend"]},
-        {"key": "short", "label": "단기", "frame": SHORT_TERM_CONFIG["VERSION"], "conditions": short_conds,
-         "entry": "다음 날 시가(손절선까지 3% 이내일 때만)",
-         "exit": "+3% 익절 · 종가 < 손절선 · 추세 '하락' · 10거래일 — 먼저 오는 것, 다음 날 시가",
-         "hold": "며칠(최대 10거래일)", "verification": STRATEGY_VERIFICATION["short"]},
     ]
     for cd in cards:
         cd["met"] = all(x["ok"] is True for x in cd["conditions"])
         cd["unknown"] = [x["label"] for x in cd["conditions"] if x["ok"] is None]
-    met = [cd["key"] for cd in cards if cd["met"]]   # 카드 순서 = 보유 기간이 긴 순서(가치 > 추세 > 단기)
+    met = [cd["key"] for cd in cards if cd["met"]]   # 카드 순서 = 보유 기간이 긴 순서(가치 > 추세)
     chosen = met[0] if met else None
     gate_mult = None if gate_level is None else float(PLAYBOOK_CONFIG["GATE_SIZE"].get(int(gate_level), 0.0))
     block = None
@@ -219,9 +268,7 @@ def choose_strategy(survival_kill: Optional[bool] = None, gate_level: Optional[i
         headline = f"{labels[chosen]} (의견만 — 국면 크기 0)"
     else:
         headline = f"진입 전략: {labels[chosen]}" + (f" · 보조 근거 {', '.join(labels[k] for k in met[1:])}" if len(met) > 1 else "")
-        if chosen == "short":   # 사전 등록 시험 미통과(SHORT_TERM.md) — 규칙은 그대로 두고 표시만 '참고'
-            headline += " — 검증 미통과, 참고만"
     return {"chosen": chosen, "chosen_label": labels.get(chosen) if chosen else None, "met": met, "block": block,
             "gate_mult": gate_mult, "headline": headline, "cards": cards,
-            "rule": "가치 > 추세 > 단기(보유 기간이 긴 쪽 우선), 조건 자료가 없으면 충족 아님",
+            "rule": "가치 > 추세(보유 기간이 긴 쪽 우선), 조건 자료가 없으면 충족 아님. 단기는 진입 신호 없이 지지·손절선만 표시",
             "peer_note": STRATEGY_VERIFICATION["peer_rank"]}
