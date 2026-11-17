@@ -76,7 +76,7 @@ nn = rng.choice([2, 3, 4, 5], size=9000, p=[0.5, 0.25, 0.15, 0.10])
 fake = pd.DataFrame({"date": dates, "t": 0, "kind": rng.choice(["S", "R"], 9000), "n": nn, "level": 1.0,
                      "broke": (rng.random(9000) < np.where(nn >= 4, 0.75, 0.55)).astype(float)})
 _orig = engine.touch_events
-engine.touch_events = lambda d, ind=None: fake
+engine.touch_events = lambda d, ind=None, decisive_days=None: fake
 try:
     res2 = engine.run_touch_explore({"ONE": rw(400, 1)})
 finally:
@@ -87,6 +87,35 @@ chk("5 4번째 터치 뚫림 75% 대 2·3번째 55% → 후보(차이 약 +20%p,
 rep = engine.render_touch_report(res2, generated_at="test")
 chk("5-2 보고서: 증거 아님 경고·후보 여부·터치별 표", "탐색 결과 — 증거 아님" in rep and "## 후보 여부: 후보" in rep and "| 4번째 |" in rep.replace("| 3번째 | 4번째 |", "| 4번째 |"))
 chk("5-3 등록: --explore touch4 (전용 계산)", engine.EXPLORE_HYPOTHESES["touch4"]["custom"] == "touch")
+
+
+# 6) touch4b — 확정 뚫림(넘어간 뒤 20거래일 동안 돌아오지 않음). ATR 2: 넘어감 = 종가 < 98.9, 돌아옴 = 종가 ≥ 99.9
+N = engine.TOUCH_CONFIG["DECISIVE_DAYS"]
+#    2번째 터치 뒤 일시 이탈(97로 내려갔다가 사흘 뒤 104) → 선은 살아 있어 3·4번째 터치를 셈, 4번째 터치 뒤 95에서 20일 넘게 머묾
+tmp_path = (seg(110, 100) + seg(100, 108) + seg(108, 100.5) + [99.0, 97.0, 97.5, 98.0] + seg(98, 108) + seg(108, 100.5) + seg(100.5, 108)
+            + seg(108, 100.5) + seg(100.5, 95) + [95.0] * 30)
+evb_all = engine.touch_events(None, ind=frame(tmp_path), decisive_days=N)
+evb = evb_all[(evb_all["level"] - 99.9).abs() < 1e-9]   # 99.9 선만 (잠깐 이탈 때 생긴 97 저점은 별도의 새 지지선)
+print("  확정 뚫림:", evb[["n", "outcome", "decisive"]].to_dict("records"))
+chk("6 2번째 터치: 일시 이탈(넘어간 뒤 20일 안에 선 위로 돌아옴)", evb["outcome"].iloc[0] == "temporary" and evb["decisive"].iloc[0] == 0.0, evb)
+chk("6-2 일시 이탈한 선은 살아 있어 3·4번째 터치를 셈, 4번째는 확정 뚫림", evb["n"].tolist() == [2, 3, 4]
+    and evb["outcome"].tolist() == ["temporary", "held", "decisive"], evb[["n", "outcome"]].to_dict("records"))
+ev_old = engine.touch_events(None, ind=frame(tmp_path))
+ev_old = ev_old[(ev_old["level"] - 99.9).abs() < 1e-9]
+chk("6-3 같은 가격, 예전 정의(touch4)는 일시 이탈에서 99.9 선을 지워 3·4번째 터치가 없음", ev_old["n"].tolist() == [2], ev_old["n"].tolist())
+chk("6-3b 잠깐 이탈 때 생긴 97 저점은 1×ATR 넘게 떨어져 있어 별도의 새 지지선", ((evb_all["level"] - 99.9).abs() > 2).any())
+short_tail = (seg(110, 100) + seg(100, 108) + seg(108, 100.5) + seg(100.5, 95) + [95.0] * 10)
+chk("6-4 넘어간 뒤 20거래일 자료가 없으면 사건에서 뺌", len(engine.touch_events(None, ind=frame(short_tail), decisive_days=N)) == 0)
+resb = engine.run_touch_explore({f"N{i}": rw(6500, i) for i in range(40)} | {"005930.KS": rw(6500, 99)}, decisive=True)
+bb = resb["blocks_touch"]["전체 기간"]
+fx = bb["by_touch"]["4번째"]
+print("  효과 없는 가격(확정 뚫림):", {k: (v["n"], None if v["break_rate"] is None else round(v["break_rate"] * 100, 1)) for k, v in bb["by_touch"].items()},
+      "| 4번째 버팀·일시·확정", [round((fx[k] or 0) * 100, 1) for k in ("held", "temporary", "decisive")], "| z", round(bb["target_vs_base"]["z"], 2))
+chk("6-5 효과 없는 가격: 후보 아님, 세 갈래 합 100%", not resb["candidate"] and abs(fx["held"] + fx["temporary"] + fx["decisive"] - 1) < 1e-9
+    and abs(bb["target_vs_base"]["z"]) < 2 and resb["name"] == "touch4b")
+repb = engine.render_touch_report(resb, generated_at="test")
+chk("6-6 보고서: 세 갈래 표·확정 뚫림 기준", "| 터치 | 버팀 | 일시 이탈 | 확정 뚫림 | 사건 수 |" in repb and "20거래일" in repb and "`touch4b`" in repb)
+chk("6-7 등록: --explore touch4b", engine.EXPLORE_HYPOTHESES["touch4b"]["custom"] == "touch_b" and engine.TOUCH_CONFIG["DECISIVE_DAYS"] == 20)
 
 print(f"\n결과: {'통과' if not FAILS else '실패 ' + str(FAILS)}")
 sys.exit(1 if FAILS else 0)
