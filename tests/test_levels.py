@@ -89,7 +89,9 @@ chk("3-5 종가 < 손절선 → '손절선 이탈', 비중 한도 없음", b["st
 tight = ind.copy()
 tight.iloc[-1, tight.columns.get_loc("Close")] = lv["stop"] * 1.004
 chk("3-6 거리가 1%보다 짧으면 한도는 100%까지만", engine.support_stop_levels(tight, ind=tight)["max_weight"] == 1.0)
-chk("3-7 검증 상태 문구 3개(지지선·손절선·위험 계산)", set(lv["verification"]) == {"support", "stop", "risk"} and "산수" in lv["verification"]["risk"])
+chk("3-7 검증 상태 문구 3개 — 지지선·손절선은 시험 결과(미통과) 문구 그대로, 위험 계산은 산수", set(lv["verification"]) == {"support", "stop", "risk"}
+    and "산수" in lv["verification"]["risk"] and lv["verification"]["support"] == engine.LEVEL_VERDICT_TEXT["support"][False]
+    and lv["verification"]["stop"] == engine.LEVEL_VERDICT_TEXT["stop"][False])
 chk("3-8 스윙 저점이 없으면 판정 없음", not engine.support_stop_levels(ind.iloc[:2], ind=ind.iloc[:2])["available"])
 
 # 4) 전략 선택: 단기는 진입 후보가 아님(2026-11-17)

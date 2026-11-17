@@ -54,11 +54,12 @@ LEVEL_CONFIG: Dict[str, Any] = {
     "NEAR_ATR": 0.5,      # 지지선 접근 = 그날 저가가 지지선 + 0.5×ATR(20) 이하 (그리고 종가 ≥ 손절선)
     "RISK_PCT": 0.01,     # 위험 계산 예시: 손절선에서 팔 때 계좌의 1% 손실(관행값) → 매수 비중 = 1% ÷ 손절선까지 거리
 }
-# 선의 검증 상태 문구. 사전 등록 시험(engine/level_backtest.py, run_backtest.py --levels → LEVELS.md) 결과가 나오면
-# 미리 정한 문구(AGENTS.md 4번 '지지·손절선')로 바꾼다.
+# 선의 검증 상태 문구. 사전 등록 시험(engine/level_backtest.py, run_backtest.py --levels → LEVELS.md) 결과에 따라
+# 미리 정한 문구(LEVEL_VERDICT_TEXT)를 옮겨 적는다.
 LEVEL_VERIFICATION: Dict[str, str] = {
-    "support": "미검증 — 사전 등록 시험(LEVELS.md) 결과 전. 지지선이 임의의 선보다 덜 깨진다는 확인은 아직 없음",
-    "stop": "미검증 — 사전 등록 시험(LEVELS.md) 결과 전. 손절선 이탈 뒤 수익이 더 나쁘다는 확인은 아직 없음",
+    # 2026-11-17 결과(LEVELS.md): 둘 다 미통과 → engine/level_backtest.py LEVEL_VERDICT_TEXT의 미통과 문구 그대로
+    "support": "검증 안 됨 — 과거에 같은 거리의 임의의 선보다 덜 깨지지 않았음(LEVELS.md). 위험 계산용 기준선으로만",
+    "stop": "검증 안 됨 — 과거에 이탈 뒤 수익이 평소보다 나쁘지 않았음(LEVELS.md). 추가 하락 예고가 아니라 손실 한도로만",
     "risk": "손절선까지 거리로 매수 비중을 정하는 것은 예측이 아니라 산수(손실 한도) — 검증 대상 아님",
 }
 
