@@ -1,3 +1,4 @@
-﻿refresh_date,mode,n_coverage,n_groups,n_members,fund_saved,n_failed,version
-2026-11-15,partial,2,6,39,39,0,피어 비교 v1 (2026-11-15)
-2026-11-16,full,157,62,564,564,0,피어 비교 v1.2 (2026-11-16)
+﻿refresh_date,mode,n_coverage,n_groups,n_members,fund_saved,n_failed,version,config_sig
+2026-11-15,partial,2,6,39,39,0,피어 비교 v1 (2026-11-15),
+2026-11-16,full,157,62,564,564,0,피어 비교 v1.2 (2026-11-16),
+2026-11-17,full,157,60,564,564,0,피어 비교 v1.3 (2026-11-16),피어 비교 v1.3 (2026-11-16) | 생존성 v2.2 (2026-11-16) | 묶음표 f46dcdbbd0
