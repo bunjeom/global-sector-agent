@@ -20,3 +20,5 @@ data/backtest/price_cache/
 data/sec_cache/
 *.zip
 *.patch
+# 강의 조건 시험 자료 캐시(다시 받을 수 있음)
+data/backtest/lecture_cache/
