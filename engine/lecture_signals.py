@@ -76,7 +76,7 @@ LECTURE_CONFIG: Dict[str, Any] = {
         "TAKE_FRAC": 0.5,            # 25일선 복귀 시 절반
         "CODE_BASE_PCTL": 2.5,       # 참고: 코드식 기준(750일 분포 하위 2.5%)
     },
-    # --- L2~L5 (다음 단계에서 구현, 숫자는 지금 고정) ---
+    # --- L2~L5 (L2는 2단계에서 구현, L4·L5는 다음. 숫자는 사전 등록 때 고정) ---
     "BREAKOUT_CONFIRM_DAYS": 20,     # Q19
     "REACT_DAYS": 10, "REACT_ATR": 1.0,             # Q36
     "TOUCH_AWAY_ATR": 2.0,           # Q48
@@ -116,6 +116,30 @@ LECTURE_CONFIG: Dict[str, Any] = {
     "EARN_COVER_US": "2004-08-23",
     "EARN_COVER_KR": "2002-11-01",
     "CACHE_DIR": os.path.join("data", "backtest", "lecture_cache"),
+    # --- 최종 확인용 새 종목 (N4, 2026-11-18 L2 결과 보기 전 고정) ---
+    # 규칙: 지금까지 어떤 시험(EXPLORE_CONFIG UNIVERSE·게이트·스캐너 등)에도 쓰지 않은, 오래 상장된 종목.
+    # 미국 11개 섹터 98개 + 한국 코스피 53개. 받지 못했거나 가격이 260거래일 미만인 종목은 빼고 채워 넣지 않는다.
+    # 한국 코드는 받기 단계에서 이름을 출력해 사람이 확인한다(섹터 ETF와 같은 방식). 검증을 통과한 질문이 생길 때만 연다.
+    "FINAL_UNIVERSE": [
+        "CIEN", "GEN", "MKSI", "ENTG", "COHR", "LSCC", "CGNX", "MANH", "SSNC", "ARW",              # 기술
+        "TMUS", "NYT", "IAC", "TDS", "SIRI", "ZD",                                                 # 통신·미디어
+        "KSS", "AAP", "DKS", "HOG", "MAT", "GT", "PVH", "TOL", "LEA", "GNTX",                     # 경기소비재
+        "CASY", "UNFI", "FLO", "LANC", "INGR", "CALM", "SAM", "SPB",                               # 필수소비재
+        "NOV", "HP", "RRC", "CNX", "MUR", "OII", "PTEN", "DINO",                                   # 에너지
+        "ZION", "EWBC", "FHN", "SNV", "CBSH", "UNM", "RGA", "ORI", "MKL", "SEIC",                 # 금융
+        "HSIC", "OMI", "CHE", "THC", "UTHR", "BMRN", "EXEL", "TECH", "HAE", "NBIX",               # 헬스케어
+        "R", "LECO", "TTC", "GGG", "DCI", "CSL", "FLS", "AOS", "OSK", "HUBB",                     # 산업재
+        "RPM", "OLN", "CMC", "RS", "SON", "SEE", "CCK", "ASH", "FMC", "WLK",                      # 소재
+        "OGE", "IDA", "POR", "ALE", "BKH", "AVA", "UGI", "NJR",                                    # 유틸리티
+        "MAC", "SLG", "HIW", "KRC", "OHI", "NNN", "EGP", "ELS",                                    # 리츠
+        "003670.KS", "000990.KS", "001680.KS", "004490.KS", "005180.KS", "005250.KS", "005610.KS", "006120.KS",
+        "006650.KS", "010620.KS", "010780.KS", "011170.KS", "011930.KS", "014820.KS", "016380.KS", "017960.KS",
+        "019680.KS", "020000.KS", "020150.KS", "023590.KS", "025540.KS", "031430.KS", "032640.KS", "039490.KS",
+        "042670.KS", "049770.KS", "051600.KS", "052690.KS", "053690.KS", "064350.KS", "064960.KS", "069260.KS",
+        "071320.KS", "079160.KS", "081660.KS", "082740.KS", "093370.KS", "095720.KS", "103140.KS", "111770.KS",
+        "114090.KS", "120110.KS", "128940.KS", "161390.KS", "001230.KS", "002240.KS", "003030.KS", "007700.KS",
+        "008060.KS", "009970.KS", "012510.KS", "006040.KS", "004430.KS",
+    ],
 }
 
 LEC_STATE_NAMES = {1: "상승", 0: "횡보", -1: "하락"}
@@ -160,12 +184,13 @@ def lec_swings(b: pd.DataFrame) -> Dict[str, np.ndarray]:
             "l_o": sl, "l_p": b["Low"].to_numpy(dtype=float)[sl]}
 
 
-def lec_state(b: pd.DataFrame, sw: Optional[Dict[str, np.ndarray]] = None) -> np.ndarray:
+def lec_state(b: pd.DataFrame, sw: Optional[Dict[str, np.ndarray]] = None, return_flags: bool = False):
     """종목(또는 지수) 상태: +1 상승, −1 하락, 0 횡보 (Q2·Q12). 날마다 그날까지 확정된 스윙만 쓴다.
 
     상승 = 최근 두 확정 저점 L1 > L2 그리고 L1 이후 종가가 한 번이라도 'L1보다 앞선 가장 최근 확정 고점' 위로 마감.
     하락 = 최근 두 확정 고점 H1 < H2 그리고 H1 이후 종가가 한 번이라도 'H1보다 앞선 가장 최근 확정 저점' 아래로 마감.
     둘 다이거나 둘 다 아니면 횡보.
+    return_flags=True면 (상태, 상승 쪽 돌파 이력, 하락 쪽 이탈 이력)을 돌려준다(전환 증거 ② '새 고점'에 씀, 2단계).
     """
     sw = sw or lec_swings(b)
     lr = LECTURE_CONFIG["SWING_LR"]
@@ -173,6 +198,8 @@ def lec_state(b: pd.DataFrame, sw: Optional[Dict[str, np.ndarray]] = None) -> np
     n = len(close)
     ho, hp, lo_, lp = list(sw["h_o"]), sw["h_p"], list(sw["l_o"]), sw["l_p"]
     out = np.zeros(n, dtype=int)
+    upf = np.zeros(n, dtype=bool)
+    dnf = np.zeros(n, dtype=bool)
     nh = nl = 0                     # 확정된 개수
     up_ok = dn_ok = False
     up_ref = dn_ref = np.nan        # 넘어야 할 고점 / 깨야 할 저점
@@ -211,7 +238,8 @@ def lec_state(b: pd.DataFrame, sw: Optional[Dict[str, np.ndarray]] = None) -> np
         up = bool(nl >= 2 and lp[nl - 1] > lp[nl - 2] and up_ok)
         dn = bool(nh >= 2 and hp[nh - 1] < hp[nh - 2] and dn_ok)
         out[t] = 1 if (up and not dn) else (-1 if (dn and not up) else 0)
-    return out
+        upf[t], dnf[t] = up_ok, dn_ok
+    return (out, upf, dnf) if return_flags else out
 
 
 def lec_market_grade(idx_df: pd.DataFrame) -> pd.Series:

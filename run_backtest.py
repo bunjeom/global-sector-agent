@@ -24,6 +24,7 @@
                                                      .env에 SEC_USER_AGENT(미국 실적일)·DART_API_KEY(한국 실적일) 필요. 끝에 한국 ETF 이름을 확인
     .venv\\Scripts\\python run_backtest.py --lecture L1 --etf-ok   강의 시험 L1(BNF 두 질문) — 한국 ETF 이름을 확인한 뒤에만
     .venv\\Scripts\\python run_backtest.py --lecture L3   강의 시험 L3(상태별 RSI)
+    .venv\\Scripts\\python run_backtest.py --lecture L2 --etf-ok   강의 시험 L2(매수 사건 조합 256개, 섞기 200회 통과선) — 노트북 팬이 돌 수 있음
 
 결과 (data/backtest/):
     REPORT.md          사람이 읽는 보고서 (커밋해 두면 다른 AI도 결과를 읽을 수 있음)
@@ -39,7 +40,7 @@
     LEVELS.md          지지선·손절선 검증 + levels.json
     RECLAIM.md         지지선 이탈 뒤 회복 검증 + reclaim.json
     EXPLORE_<이름>.md  가설 탐색 결과(증거 아님) + EXPLORE_LOG.md(볼 때마다 한 줄)
-    LECTURE_L1.md·LECTURE_L3.md  강의 조건 시험(사전 등록 LECTURE_PREREG.md) + lecture_l1.json·lecture_l3.json, 캐시 lecture_cache/
+    LECTURE_L1.md·LECTURE_L2.md·LECTURE_L3.md  강의 조건 시험(사전 등록 LECTURE_PREREG.md) + lecture_l*.json, 캐시 lecture_cache/
     summary.json       숫자 요약 + 주간 누적 수익 곡선 (이후 화면 표시용)
     *.csv              날짜별 게이트·누적 수익·거래 목록 (용량이 커서 .gitignore로 커밋 제외)
 계산은 engine/rule_backtest.py에 있고, 이 파일은 데이터 다운로드와 저장만 한다.
@@ -527,30 +528,43 @@ def run_lecture_only(engine, args, t0):
     if what == "data":
         run_lecture_data(engine, args, t0)
         return
-    if what not in ("L1", "L3"):
-        print("--lecture 값: data · L1 · L3 (L2·L4·L5는 다음 단계)")
+    if what not in ("L1", "L2", "L3"):
+        print("--lecture 값: data · L1 · L2 · L3 (L4·L5는 다음 단계)")
         return
-    if what == "L1" and not args.etf_ok:
+    if what in ("L1", "L2") and not args.etf_ok:
         names = engine.lec_load_csv_map("kr_etf_names.csv", "etf", "name")
         print("한국 섹터 ETF 이름을 확인한 뒤 --etf-ok를 붙여 실행해 주세요 (잘못된 ETF면 한국 섹터 비교가 틀립니다):")
         for etf, expect in lc["SECTOR_ETF_KR_EXPECT"].items():
             print(f"   {etf}  기대: {expect}  /  받은 이름: {names.get(etf) or '(못 받음 — --lecture data 먼저)'}")
         return
     print(f"[1/2] 재료 준비 (설정 {lc['VERSION']}, 사전 등록 {lc['REGISTERED']})", flush=True)
-    got = _lecture_load(engine, need_rs=(what == "L1"))
+    got = _lecture_load(engine, need_rs=(what in ("L1", "L2")))
     if got is None:
         return
     prep, bench = got
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     print(f"[2/2] 시험 {what} (종목 {len(prep)}개)", flush=True)
-    if what == "L1":
-        res = engine.run_lecture_l1(prep)
-        rep = engine.render_lecture_l1_report(res, generated_at=now)
-    else:
-        grades = {}
+    grades = {}
+    if what in ("L2", "L3"):
         for k, sym in lc["INDEX"].items():
             if sym in bench:
                 grades[sym] = engine.lec_market_grade(engine.lec_clean(bench[sym]))
+    if what == "L1":
+        res = engine.run_lecture_l1(prep)
+        rep = engine.render_lecture_l1_report(res, generated_at=now)
+    elif what == "L2":
+        last = {}
+
+        def prog(stage, i, n):
+            if i * 10 // n != last.get(stage):
+                last[stage] = i * 10 // n
+                print(f"   {stage} {i}/{n}", flush=True)
+        print("   사건 찾기 (종목마다)", flush=True)
+        tab = engine.lec_l2_table(prep, bench, grades, progress=lambda i, n: prog("사건", i, n))
+        print(f"   조합 계산 + 섞기 {lc['RC_REPS']}회", flush=True)
+        res = engine.run_lecture_l2(tab, progress=prog)
+        rep = engine.render_lecture_l2_report(res, generated_at=now)
+    else:
         res = engine.run_lecture_l3(prep, grades)
         rep = engine.render_lecture_l3_report(res, generated_at=now)
     name = f"LECTURE_{what}"
@@ -559,7 +573,10 @@ def run_lecture_only(engine, args, t0):
         f.write(rep)
     with open(os.path.join(OUT_DIR, f"{name.lower()}.json"), "w", encoding="utf-8") as f:
         json.dump({"generated_at": now, **res}, f, ensure_ascii=False, indent=1, default=str)
-    engine.lec_append_log(res, now, OUT_DIR)
+    if what == "L2":
+        engine.lec_append_lines(engine.lec_l2_log_lines(res, now), OUT_DIR)
+    else:
+        engine.lec_append_log(res, now, OUT_DIR)
     print("\n" + rep)
     print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, name + '.md')}")
 
@@ -719,8 +736,8 @@ def main():
     ap.add_argument("--reclaim", action="store_true", help="지지선 이탈 뒤 회복 검증")
     ap.add_argument("--explore", metavar="NAME", help="가설 탐색(이미 쓴 종목, 증거 아님). list = 가설 이름 보기")
     ap.add_argument("--refresh", action="store_true", help="--explore에서 저장해 둔 가격을 쓰지 않고 다시 받기")
-    ap.add_argument("--lecture", metavar="WHAT", help="강의 조건 시험: data(자료 받기) · L1(BNF) · L3(상태별 RSI)")
-    ap.add_argument("--etf-ok", action="store_true", help="--lecture L1: 한국 섹터 ETF 이름을 확인했음")
+    ap.add_argument("--lecture", metavar="WHAT", help="강의 조건 시험: data(자료 받기) · L1(BNF) · L2(매수 사건 조합) · L3(상태별 RSI)")
+    ap.add_argument("--etf-ok", action="store_true", help="--lecture L1·L2: 한국 섹터 ETF 이름을 확인했음")
     args = ap.parse_args()
     t0 = time.time()
     if args.variants:

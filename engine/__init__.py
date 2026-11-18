@@ -36,6 +36,8 @@
     peer_eval          피어 순위 채점 — 매달 상위·하위 1/3의 이후 6개월 수익, 방법 사전 고정 (run_backtest.py --peer-eval)
     lecture_signals    강의 조건 시험 — 사전 등록 설정(LECTURE_CONFIG)과 기초 신호(상태·시장 등급·섹터 RS·BNF 기준 이격도)
     lecture_backtest   강의 조건 시험 1단계 — L1 BNF·L3 상태별 RSI, 자료 받기 도구 (run_backtest.py --lecture data / L1 / L3)
+    lecture_events     강의 조건 시험 2단계 — L2 매수 사건(E01~E15)·환경(F01~F09)·확인(C01~C07) 정의
+    lecture_family     강의 조건 시험 2단계 — 큰 가족 판정(섞기 200회 통과선·PBO·검증), L2 실행 (run_backtest.py --lecture L2)
 
 테스트에서 `engine.이름 = 가짜함수`로 바꿔 끼우면, 그 이름을 쓰는 모든 하위 모듈에도
 같이 반영된다(아래 _EngineModule). 한 파일이던 시절과 똑같이 동작하게 하려는 장치다.
@@ -53,12 +55,12 @@ if "_SUBMODULES" in globals():
 from . import common, technical_signals, backtest, technical, earnings, macro, fundamental
 from . import synthesis, home, gate, rrg, radar, rule_backtest, t_backtest, snapshot, sec_facts, frame_backtest, playbook, ledger, peers
 from . import strategy, short_backtest, level_backtest, reclaim_backtest, explore, touch_explore, momentum_explore, peer_eval
-from . import lecture_signals, lecture_backtest
+from . import lecture_signals, lecture_backtest, lecture_events, lecture_family
 
 _SUBMODULES = (common, technical_signals, backtest, technical, earnings, macro, fundamental,
                synthesis, home, gate, rrg, radar, rule_backtest, t_backtest, snapshot, sec_facts, frame_backtest, playbook, ledger, peers,
                strategy, short_backtest, level_backtest, reclaim_backtest, explore, touch_explore, momentum_explore, peer_eval,
-               lecture_signals, lecture_backtest)
+               lecture_signals, lecture_backtest, lecture_events, lecture_family)
 _SUBMODULE_NAMES = {m.__name__.rsplit(".", 1)[1] for m in _SUBMODULES}
 
 # 하위 모듈의 모든 이름(밑줄로 시작하는 내부 함수 포함)을 engine.이름으로 내보낸다.
