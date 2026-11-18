@@ -491,10 +491,11 @@ def _lec_line_alive(lv: float, start: int, t: int, hi: np.ndarray, lo: np.ndarra
     if t - start <= c["LINE_IDLE_DAYS"]:
         return True
     end = min(start + c["LINE_IDLE_DAYS"], t)
-    for d in range(start + 1, end + 1):
+    d_ = np.arange(start + 1, end + 1)
+    a_ = atr[d_]
+    hwv = np.maximum(c["ZONE_PCT_MIN"] * lv, c["ZONE_ATR_MULT"] * np.where(np.isfinite(a_) & (a_ > 0), a_, lv * 0.02))
+    for d in d_[(lo[d_] <= lv + hwv) & (hi[d_] >= lv - hwv)]:
         hw = _lec_hw(lv, atr[d])
-        if not (lo[d] <= lv + hw and hi[d] >= lv - hw):
-            continue
         prev = cl[d - 1]
         lim = min(d + c["REACT_DAYS"], t)
         seg = cl[d + 1:lim + 1]
@@ -515,9 +516,11 @@ def lec_support_types(b: pd.DataFrame, sw: Dict[str, np.ndarray], t: int, loc: f
     dwell  지난 250거래일 종가를 20칸으로 나눈 체류 일수 상위 20% 칸(기준 4, Q38)
     swing·vol·wick 선은 Q35 삭제 규칙을 따른다. vol·wick은 t일 전 캔들만."""
     c = LECTURE_CONFIG
-    hi, lo, cl, o, atr, rv = (_lec_arr(b, k) for k in ("High", "Low", "Close", "Open", "ATR14", "RVOL"))
     if cache is None:
         cache = {}
+    if "arr" not in cache:
+        cache["arr"] = tuple(_lec_arr(b, k) for k in ("High", "Low", "Close", "Open", "ATR14", "RVOL"))
+    hi, lo, cl, o, atr, rv = cache["arr"]
     if "lines" not in cache:
         body = np.abs(cl - o)
         wick = np.maximum(hi - np.maximum(cl, o), np.minimum(cl, o) - lo)

@@ -121,7 +121,7 @@ def lec_combo_stats(ev: pd.DataFrame, idx: np.ndarray, value: str, cost: float) 
     return out
 
 
-def lec_judge_one(s: Dict[str, Any], threshold: float) -> Dict[str, Any]:
+def lec_judge_one(s: Dict[str, Any], threshold: float, dir_label: str = "비용 뒤 평균 ≤ 0") -> Dict[str, Any]:
     """탐색 후보(사전등록안 8장): t ≥ 통과선, 평균 − 비용 > 0, 사건 ≥ 300, 종목 ≥ 50, 미국·한국 같은 방향(둘 다 ≥ 30),
     기여가 가장 큰 달을 빼도 평균 − 비용 > 0 이고 t ≥ 2."""
     c = LECTURE_CONFIG
@@ -133,7 +133,7 @@ def lec_judge_one(s: Dict[str, Any], threshold: float) -> Dict[str, Any]:
     if s["t"] is None or not np.isfinite(s["t"]) or s["t"] < threshold:
         rs.append(f"t < 통과선 {threshold:.2f}")
     if s["net"] is None or s["net"] <= 0:
-        rs.append("비용 뒤 평균 ≤ 0")
+        rs.append(dir_label)
     mk = [v for v in s["by_market"].values() if v["n"] >= c["MIN_MARKET_EVENTS"] and v["net"] is not None]
     if len(mk) == 2 and np.sign(mk[0]["net"]) != np.sign(mk[1]["net"]):
         rs.append("미국·한국 방향이 다름")
@@ -165,13 +165,14 @@ def lec_null_pool(prepared_values: Dict[str, pd.Series], period: Sequence[pd.Tim
 
 
 def lec_reality_check(ev: pd.DataFrame, sel: Dict[str, np.ndarray], pool: Dict[str, Any], reps: int, seed: int,
-                      progress: Optional[Callable[[int, int], None]] = None) -> Dict[str, Any]:
-    """sel = {조합: 줄 번호}. 매번 사건(줄)마다 같은 종목의 무작위 날 하나를 뽑아(모든 조합에 같은 날) 조합별 t → 최고 t."""
+                      progress: Optional[Callable[[int, int], None]] = None, key_col: str = "ticker") -> Dict[str, Any]:
+    """sel = {조합: 줄 번호}. 매번 사건(줄)마다 같은 종목(key_col — L4는 '종목|상태')의 무작위 날 하나를 뽑아
+    (모든 조합에 같은 날) 조합별 t → 최고 t."""
     if not sel:
         return {"max_t": [], "threshold": None}
     rows = np.unique(np.concatenate(list(sel.values())))
     pos = {r: i for i, r in enumerate(rows)}
-    tid = np.array([pool["tick"].get(s, -1) for s in ev["ticker"].to_numpy()[rows]], dtype=np.int64)
+    tid = np.array([pool["tick"].get(s, -1) for s in ev[key_col].to_numpy()[rows]], dtype=np.int64)
     ok = (tid >= 0)
     sizes = np.where(ok, pool["sizes"][np.maximum(tid, 0)], 0)
     ok &= sizes > 0
