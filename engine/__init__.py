@@ -57,12 +57,12 @@ if "_SUBMODULES" in globals():
 from . import common, technical_signals, backtest, technical, earnings, macro, fundamental
 from . import synthesis, home, gate, rrg, radar, rule_backtest, t_backtest, snapshot, sec_facts, frame_backtest, playbook, ledger, peers
 from . import strategy, short_backtest, level_backtest, reclaim_backtest, explore, touch_explore, momentum_explore, peer_eval
-from . import lecture_signals, lecture_backtest, lecture_events, lecture_family, lecture_levels, mr_backtest
+from . import lecture_signals, lecture_backtest, lecture_events, lecture_family, lecture_levels, mr_backtest, mr2_backtest
 
 _SUBMODULES = (common, technical_signals, backtest, technical, earnings, macro, fundamental,
                synthesis, home, gate, rrg, radar, rule_backtest, t_backtest, snapshot, sec_facts, frame_backtest, playbook, ledger, peers,
                strategy, short_backtest, level_backtest, reclaim_backtest, explore, touch_explore, momentum_explore, peer_eval,
-               lecture_signals, lecture_backtest, lecture_events, lecture_family, lecture_levels, mr_backtest)
+               lecture_signals, lecture_backtest, lecture_events, lecture_family, lecture_levels, mr_backtest, mr2_backtest)
 _SUBMODULE_NAMES = {m.__name__.rsplit(".", 1)[1] for m in _SUBMODULES}
 
 # 하위 모듈의 모든 이름(밑줄로 시작하는 내부 함수 포함)을 engine.이름으로 내보낸다.
