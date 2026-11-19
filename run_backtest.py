@@ -34,6 +34,9 @@
     .venv\\Scripts\\python run_backtest.py --mr3   H-MR3 변동성 국면(VIX ≥ 20) 이격도·지지 반등 찾기 → 후보만 미국 1990~2000 + 2020~ 검증 — MR3_PREREG.md
                                                      (VIX는 처음 한 번 받음, 1990년대 미국 자료는 후보가 있을 때만 받음 10분 안팎)
     .venv\\Scripts\\python run_backtest.py --mr3-final   H-MR3 최종(검증 통과 규칙만, 새 151종목) — 확인 뒤 --mr3-final --names-ok
+    .venv\\Scripts\\python run_backtest.py --tr-count --etf-ok   H-TR 추세 투자 흐름 — 실행 전 건수·깔때기·가려낼 수 있는 최소 차이(수익은 안 봄) — TR_PREREG.md
+    .venv\\Scripts\\python run_backtest.py --tr --etf-ok   H-TR 탐색(545종목 2001~2013) → 후보만 2014~ 확인 (10분 안팎)
+    .venv\\Scripts\\python run_backtest.py --tr-final   H-TR 최종(확인 통과 규칙만, 새 151종목 — 섹터·실적일 받기 포함) — 확인 뒤 --tr-final --names-ok
 
 결과 (data/backtest/):
     REPORT.md          사람이 읽는 보고서 (커밋해 두면 다른 AI도 결과를 읽을 수 있음)
@@ -52,6 +55,7 @@
     MR1.md · mr1.json  H-MR1 단기 반등 단타 탐색(사전 등록 MR1_PREREG.md)
     MR2.md · mr2.json  H-MR2 단기 신호 찾기·검증(사전 등록 MR2_PREREG.md), 최종은 MR2_FINAL.md · mr2_final.json
     MR3.md · mr3.json  H-MR3 변동성 국면 이격도·지지 반등(사전 등록 MR3_PREREG.md), 최종은 MR3_FINAL.md · mr3_final.json
+    TR_COUNT.md · TR.md · tr.json  H-TR 추세 투자 흐름(사전 등록 TR_PREREG.md), 최종은 TR_FINAL.md · tr_final.json
     LECTURE_L1~L5.md  강의 조건 시험(사전 등록 LECTURE_PREREG.md) + lecture_l*.json, 캐시 lecture_cache/
     summary.json       숫자 요약 + 주간 누적 수익 곡선 (이후 화면 표시용)
     *.csv              날짜별 게이트·누적 수익·거래 목록 (용량이 커서 .gitignore로 커밋 제외)
@@ -879,6 +883,182 @@ def run_mr3_final_only(engine, args, t0):
     print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'MR3_FINAL.md')}")
 
 
+def _tr_etf_gate(engine, args):
+    """H-TR은 섹터 RS를 쓰므로 L2와 같이 한국 섹터 ETF 이름을 확인한 뒤에만(--etf-ok) 돌린다."""
+    if args.etf_ok:
+        return True
+    lc = engine.LECTURE_CONFIG
+    names = engine.lec_load_csv_map("kr_etf_names.csv", "etf", "name")
+    print("한국 섹터 ETF 이름을 확인한 뒤 --etf-ok를 붙여 실행해 주세요 (L2 때 확인했다면 그대로 붙이면 됩니다):")
+    for etf, expect in lc["SECTOR_ETF_KR_EXPECT"].items():
+        print(f"   {etf}  기대: {expect}  /  받은 이름: {names.get(etf) or '(못 받음 — --lecture data 먼저)'}")
+    return False
+
+
+def _tr_grades(engine, bench):
+    lc = engine.LECTURE_CONFIG
+    return {sym: engine.lec_market_grade(engine.lec_clean(bench[sym])) for sym in lc["INDEX"].values() if sym in bench}
+
+
+def _tr_prog():
+    last = {}
+
+    def prog(stage, i, n):
+        if i * 10 // n != last.get(stage):
+            last[stage] = i * 10 // n
+            print(f"   {stage} {i}/{n}", flush=True)
+    return prog
+
+
+def run_tr_count_only(engine, args, t0):
+    """H-TR 실행 전: 깔때기(신호 수)·T1 물량 소화 결정·가려낼 수 있는 최소 차이. 수익은 계산하지 않는다."""
+    cf = engine.TR_CONFIG
+    if not _tr_etf_gate(engine, args):
+        return
+    print(f"[1/2] 재료 준비 (설정 {cf['VERSION']}, 사전 등록 {cf['REGISTERED']})", flush=True)
+    got = _lecture_load(engine, need_rs=True)
+    if got is None:
+        return
+    prep, bench = got
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    print(f"[2/2] 신호·깔때기 (종목 {len(prep)}개, 수익은 안 봄)", flush=True)
+    res = engine.run_tr_count(prep, _tr_grades(engine, bench), progress=_tr_prog())
+    rep = engine.render_tr_count_report(res, generated_at=now)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(os.path.join(OUT_DIR, "TR_COUNT.md"), "w", encoding="utf-8") as f:
+        f.write(rep)
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'TR_COUNT.md')}")
+
+
+def run_tr_only(engine, args, t0):
+    """H-TR: 545종목 2001~2013 탐색(규칙 A·B) → 후보만 2014~ 확인."""
+    cf = engine.TR_CONFIG
+    if not _tr_etf_gate(engine, args):
+        return
+    print(f"[1/3] 재료 준비 (설정 {cf['VERSION']}, 사전 등록 {cf['REGISTERED']})", flush=True)
+    got = _lecture_load(engine, need_rs=True)
+    if got is None:
+        return
+    prep, bench = got
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    print(f"[2/3] 탐색 규칙 A·B + 참고(셋업만·단계 빼기·청산 단순형) (종목 {len(prep)}개)", flush=True)
+    res = engine.run_tr(prep, _tr_grades(engine, bench), progress=_tr_prog())
+    print(f"[3/3] 저장 ({res['verify_status']})", flush=True)
+    rep = engine.render_tr_report(res, generated_at=now)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(os.path.join(OUT_DIR, "TR.md"), "w", encoding="utf-8") as f:
+        f.write(rep)
+    with open(os.path.join(OUT_DIR, "tr.json"), "w", encoding="utf-8") as f:
+        json.dump({"generated_at": now, **res}, f, ensure_ascii=False, indent=1, default=str)
+    engine.lec_append_lines(engine.tr_log_lines(res, now), OUT_DIR)
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'TR.md')}")
+
+
+def _tr_final_meta(engine, pm):
+    """새 151종목의 섹터(야후 지금 분류)·실적 발표일(SEC 8-K 2.02 · DART). lecture_cache/final_*.csv에 저장."""
+    import yfinance as yf
+    lc = engine.LECTURE_CONFIG
+    sec = engine.lec_load_csv_map("final_sectors.csv", "ticker", "sector")
+    for s in [x for x in pm if x not in sec]:
+        try:
+            sec[s] = (yf.Ticker(s).info or {}).get("sector") or None
+        except Exception:
+            sec[s] = None
+    engine.lec_save_csv_map("final_sectors.csv", "ticker", "sector", sec)
+    ep = engine.lec_cache_path("final_earnings_dates.csv")
+    cover = engine.lec_load_csv_map("final_earnings_cover.csv", "ticker", "cover_from")
+    if os.path.exists(ep):
+        return sec, pd.read_csv(ep, dtype=str), cover
+    rows = []
+    ua = engine.sec_user_agent()
+    if ua:
+        cik = engine.load_cik_map(ua)
+        pause = engine.SEC_CONFIG["PAUSE_SEC"]
+
+        def slow_get(u):
+            time.sleep(pause)
+            return engine._sec_http_json(u, ua)
+        for s in [x for x in pm if engine.lec_market_of(x) == "US"]:
+            c = cik.get(s.upper().replace(".", "-"))
+            if c is None:
+                continue
+            try:
+                ds = engine.lec_sec_earnings_dates(c, ua, fetch=slow_get)
+            except Exception:
+                continue
+            rows += [{"ticker": s, "date": d, "source": "SEC 8-K 2.02"} for d in ds]
+            cover[s] = lc["EARN_COVER_US"] if ds else None
+    dart = engine._get_dart_client()
+    if dart is not None:
+        for s in [x for x in pm if engine.lec_market_of(x) == "KR"]:
+            ds = engine.lec_dart_earnings_dates(s.split(".")[0], dart)
+            rows += [{"ticker": s, "date": d, "source": "DART 잠정실적"} for d in ds]
+            cover[s] = lc["EARN_COVER_KR"] if ds else None
+    et = pd.DataFrame(rows, columns=["ticker", "date", "source"])
+    et.to_csv(ep, index=False, encoding="utf-8")
+    engine.lec_save_csv_map("final_earnings_cover.csv", "ticker", "cover_from", cover)
+    return sec, et, cover
+
+
+def run_tr_final_only(engine, args, t0):
+    """H-TR 최종: tr.json의 확인 통과 규칙만, 새 151종목에서 한 번. 통과가 없으면 새 종목을 받지도 열지도 않는다."""
+    cf, lc = engine.TR_CONFIG, engine.LECTURE_CONFIG
+    jp = os.path.join(OUT_DIR, "tr.json")
+    if not os.path.exists(jp):
+        print("먼저 탐색·확인을 실행해 주세요: python run_backtest.py --tr --etf-ok")
+        return
+    with open(jp, encoding="utf-8") as f:
+        prev = json.load(f)
+    if prev.get("config_version") != cf["VERSION"]:
+        print(f"tr.json 설정({prev.get('config_version')})이 지금 설정({cf['VERSION']})과 다릅니다. --tr을 다시 실행해 주세요.")
+        return
+    rules = [r for r in prev.get("verified", []) if r in engine.TR_RULES]
+    if not rules:
+        print("확인을 통과한 규칙이 없어 최종 단계를 열지 않습니다(새 151종목은 다음 질문을 위해 아껴 둡니다).")
+        return
+    cdir = engine.lec_cache_path("final_prices")
+    uni = list(lc["FINAL_UNIVERSE"])
+    pm = engine.load_price_cache(uni, cache_dir=cdir)
+    need = [s for s in uni if s not in pm]
+    if need:
+        print(f"[받기] 새 종목 {len(need)}개 (저장 위치 {cdir})", flush=True)
+        got, failed = download(need, lc["DATA_START"])
+        engine.save_price_cache(got, cache_dir=cdir)
+        pm.update(got)
+        if failed:
+            print(f"   받지 못함(빼고 채우지 않음): {', '.join(failed)}")
+    if not args.names_ok:
+        import yfinance as yf
+        print("\n한국 종목 이름 확인 — 코드가 생각한 회사인지 확인한 뒤 --tr-final --names-ok 로 다시 실행해 주세요:")
+        for s in [x for x in uni if engine.lec_market_of(x) == "KR"]:
+            try:
+                inf = yf.Ticker(s).info or {}
+                nm = inf.get("longName") or inf.get("shortName") or "(이름 못 받음)"
+            except Exception:
+                nm = "(이름 못 받음)"
+            print(f"   {s}  {nm}  {'(가격 없음)' if s not in pm else ''}")
+        return
+    print(f"[1/3] 섹터·실적일 (새 종목 {len(pm)}개 — 처음엔 10~20분)", flush=True)
+    sec, et, cover = _tr_final_meta(engine, pm)
+    bench = engine.load_price_cache(_lecture_bench_symbols(engine), cache_dir=engine.lec_cache_path("prices"))
+    print(f"[2/3] 재료 준비 (설정 {cf['VERSION']}) · 규칙: {', '.join(rules)} · 물량 소화 {'넣음' if prev.get('use_absorb') else '참고'}", flush=True)
+    prep = engine.lec_prepare(pm, sec, bench, et, cover, need_rs=True)
+    dropped = [s for s in uni if s not in prep]
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    print(f"[3/3] 최종 (종목 {len(prep)}개)", flush=True)
+    res = engine.run_tr_final(prep, _tr_grades(engine, bench), rules, bool(prev.get("use_absorb")), progress=_tr_prog())
+    rep = engine.render_tr_final_report(res, dropped, generated_at=now)
+    with open(os.path.join(OUT_DIR, "TR_FINAL.md"), "w", encoding="utf-8") as f:
+        f.write(rep)
+    with open(os.path.join(OUT_DIR, "tr_final.json"), "w", encoding="utf-8") as f:
+        json.dump({"generated_at": now, "dropped": dropped, **res}, f, ensure_ascii=False, indent=1, default=str)
+    engine.lec_append_lines(engine.tr_final_log_lines(res, now), OUT_DIR)
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'TR_FINAL.md')}")
+
+
 def download_splits(symbols):
     """야후 액면분할 기록 (틀 B: 분할 전 보고서의 EPS를 지금 주식 단위로 맞추는 데 씀)."""
     import yfinance as yf
@@ -1036,12 +1216,15 @@ def main():
     ap.add_argument("--refresh", action="store_true", help="--explore에서 저장해 둔 가격을 쓰지 않고 다시 받기")
     ap.add_argument("--lecture", metavar="WHAT", help="강의 조건 시험: data(자료 받기) · L1(BNF) · L2(매수 사건 조합) · L3(상태별 RSI) · L4(매도·약화) · L5(레벨)")
     ap.add_argument("--mr1", action="store_true", help="H-MR1 단기 반등 단타 탐색(규칙 A·B·C, 기존 종목 2001~2019)")
-    ap.add_argument("--etf-ok", action="store_true", help="--lecture L1·L2: 한국 섹터 ETF 이름을 확인했음")
+    ap.add_argument("--etf-ok", action="store_true", help="--lecture L1·L2, --tr-count·--tr: 한국 섹터 ETF 이름을 확인했음")
     ap.add_argument("--mr2", action="store_true", help="H-MR2 단기 신호 찾기(26개 규칙, 기존 종목 2001~2019 → 후보만 2020~ 검증)")
     ap.add_argument("--mr2-final", action="store_true", help="H-MR2 최종(검증 통과 규칙만, 새 151종목)")
-    ap.add_argument("--names-ok", action="store_true", help="--mr2-final·--mr3-final: 한국 종목 이름을 확인했음")
+    ap.add_argument("--names-ok", action="store_true", help="--mr2-final·--mr3-final·--tr-final: 한국 종목 이름을 확인했음")
     ap.add_argument("--mr3", action="store_true", help="H-MR3 변동성 국면(VIX ≥ 20) 이격도·지지 반등 찾기 → 후보만 검증")
     ap.add_argument("--mr3-final", action="store_true", help="H-MR3 최종(검증 통과 규칙만, 새 151종목)")
+    ap.add_argument("--tr-count", action="store_true", help="H-TR 추세 투자 흐름: 실행 전 건수·깔때기·가려낼 수 있는 최소 차이(수익 안 봄)")
+    ap.add_argument("--tr", action="store_true", help="H-TR 추세 투자 흐름: 545종목 2001~2013 탐색 → 후보만 2014~ 확인")
+    ap.add_argument("--tr-final", action="store_true", help="H-TR 최종(확인 통과 규칙만, 새 151종목)")
     args = ap.parse_args()
     t0 = time.time()
     if args.variants:
@@ -1097,6 +1280,15 @@ def main():
         return
     if args.mr3_final:
         run_mr3_final_only(engine, args, t0)
+        return
+    if args.tr_count:
+        run_tr_count_only(engine, args, t0)
+        return
+    if args.tr:
+        run_tr_only(engine, args, t0)
+        return
+    if args.tr_final:
+        run_tr_final_only(engine, args, t0)
         return
 
     print(f"[1/4] 지수 데이터 받기 (시작 {args.start})", flush=True)

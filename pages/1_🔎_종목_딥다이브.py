@@ -780,6 +780,52 @@ def render_strategy_section(t: str, res: dict, fit: dict, lv: dict, gate: dict) 
         render_levels_card(lv)
 
 
+def render_journal_entry(t: str, fit: dict, res: dict, lv: dict, short: dict, as_of: str, last: float) -> None:
+    """매매 기록에 추가(2026-11-20, engine/journal.py) — 그날 '세 방식 한눈에' 판정을 함께 저장. PC에서만 저장(data/journal/, git 제외)."""
+    with st.expander("📒 매매 기록에 추가 — 지금 판정을 함께 저장 (PC에서만)", expanded=False):
+        if engine.journal_storage_mode() != "local":
+            st.caption("이 앱은 인터넷 서버에서 실행 중이라 매매 기록을 저장하지 않습니다(공개 저장소). PC에서 앱을 실행하면 저장됩니다.")
+            return
+        styles = list(engine.JOURNAL_CONFIG["STYLES"])
+        chosen = {"value": "가치", "trend": "추세"}.get((res or {}).get("chosen"))
+        lv, short = lv or {}, short or {}
+        sugg = lv.get("stop") if lv.get("available") else None
+        s_stop = short.get("stop") if short.get("v5") else None
+        fp = lambda v: engine.fmt_price(v, is_krx_ticker)
+        hints = [x for x in (f"지지·손절선 카드 손절선 {fp(sugg)}" if sugg else None, f"단타 조합 손절 {fp(s_stop)}" if s_stop else None) if x]
+        st.caption(f"판정 자료 날짜 {as_of} · 지금 판정: {fit.get('headline')} · 산 날이 이 날짜에서 4일 넘게 떨어지면 '당일 판정 없음'으로 저장. "
+                   "강의 9-7: 진입 근거 · 손절가 · 수량이 적히지 않으면 사지 않는다(셋 다 필수)."
+                   + (f" 참고: {' · '.join(hints)}(손절 계획은 직접 정함)." if hints else ""))
+        fx_now = None if is_krx_ticker else fetch_usdkrw()
+        eq = float(st.session_state.get("total_equity") or 0)
+        if sugg and last > sugg and eq > 0 and (is_krx_ticker or fx_now):
+            n1 = eq * 0.01 / ((last - sugg) * (1.0 if is_krx_ticker else fx_now))
+            st.caption(f"1% 위험 수량(강의 9-6): 총자산 {eq:,.0f}원의 1% ÷ (지금 값 − 지지·손절선 카드 손절선) ≈ {n1:,.1f}주 — 갭 하락·비용은 반영 안 됨.")
+        with st.form("jr_dd_form"):
+            c1, c2, c3 = st.columns(3)
+            j_style = c1.selectbox("방식", styles, index=styles.index(chosen) if chosen in styles else 0, key="jr_dd_style")
+            j_day = c2.date_input("산 날", value=pd.Timestamp.now(tz="Asia/Seoul").date(), key="jr_dd_day")
+            j_px = c3.number_input("산 값", min_value=0.0, value=float(last), format="%.4f", key="jr_dd_px")
+            c4, c5, c6 = st.columns(3)
+            j_qty = c4.number_input("수량", min_value=0.0, value=0.0, key="jr_dd_qty")
+            j_fee = c5.number_input("수수료(거래 통화)", min_value=0.0, value=0.0, format="%.4f", key="jr_dd_fee")
+            j_stop = c6.number_input("손절 계획 가격", min_value=0.0, value=float(sugg or 0.0), format="%.4f", key="jr_dd_stop")
+            j_fx = (1.0 if is_krx_ticker else
+                    st.number_input("환율(원/달러, 결제일 기준 — 자동 값은 최근 종가라 근사)", min_value=0.0, value=float(fx_now or 0.0),
+                                    format="%.2f", key="jr_dd_fx"))
+            j_reason = st.text_input("진입 근거(한 줄)", key="jr_dd_reason")
+            if st.form_submit_button("매매 기록 저장"):
+                snap = engine.journal_verdict_snapshot(fit, as_of, j_day)
+                try:
+                    tid = engine.journal_add_trade({"ticker": t, "style": j_style, "buy_date": j_day, "buy_price": j_px or None,
+                                                    "qty": j_qty or None, "buy_fee": j_fee, "buy_fx": j_fx or None,
+                                                    "stop_plan": j_stop or None, "reason": j_reason}, verdict=snap)
+                except (ValueError, PermissionError) as e:
+                    st.error(str(e))
+                else:
+                    st.success(f"저장: {tid} · 판정: {snap['verdict_source']} — 판 기록 · 성과는 '매매 기록' 페이지에서.")
+
+
 _LEVEL_COLOR = {"손절선 이탈": "#dc2626", "지지선 접근": "#d97706", "지지선 위": "#64748b"}
 
 
@@ -930,6 +976,9 @@ render_peer_section(ticker_input)
 # 9) 어느 전략으로 들어갈까 — 세 방식 한눈에 + 진입 전략 카드 2장 + 지지·손절선 카드 (딥다이브 개편 4단계, engine/strategy.py)
 level_eval = engine.support_stop_levels(stock_df_raw, ind=pb_ind)
 render_strategy_section(ticker_input, strat_res, strat_fit, level_eval, gate_now)
+
+# 10) 매매 기록에 추가 — 그날 판정을 함께 저장(PC에서만, engine/journal.py)
+render_journal_entry(ticker_input, strat_fit, strat_res, level_eval, short_now, str(pd.Timestamp(stock_df_raw.index[-1]).date()), last_close)
 
 # =====================================================================
 # 종합 결론(첫 번째 탭) + 4대 트랙 상세 탭 구성[cite: 6]

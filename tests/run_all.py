@@ -53,6 +53,8 @@ ENGINE_TESTS = [
     ("H-MR1 단기 반등 단타 (신호 손 계산·규칙 포함 관계·미래 자료 미사용·판정 방식)", "test_mr1.py", [], {}),
     ("H-MR2 단기 신호 찾기 (청산·지정가 체결 손 계산·신호 다시 계산·미래 자료 미사용·통과선·엄격 체결)", "test_mr2.py", [], {}),
     ("H-MR3 변동성 국면 이격도·지지 반등 (VIX 앞선 날·청산 손 계산·보유 기간 맞춘 기준·통과선·해 빼기)", "test_mr3.py", [], {}),
+    ("H-TR 추세 투자 흐름 (박스·물량 소화·실적 쇼크·청산 손 계산·보유 기간 맞춘 기준·미래 자료 미사용·심은 우위 / 없는 우위)", "test_tr.py", [], {}),
+    ("매매 기록 (PC만 저장·입력 검사·손익·지수 대비·채점·손절 갭·해외주식 세금·불러오기)", "test_journal.py", [], {}),
 ]
 
 PAGE_TESTS = [
@@ -64,6 +66,10 @@ PAGE_TESTS = [
     ("화면: 가치·금리·거시 일부만 받음", "test_page.py", ["full", "NVDA"], {"VMODE": "partial", "MACROMODE": "partial"}),
     ("화면: 가치·금리·거시 모두 못 받음", "test_page.py", ["full", "NVDA"], {"VMODE": "none", "RFMODE": "off", "MACROMODE": "off"}),
     ("화면: 피어 기록 없음 안내", "test_page.py", ["full", "NVDA"], {"PEERMODE": "none"}),
+    ("화면: 딥다이브에서 매매 기록 저장(그날 판정 함께)", "test_page.py", ["full", "NVDA"], {"JOURNALSUBMIT": "on"}),
+    ("화면: 매매 기록 페이지(성과·세금·산·판 기록 저장)", "test_journal_page.py", ["local"], {}),
+    ("화면: 매매 기록 페이지(빈 기록)", "test_journal_page.py", ["empty"], {}),
+    ("화면: 매매 기록 페이지(인터넷 서버 — 보기 전용)", "test_journal_page.py", ["view"], {}),
     ("화면: 피어 비교 페이지(가짜 기록 2묶음)", "test_peer_page.py", ["fake"], {}),
     ("화면: 피어 비교 페이지(기록 없음)", "test_peer_page.py", ["none"], {}),
     ("홈: 장부 기반 실행 레이더 (칸 나누기·크기 안내)", "test_home.py", ["ledger"], {}),

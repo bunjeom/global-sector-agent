@@ -22,3 +22,5 @@ data/sec_cache/
 *.patch
 # 강의 조건 시험 자료 캐시(다시 받을 수 있음)
 data/backtest/lecture_cache/
+# 매매 기록(내 실제 매매) — PC에만 저장, 공개 저장소라 절대 커밋하지 않음 (engine/journal.py)
+data/journal/

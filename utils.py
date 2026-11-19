@@ -177,6 +177,7 @@ def init_session():
         st.page_link("app.py", label="홈", icon="📊")
         st.page_link("pages/1_🔎_종목_딥다이브.py", label="종목 딥다이브", icon="📈")
         st.page_link("pages/2_🧭_피어_비교.py", label="피어 비교", icon="🧭")
+        st.page_link("pages/3_📒_매매_기록.py", label="매매 기록", icon="📒")
         st.divider()
         st.markdown(f'**{line_icon("sliders", 15)} 계좌 설정**', unsafe_allow_html=True)
         st.session_state["total_equity"] = st.number_input(

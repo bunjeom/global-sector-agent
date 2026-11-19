@@ -189,6 +189,9 @@ if PEERMODE == "fake":
     from _fake_peers import write_fake_peers
     write_fake_peers(_peer_tmp, TICKER)
 _eng.PEER_CONFIG["DIR"] = _peer_tmp
+# 매매 기록: 저장소의 data/journal/ 대신 임시 폴더(JOURNALSUBMIT=on이면 딥다이브에서 실제로 저장해 본다)
+os.environ.setdefault("JOURNAL_MODE", "local")
+_eng.JOURNAL_CONFIG["DIR"] = _tf.mkdtemp(prefix="journal_dd_")
 
 import streamlit as _st
 _st.page_link = lambda *a, **k: None   # 테스트 환경에선 페이지 링크 검증이 불가능해 무력화
@@ -262,5 +265,24 @@ if PEERMODE != "fake":   # 피어 기록이 없으면 가치·추세 카드의 �
 print("전략 카드:", _st_ok, "| 결론", [_r2.sub("<[^>]+>", "", _sh[0])[:80]] if _sh else None, "| 역할", _roles,
       "| 지지·손절선", _r2.findall(r"border-color:#[0-9a-f]+;\">([^<]*)", _lvc[0])[:1] if _lvc else None)
 _pb_ok = _pb_ok and _st_ok
+# ---- 매매 기록에 추가(딥다이브 개편 뒤, 2026-11-20): 접힌 칸이 있고, 저장하면 그날 '세 방식 한눈에' 판정이 함께 남는다
+_jx = any("매매 기록에 추가" in e.label for e in at.expander)
+_jr_ok = _jx
+if os.environ.get("JOURNALSUBMIT") == "on" and _jx:
+    import datetime as _dt
+    _px = float(at.number_input(key="jr_dd_px").value)
+    at.date_input(key="jr_dd_day").set_value(_dt.date(2026, 11, 10))   # 가짜 가격의 마지막 날(11-09) 다음 날 → 그날 판정
+    at.number_input(key="jr_dd_qty").set_value(3.0)
+    at.number_input(key="jr_dd_stop").set_value(round(_px * 0.9, 2))
+    at.text_input(key="jr_dd_reason").input("딥다이브 저장 테스트")
+    next(b for b in at.button if b.label == "매매 기록 저장").click()
+    at.run()
+    _tr = _eng.journal_load()["trades"]
+    _jr_ok = (not at.exception and len(_tr) == 1 and _tr["verdict_source"].iloc[0] == "딥다이브"
+              and _tr["verdict_date"].iloc[0] == "2026-11-09" and _tr["verdict_headline"].iloc[0] == (_hd(_sh[0]) if _sh else None)
+              and _tr["verdict_short"].iloc[0] != "" and any("저장: T20261110-001" in x.value for x in at.success))
+    print("딥다이브 매매 기록 저장:", _jr_ok, _tr[["id", "style", "verdict_source", "verdict_date", "verdict_headline"]].to_dict("records") if len(_tr) else None)
+print("매매 기록에 추가 칸:", _jx)
+_pb_ok = _pb_ok and _jr_ok
 # 실적 데이터가 전혀 없는 모드(none)는 화면이 종합 탭 전에 멈추는 것이 정상(가짜 값으로 채우지 않음)
 sys.exit(1 if (at.exception or _bad or _hb or (MODE != "none" and not _pb_ok)) else 0)
