@@ -27,6 +27,7 @@
     .venv\\Scripts\\python run_backtest.py --lecture L2 --etf-ok   강의 시험 L2(매수 사건 조합 256개, 섞기 200회 통과선) — 노트북 팬이 돌 수 있음
     .venv\\Scripts\\python run_backtest.py --lecture L4   강의 시험 L4(매도·약화 17개, 20일 최대 낙폭)
     .venv\\Scripts\\python run_backtest.py --lecture L5   강의 시험 L5(레벨 11개, 같은 거리 가짜 선 비교) — 30분 넘게 걸릴 수 있음
+    .venv\\Scripts\\python run_backtest.py --mr1   H-MR1 단기 반등 단타 탐색(규칙 A·B·C, 기존 종목 2001~2019) — 사전 등록 MR1_PREREG.md
 
 결과 (data/backtest/):
     REPORT.md          사람이 읽는 보고서 (커밋해 두면 다른 AI도 결과를 읽을 수 있음)
@@ -42,6 +43,7 @@
     LEVELS.md          지지선·손절선 검증 + levels.json
     RECLAIM.md         지지선 이탈 뒤 회복 검증 + reclaim.json
     EXPLORE_<이름>.md  가설 탐색 결과(증거 아님) + EXPLORE_LOG.md(볼 때마다 한 줄)
+    MR1.md · mr1.json  H-MR1 단기 반등 단타 탐색(사전 등록 MR1_PREREG.md)
     LECTURE_L1~L5.md  강의 조건 시험(사전 등록 LECTURE_PREREG.md) + lecture_l*.json, 캐시 lecture_cache/
     summary.json       숫자 요약 + 주간 누적 수익 곡선 (이후 화면 표시용)
     *.csv              날짜별 게이트·누적 수익·거래 목록 (용량이 커서 .gitignore로 커밋 제외)
@@ -601,6 +603,37 @@ def run_lecture_only(engine, args, t0):
     print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, name + '.md')}")
 
 
+def run_mr1_only(engine, args, t0):
+    """H-MR1 단기 반등 단타 탐색: 기존 545종목, 신호일 2001~2019, 규칙 A·B·C. 강의 시험 자료(--lecture data)를 그대로 쓴다."""
+    mc = engine.MR1_CONFIG
+    print(f"[1/2] 재료 준비 (설정 {mc['VERSION']}, 사전 등록 {mc['REGISTERED']})", flush=True)
+    got = _lecture_load(engine, need_rs=False)
+    if got is None:
+        return
+    prep, bench = got
+    idx = engine.mr_index_context(bench)
+    if len(idx) < 3:
+        print(f"   지수 자료가 모자랍니다({sorted(idx)}). python run_backtest.py --lecture data 를 먼저 실행해 주세요.")
+    last = {}
+
+    def prog(stage, i, n):
+        if i * 10 // n != last.get(stage):
+            last[stage] = i * 10 // n
+            print(f"   {stage} {i}/{n}", flush=True)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    print(f"[2/2] 규칙 A·B·C (종목 {len(prep)}개)", flush=True)
+    res = engine.run_mr1(prep, idx, progress=prog)
+    rep = engine.render_mr1_report(res, generated_at=now)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(os.path.join(OUT_DIR, "MR1.md"), "w", encoding="utf-8") as f:
+        f.write(rep)
+    with open(os.path.join(OUT_DIR, "mr1.json"), "w", encoding="utf-8") as f:
+        json.dump({"generated_at": now, **res}, f, ensure_ascii=False, indent=1, default=str)
+    engine.lec_append_lines(engine.mr1_log_lines(res, now), OUT_DIR)
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'MR1.md')}")
+
+
 def download_splits(symbols):
     """야후 액면분할 기록 (틀 B: 분할 전 보고서의 EPS를 지금 주식 단위로 맞추는 데 씀)."""
     import yfinance as yf
@@ -757,6 +790,7 @@ def main():
     ap.add_argument("--explore", metavar="NAME", help="가설 탐색(이미 쓴 종목, 증거 아님). list = 가설 이름 보기")
     ap.add_argument("--refresh", action="store_true", help="--explore에서 저장해 둔 가격을 쓰지 않고 다시 받기")
     ap.add_argument("--lecture", metavar="WHAT", help="강의 조건 시험: data(자료 받기) · L1(BNF) · L2(매수 사건 조합) · L3(상태별 RSI) · L4(매도·약화) · L5(레벨)")
+    ap.add_argument("--mr1", action="store_true", help="H-MR1 단기 반등 단타 탐색(규칙 A·B·C, 기존 종목 2001~2019)")
     ap.add_argument("--etf-ok", action="store_true", help="--lecture L1·L2: 한국 섹터 ETF 이름을 확인했음")
     args = ap.parse_args()
     t0 = time.time()
@@ -798,6 +832,9 @@ def main():
         return
     if args.lecture:
         run_lecture_only(engine, args, t0)
+        return
+    if args.mr1:
+        run_mr1_only(engine, args, t0)
         return
 
     print(f"[1/4] 지수 데이터 받기 (시작 {args.start})", flush=True)

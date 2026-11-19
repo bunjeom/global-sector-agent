@@ -336,7 +336,7 @@ def lec_l4_table(prepared: Dict[str, Dict[str, Any]], progress: Optional[Callabl
         mk = lec_market_of(sym)
         cl, lo, atrp = _lec_arr(b, "Close"), _lec_arr(b, "Low"), _lec_arr(b, "ATR_PCT")
         dd = _lec_fwd_min(lo, D) / cl - 1.0
-        dda = dd / np.where(atrp > 0, atrp, np.nan)
+        dda = dd / np.where(atrp >= 0.001, atrp, np.nan)   # ATR% < 0.1%(거래 정지 등 평평한 기간)는 나누지 않음 — 참고 열 전용
         pm = _lec_period_mask(b.index)
         base, basea = {}, {}
         for per, msk in pm.items():
@@ -528,7 +528,7 @@ def _lec_line_reactions(lv: float, start: int, t: int, hi, lo, cl, atr) -> int:
 
 
 def lec_swing_lines(b: pd.DataFrame, sw: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-    """확정 스윙 고점·저점 전부를 수평선으로(Q35). start = 확정일. fr = 생긴 뒤 250거래일 안에 닿은 반응이 끝난 첫날(없으면 큰 수).
+    """확정 스윙 고점·저점 전부를 수평선으로(Q35). start = 확정일. fr = 생긴 뒤 250거래일 안에 닿은 반응 중 가장 먼저 끝난 날(없으면 큰 수).
     t일에 살아 있음 = t − start ≤ 250 또는 fr ≤ t (lecture_events._lec_line_alive와 같은 뜻)."""
     c = LECTURE_CONFIG
     hi, lo, cl, atr = (_lec_arr(b, k) for k in ("High", "Low", "Close", "ATR14"))
@@ -547,7 +547,10 @@ def lec_swing_lines(b: pd.DataFrame, sw: Dict[str, np.ndarray]) -> Dict[str, np.
         d_ = np.arange(s0 + 1, end + 1)
         hw = np.maximum(c["ZONE_PCT_MIN"] * lv[i], c["ZONE_ATR_MULT"] * atr[d_])
         touch = d_[(lo[d_] <= lv[i] + hw) & (hi[d_] >= lv[i] - hw)]
+        best = 10 ** 9
         for d in touch:
+            if d >= best:
+                break
             h = _lec_hw(lv[i], atr[d])
             seg = cl[d + 1:min(d + c["REACT_DAYS"], n - 1) + 1]
             if not len(seg):
@@ -559,8 +562,8 @@ def lec_swing_lines(b: pd.DataFrame, sw: Dict[str, np.ndarray]) -> Dict[str, np.
             else:
                 continue
             if len(hit):
-                fr[i] = d + 1 + int(hit[0])
-                break
+                best = min(best, d + 1 + int(hit[0]))      # 가장 먼저 끝난 반응(뒤 닿음의 반응이 더 빨리 끝날 수 있음)
+        fr[i] = best
     o = np.argsort(start, kind="stable")
     return {"orig": orig[o], "lv": lv[o], "start": start[o], "fr": fr[o]}
 
