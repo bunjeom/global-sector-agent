@@ -259,5 +259,25 @@ pp, dropped = engine.mr3_prepare_old({"A": path_walk(3300, 1, start="1989-01-02"
 chk("9-6 1990년대 재료: 미국만, 2001-06-30에서 자르고 1990~2000 자료 없는 종목은 뺌",
     list(pp) == ["A"] and "C" in dropped and pp["A"]["b"].index.max() <= pd.Timestamp("2001-06-30") and "DISP25" in pp["A"]["b"])
 
+# 10) 딥다이브 단타 표시(mr3_short_status): 마지막 봉의 V5 조건을 MR3 시험과 같은 정의로
+wq = path_walk(1100, 77, sd=0.03, start="2022-06-01")
+idx_tz = wq.index.tz_localize("Asia/Seoul")
+wq_tz = wq.set_axis(idx_tz)
+vq = pd.Series(np.r_[np.full(len(wq) - 1, 15.0), 25.0], index=wq.index.tz_localize("America/New_York"))
+ss = engine.mr3_short_status(wq_tz, vq)
+bq = engine.lec_base(wq)
+swq = engine.lec_swings(bq)
+tq = len(bq) - 1
+sgq, _ = engine.mr2_signal_arrays(bq, swq, {"S10", "S12"}, cache=(cq := {}))
+chk("10 VIX는 앞선 날 값(마지막 날 25는 안 씀 → 15, 평상시)", ss["available"] and ss["vix"] == 15.0 and ss["regime"] is False and ss["v5"] is False, ss)
+chk("10-2 이격도·지지 판정 = MR3 시험(S10·S12)과 같은 정의", abs(ss["disp"] - bq["DISP25"].iloc[tq]) < 1e-9
+    and (ss["base"] is None or abs(ss["base"] - cq["base"][tq - 1]) < 1e-9) and ss["zone_ok"] == bool(sgq["S12"][tq])
+    and ss["disp_ok"] == bool(np.isfinite(cq["base"][tq - 1]) and bq["DISP25"].iloc[tq] <= cq["base"][tq - 1]))
+vq2 = pd.Series(np.full(len(wq), 30.0), index=wq.index.tz_localize("America/New_York"))
+ss2 = engine.mr3_short_status(wq_tz, vq2)
+chk("10-3 VIX ≥ 20이면 국면 · v5 = 국면 + 이격도 + 지지", ss2["regime"] and ss2["v5"] == (ss2["disp_ok"] and ss2["zone_ok"])
+    and abs(ss2["stop"] - (bq["Close"].iloc[tq] - 2 * bq["ATR14"].iloc[tq - 1])) < 1e-9)
+chk("10-4 자료가 없으면 판정 불가", not engine.mr3_short_status(wq.iloc[:20], vq)["available"] and engine.mr3_short_status(wq_tz, None)["vix"] is None)
+
 print(f"\n{'모두 통과' if not FAILS else str(len(FAILS)) + '개 실패: ' + ', '.join(FAILS)}")
 sys.exit(1 if FAILS else 0)

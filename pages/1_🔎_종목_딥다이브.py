@@ -406,7 +406,7 @@ def fetch_usdkrw():
     except Exception:
         return None
 
-stock_df_raw, _, _ = fetch_ohlcv_and_benchmark(ticker_input)
+stock_df_raw, _, vix_raw = fetch_ohlcv_and_benchmark(ticker_input)
 
 if len(stock_df_raw) < 30:
     st.error(f"'{raw_query}' (변환 티커: {ticker_input})의 일봉 데이터를 불러올 수 없습니다. 티커(예: 005930.KS, NVDA)를 확인해 주세요.")
@@ -693,10 +693,8 @@ def _cond_li(ok, label: str, text: str) -> str:
             + (f' — <span style="color:#475569;">{_esc(text)}</span>' if text else "") + "</li>")
 
 
-def render_strategy_section(t: str, fa: dict, fb: dict, fund: dict, lv: dict, gate: dict) -> None:
-    """딥다이브 개편 4단계: 진입 전략 카드 2장(가치 스윙·추세) + 지지·손절선 카드. 단기는 사전 등록 시험 미통과(SHORT_TERM.md)라
-    진입 여부를 알려 주지 않고 선과 위험 계산만 보여 준다(2026-11-17, engine/strategy.py support_stop_levels)."""
-    chart_heading("어느 전략으로 들어갈까 — 전략 카드")
+def compute_strategy_fit(t: str, fa: dict, fb: dict, fund: dict, gate: dict, short: dict) -> tuple:
+    """전략 카드 판정(engine.choose_strategy)과 세 방식 한눈에(engine.strategy_fit) — 위 결론 줄과 전략 섹션이 같은 값을 쓴다."""
     view = cached_peer_view(t)
     v_top, v_txt = _peer_top(view, "value")
     t_top, t_txt = _peer_top(view, "trend")
@@ -708,18 +706,58 @@ def render_strategy_section(t: str, fa: dict, fb: dict, fund: dict, lv: dict, ga
         frame_a_entry=(fa["opinion"]["entry"] if fa_ok else None),
         frame_a_label=(fa["opinion"]["label"] if fa_ok else (fa.get("reason") or "판정 없음")),
         trend_top=t_top, trend_rank_text=t_txt)
-    hc = "#16a34a" if res["chosen"] and not res["block"] else ("#dc2626" if (res["block"] or {}).get("kind") == "survival"
-                                                           else ("#d97706" if res["block"] else "#64748b"))
+    fit = engine.strategy_fit(res, short, value_reason=engine.strategy_reason_value(fb), trend_reason=engine.strategy_reason_trend(fa),
+                              fmt=lambda v: engine.fmt_price(v, is_krx_ticker))
+    return res, fit
+
+
+_FIT_COLOR = {"fit": "#16a34a", "no": "#dc2626", "caution": "#d97706", "unknown": "#94a3b8"}
+_FIT_TONE = {"go": "#16a34a", "block": "#d97706", "wait": "#64748b"}
+
+
+def _fit_lines_html(fit: dict) -> str:
+    rows = []
+    for ln in fit["lines"]:
+        c = _FIT_COLOR.get(ln["status"], "#94a3b8")
+        rows.append(f'<li><span style="color:{c};font-weight:800;">{engine.FIT_ICON.get(ln["status"], "—")} {_esc(ln["label"])}</span> '
+                    f'<span style="color:{c};font-weight:600;">{_esc(ln["verdict"])}</span> — {_esc(ln["reason"])}</li>')
+    return "".join(rows)
+
+
+def render_fit_banner(fit: dict) -> None:
+    """딥다이브 맨 위 결론 줄: 지금 이 종목에 맞는 방식(가치·추세·단타) 한 줄. 이유는 아래 '어느 전략으로 들어갈까'."""
+    c = _FIT_TONE.get(fit["tone"], "#64748b")
+    near = (f' · 가장 가까운 방식: {_esc(fit["closest"]["label"])}(남은 조건 {len(fit["closest"]["missing"])}개)' if fit.get("closest") else "")
+    html_md(f"""
+    <div class="term-card" style="border-left:4px solid {c};">
+        {utils.line_icon("compass", 16)} <b style="color:{c};">{_esc(fit["headline"])}</b>{near}
+        <span style="font-size:0.8rem;color:#64748b;"> · 이유는 아래 '어느 전략으로 들어갈까' · 세 방식 모두 수익 미검증</span>
+    </div>
+    """)
+
+
+def render_strategy_section(t: str, res: dict, fit: dict, lv: dict, gate: dict) -> None:
+    """딥다이브 개편 4단계: 세 방식 한눈에(결론 + 방식별 한 줄 이유) + 진입 전략 카드 2장(가치 스윙·추세) + 지지·손절선 카드.
+    단기는 사전 등록 시험 미통과(SHORT_TERM.md·MR2·MR3)라 '맞음'을 내지 않는다(engine/strategy.py strategy_fit)."""
+    chart_heading("어느 전략으로 들어갈까 — 세 방식 한눈에")
+    hc = _FIT_TONE.get(fit["tone"], "#64748b")
     g = gate or {}
     gate_txt = (f'국면 G{g.get("level")} {_esc(g.get("name"))} · 신규 진입 크기 ×{res["gate_mult"]:g}'
                 if res.get("gate_mult") is not None else "국면 데이터 없음")
     block = f'<div style="margin-top:4px;color:{hc};">{_esc(res["block"]["text"])}</div>' if res["block"] else ""
+    near = ""
+    if fit.get("closest"):
+        cl = fit["closest"]
+        near = (f'<div style="margin-top:6px;font-size:0.9rem;"><b>가장 가까운 방식: {_esc(cl["label"])}</b> — 조건 {cl["met_n"]}/{cl["total"]}개 충족, '
+                f'남은 조건: {_esc(" · ".join(cl["missing"]))}</div>')
     html_md(f"""
     <div class="term-card">
-        <div>{utils.line_icon("compass", 16)} <b style="color:{hc};">{_esc(res["headline"])}</b></div>
+        <div>{utils.line_icon("compass", 16)} <b style="color:{hc};">{_esc(fit["headline"])}</b></div>
         {block}
-        <div style="font-size:0.86rem;margin-top:4px;">{gate_txt} · 우선순위: {_esc(res["rule"])}</div>
-        <div style="font-size:0.82rem;color:#64748b;margin-top:4px;">두 전략 모두 미검증입니다. 이 카드는 미리 정한 규칙의 판정을 모아 보여 줄 뿐 수익을 예측하지 않습니다. {_esc(res["peer_note"])}.</div>
+        <ul class="term-list" style="margin-top:6px;">{_fit_lines_html(fit)}</ul>
+        {near}
+        <div style="font-size:0.86rem;margin-top:4px;">{gate_txt} · 우선순위: 가치 &gt; 추세(보유 기간이 긴 쪽), 조건 자료가 없으면 충족 아님 · 단타는 '맞음'을 내지 않음</div>
+        <div style="font-size:0.82rem;color:#64748b;margin-top:4px;">{_esc(fit["verification"])}. 단타: {_esc(fit["short_note"])}. {_esc(res["peer_note"])}.</div>
     </div>
     """)
     cols = st.columns(3)
@@ -880,13 +918,18 @@ pq_info = fund_out["price_qualification"]
 m_cls = macro_out["classification"]
 arch_info = synth_out["archetype"]
 
-# 7) 이 종목에 투자할 이유 — 피어 비교 (딥다이브 개편 2단계, AGENTS.md 4번). 탭 위에 둔다.
+# 7) 세 방식 판정(가치·추세·단타) — 맨 위 결론 줄과 전략 섹션이 같은 값을 쓴다 (2026-11-19, engine/strategy.py strategy_fit)
+gate_now = cached_market_gate("KR" if is_krx_ticker else "US")
+short_now = engine.mr3_short_status(stock_df_raw, vix_raw)
+strat_res, strat_fit = compute_strategy_fit(ticker_input, frame_a, frame_b, fund_out, gate_now, short_now)
+render_fit_banner(strat_fit)
+
+# 8) 이 종목에 투자할 이유 — 피어 비교 (딥다이브 개편 2단계, AGENTS.md 4번). 탭 위에 둔다.
 render_peer_section(ticker_input)
 
-# 8) 어느 전략으로 들어갈까 — 진입 전략 카드 2장 + 지지·손절선 카드 (딥다이브 개편 4단계, engine/strategy.py)
+# 9) 어느 전략으로 들어갈까 — 세 방식 한눈에 + 진입 전략 카드 2장 + 지지·손절선 카드 (딥다이브 개편 4단계, engine/strategy.py)
 level_eval = engine.support_stop_levels(stock_df_raw, ind=pb_ind)
-render_strategy_section(ticker_input, frame_a, frame_b, fund_out, level_eval,
-                        cached_market_gate("KR" if is_krx_ticker else "US"))
+render_strategy_section(ticker_input, strat_res, strat_fit, level_eval, gate_now)
 
 # =====================================================================
 # 종합 결론(첫 번째 탭) + 4대 트랙 상세 탭 구성[cite: 6]

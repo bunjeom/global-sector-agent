@@ -198,5 +198,43 @@ hp = subprocess.run([sys.executable, "run_backtest.py", "--help"], cwd=_root, ca
                     timeout=120, env={**_os.environ, "PYTHONIOENCODING": "utf-8"})
 chk("9 run_backtest.py --help 정상(--short-term 포함)", hp.returncode == 0 and "--short-term" in hp.stdout, (hp.returncode, hp.stderr[-300:]))
 
+# 10) 세 방식 한눈에(strategy_fit): 결론 · 방식별 한 줄 이유 · 가장 가까운 방식 · 단타는 '맞음' 없음
+cs = engine.choose_strategy
+fit = engine.strategy_fit
+r1 = cs(frame_b_stage="진입 가능", value_top=True, value_rank_text="2위 / 9종목 (상위 1/3)", frame_a_entry=False, trend_top=False)
+f1 = fit(r1, {"available": True, "vix": 15.2, "vix_date": "2026-11-18", "regime": False, "vix_min": 20.0},
+         value_reason="틀 B '진입 가능'(가격 자격 충족 · 자기 밴드 z -1.20)", trend_reason="틀 A: 이미 상승 추세라 진입 의견 없음(하락·횡보에서 전환할 때만 냄)")
+st = {ln["key"]: ln for ln in f1["lines"]}
+chk("10 가치 충족 → 결론 '지금 이 종목에 맞는 방식: 가치 스윙', 이유 = 틀 B + 가치 순위", f1["headline"] == "지금 이 종목에 맞는 방식: 가치 스윙"
+    and st["value"]["status"] == "fit" and "진입 가능" in st["value"]["reason"] and "2위 / 9종목" in st["value"]["reason"], f1)
+chk("10-2 추세 미충족 → 막은 조건 둘 다(틀 A 이유 + 순위)", st["trend"]["status"] == "no" and "이미 상승 추세" in st["trend"]["reason"]
+    and "추세 순위" in st["trend"]["reason"])
+chk("10-3 평상시(VIX < 20) 단타 = 부적합(MR2 근거), 가장 가까운 방식은 결론이 있으면 없음", st["short"]["status"] == "no"
+    and st["short"]["verdict"] == "부적합" and "VIX 15.2" in st["short"]["reason"] and "MR2" in st["short"]["reason"] and f1["closest"] is None)
+r2 = cs(frame_b_stage="대기", value_top=True, value_rank_text="1위 / 9종목 (상위 1/3)", frame_a_entry=False, trend_top=False)
+f2 = fit(r2, None, value_reason="틀 B '대기'(가격 자격 미충족)", trend_reason="x")
+chk("10-4 맞는 방식 없음 → 대기 + 가장 가까운 방식(충족 1/2: 가치) + 남은 조건", f2["headline"] == "지금은 맞는 방식 없음 — 대기"
+    and f2["closest"]["key"] == "value" and f2["closest"]["met_n"] == 1 and "지금 대기" in f2["closest"]["missing"][0], f2["closest"])
+chk("10-5 가치 순위는 충족이면 이유에서 빼고 막은 조건만", "1위" not in [ln for ln in f2["lines"] if ln["key"] == "value"][0]["reason"])
+f3 = fit(cs(frame_b_stage="대기", value_top=False, frame_a_entry=False, trend_top=False), None)
+chk("10-6 두 방식 모두 충족 0개 → 가장 가까운 방식 없음 · 단타 자료 없으면 판정 불가", f3["closest"] is None
+    and [ln for ln in f3["lines"] if ln["key"] == "short"][0]["status"] == "unknown")
+v5 = {"available": True, "vix": 27.3, "vix_date": "2026-11-18", "regime": True, "vix_min": 20.0, "disp": 82.0, "base": 85.0,
+      "disp_ok": True, "zl": 95.0, "zu": 98.0, "zone_ok": True, "v5": True, "stop": 90.0, "ma25": 110.0}
+s5 = [ln for ln in fit(r2, v5, fmt=lambda v: f"{v:.0f}")["lines"] if ln["key"] == "short"][0]
+chk("10-7 변동성 국면 + 이격도 ≤ 기준 + 지지 구간 지킴 → '주의 · 조합 충족(미검증)'(맞음 아님) + 손절·25일선·10일",
+    s5["status"] == "caution" and "조합 충족(미검증)" in s5["verdict"] and all(k in s5["reason"] for k in ("82.0 ≤ 기준 85.0", "95~98 지킴", "손절 90", "25일선 110", "10거래일")), s5)
+s6 = [ln for ln in fit(r2, {**v5, "disp": 90.0, "disp_ok": False, "v5": False}, fmt=lambda v: f"{v:.0f}")["lines"] if ln["key"] == "short"][0]
+chk("10-8 변동성 국면이지만 조합 미충족 → '주의 · 조합 미충족'", s6["status"] == "caution" and "미충족" in s6["verdict"] and "90.0 > 기준 85.0" in s6["reason"])
+fk = fit(cs(survival_kill=True, frame_b_stage="진입 가능", value_top=True), None)
+fg = fit(cs(gate_level=2, frame_a_entry=True, trend_top=True), None)
+chk("10-9 생존성 하드 킬 · 국면 크기 0은 결론 줄에 그대로", "신규 진입 없음" in fk["headline"] and "의견만" in fg["headline"] and fk["tone"] == fg["tone"] == "block")
+fb_ = {"stage": "손절 조건", "action": "보유 중이면 손절 · 신규 매수 금지 (킬 조건)", "checks": []}
+chk("10-10 틀 B 방어 단계는 이유에 행동 문구", "손절 조건" in engine.strategy_reason_value(fb_) and "킬 조건" in engine.strategy_reason_value(fb_))
+fa_dn = {"available": True, "state": DOWN, "diff": 1, "opinion": {"entry": False}}
+fa_ok = {"available": True, "state": SIDE, "diff": 3, "opinion": {"entry": True}}
+chk("10-11 틀 A 이유: 근거 부족이면 필요한 차이, 진입이면 근거 차이", "필요 +2" in engine.strategy_reason_trend(fa_dn)
+    and "상승 전환 의견" in engine.strategy_reason_trend(fa_ok) and "+3" in engine.strategy_reason_trend(fa_ok))
+
 print(f"\n결과: {'통과' if not FAILS else '실패 ' + str(FAILS)}")
 sys.exit(1 if FAILS else 0)

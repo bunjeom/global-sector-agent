@@ -244,13 +244,18 @@ else:
     _peer_ok = any("피어 비교: 피어 기록 없음" in i.value for i in at.info)
 print("피어 비교:", _peer_ok, "| 카드", bool(_pc), "| 표", bool(_pdf), "| 앞서려면", bool(_gc))
 _pb_ok = _pb_ok and _peer_ok
-# ---- 전략 카드(딥다이브 4단계): 결론 줄 + 가치 스윙·추세 카드(역할·검증 상태) + 지지·손절선 카드(진입 신호 아님)
-_sh = [m.value for m in at.markdown if "두 전략 모두 미검증" in m.value]
+# ---- 전략 카드(딥다이브 4단계): 세 방식 한눈에(결론 + 가치·추세·단타 한 줄 이유) + 맨 위 결론 줄 + 가치 스윙·추세 카드 + 지지·손절선 카드
+_sh = [m.value for m in at.markdown if "가치·추세 미검증(앞으로의 기록으로 채점 중)" in m.value and "<ul" in m.value]
+_bn = [m.value for m in at.markdown if "이유는 아래 '어느 전략으로 들어갈까'" in m.value]
+_hd = lambda v: (_r2.findall(r"<b style=\"color:#[0-9a-f]+;\">([^<]*)</b>", v) or [None])[0]
+_fit_ok = (bool(_sh) and bool(_bn) and _hd(_sh[0]) == _hd(_bn[0]) and all(f"{k}</span>" in _sh[0] for k in ("가치 스윙", "추세", "단타"))
+           and any(w in _sh[0] for w in ("부적합", "주의 · 조합", "판정 불가")) and "VIX" in _sh[0])
+print("세 방식 한눈에:", _fit_ok, "| 결론", _hd(_sh[0]) if _sh else None, "| 맨 위 줄", bool(_bn))
 _sc = {k: [m.value for m in at.markdown if f"<b>{k}</b>" in m.value and "검증 상태:" in m.value and "term-badge-inv" in m.value]
        for k in ("가치 스윙", "추세")}
 _lvc = [m.value for m in at.markdown if "<b>단기 — 지지·손절선</b>" in m.value]
 _roles = [_r2.findall(r"term-badge-inv\" style=\"background:#[0-9a-f]+;border-color:#[0-9a-f]+;\">([^<]*)", v[0])[:1] for v in _sc.values() if v]
-_st_ok = (bool(_sh) and all(_sc.values()) and ("국면 G" in _sh[0]) and bool(_lvc) and "진입 신호 아님" in _lvc[0]
+_st_ok = (_fit_ok and all(_sc.values()) and ("국면 G" in _sh[0]) and bool(_lvc) and "진입 신호 아님" in _lvc[0]
           and all(k in _lvc[0] for k in ("<b>지지선</b>", "<b>손절선</b>", "손절선까지 거리", "매수 비중 한도", "위험 계산:")))
 if PEERMODE != "fake":   # 피어 기록이 없으면 가치·추세 카드의 순위 조건은 '확인 불가'
     _st_ok = _st_ok and "피어 순위 없음" in (_sc["가치 스윙"][0] if _sc["가치 스윙"] else "")

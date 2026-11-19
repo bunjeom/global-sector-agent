@@ -19,7 +19,7 @@ from .lecture_backtest import _lec_pct, lec_clean, lec_market_of
 from .lecture_family import _lec_fast_t, lec_cluster_t, lec_month_code, lec_pbo
 from .lecture_signals import lec_base, lec_swings
 from .mr_backtest import _mr_bounds, mr_eligibility
-from .mr2_backtest import _mr2_shift, mr2_signal_arrays
+from .mr2_backtest import _mr2_shift, mr2_signal_arrays, mr2_support_zone
 
 MR3_CONFIG: Dict[str, Any] = {
     "VERSION": "mr3-1",
@@ -743,3 +743,52 @@ def mr3_final_log_lines(r: Dict[str, Any], generated_at: str) -> List[str]:
     return [f"| {generated_at} | `mr3-final-{k}` | {MR3_LABELS[k]} — 최종(새 151종목 2001~, z ≥ 3) | {x['stats'].get('n', 0):,} | "
             f"{_mr3_pp(x['stats'].get('diff'))} | {_mr3_t(x['stats'].get('t'))} | {'통과' if x['judge']['passed'] else '미통과'} |"
             for k, x in r["rules"].items()]
+
+
+# ---------------------------------------------------------------------
+# 딥다이브 표시용(2026-11-19 사용자 결정): 지금 이 종목이 V5(변동성 국면 + 이격도 ≤ 기준 + 지지 구간 지킴)에 해당하는가 — 사실만, 미검증
+# ---------------------------------------------------------------------
+def mr3_short_status(df: Optional[pd.DataFrame], vix: Optional[pd.Series]) -> Dict[str, Any]:
+    """마지막 봉 t 기준: 앞선 미국 거래일 VIX, 이격도_t ≤ 전날 BNF 기준, 전날 종가 아래 가장 가까운 살아 있는 지지 구간에 닿고 하단 위 마감.
+    대상 조건(거래대금·변동성 상위 — 시험 종목 묶음 안 순위)은 종목 하나로는 잴 수 없어 보지 않는다."""
+    cf = MR3_CONFIG
+    out: Dict[str, Any] = {"available": False, "vix_min": cf["VIX_MIN"], "rule": MR3_LABELS["V5-C"]}
+    d = lec_clean(df)
+    if d is not None:
+        d = d[d["Close"].notna()]
+    if d is None or len(d) < 60:
+        out["reason"] = "가격 이력 부족"
+        return out
+    b = lec_base(d)
+    sw = lec_swings(b)
+    n = len(b)
+    t = n - 1
+    v = None if vix is None else pd.to_numeric(pd.Series(vix), errors="coerce").dropna()
+    if v is not None and len(v):
+        ix = pd.DatetimeIndex(v.index)
+        v.index = (ix.tz_localize(None) if ix.tz is not None else ix).normalize()
+        v = v[~v.index.duplicated(keep="last")]
+    vv = mr3_vix_prev(b.index[t:t + 1], v)[0] if v is not None and len(v) else np.nan
+    vdate = None
+    if np.isfinite(vv):
+        k = int(np.searchsorted(v.index.values, b.index[t:t + 1].values.astype("datetime64[ns]"), "left")[0]) - 1
+        vdate = str(v.index[k].date()) if k >= 0 else None
+    need = np.zeros(n, dtype=bool)
+    need[t] = True
+    cache: Dict[str, Any] = {}
+    sig, _ = mr2_signal_arrays(b, sw, {"S10", "S12"}, need=need, cache=cache)
+    zl, zu = mr2_support_zone(b, sw, need, cache.get("lines"))
+    base = cache["base"][t - 1] if t >= 1 else np.nan
+    disp = float(b["DISP25"].iloc[t])
+    atr_prev = float(b["ATR14"].iloc[t - 1]) if t >= 1 else np.nan
+    close = float(b["Close"].iloc[t])
+    disp_ok = bool(np.isfinite(base) and np.isfinite(disp) and disp <= base)
+    zone_ok = bool(sig["S12"][t])
+    regime = bool(np.isfinite(vv) and vv >= cf["VIX_MIN"])
+    out.update({"available": True, "as_of": str(b.index[t].date()), "vix": float(vv) if np.isfinite(vv) else None, "vix_date": vdate,
+                "regime": regime, "disp": disp, "base": float(base) if np.isfinite(base) else None, "disp_ok": disp_ok,
+                "zl": float(zl[t]) if np.isfinite(zl[t]) else None, "zu": float(zu[t]) if np.isfinite(zu[t]) else None,
+                "zone_ok": zone_ok, "v5": bool(regime and disp_ok and zone_ok), "close": close,
+                "stop": close - cf["STOP_ATR"] * atr_prev if np.isfinite(atr_prev) else None,
+                "ma25": float(b["SMA25"].iloc[t])})
+    return out

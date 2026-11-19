@@ -275,3 +275,109 @@ def choose_strategy(survival_kill: Optional[bool] = None, gate_level: Optional[i
             "gate_mult": gate_mult, "headline": headline, "cards": cards,
             "rule": "가치 > 추세(보유 기간이 긴 쪽 우선), 조건 자료가 없으면 충족 아님. 단기는 진입 신호 없이 지지·손절선만 표시",
             "peer_note": STRATEGY_VERIFICATION["peer_rank"]}
+
+
+# ---------------------------------------------------------------------
+# 세 방식 한눈에 (2026-11-19 사용자 요청): 지금 이 종목에 가치·추세·단타 중 무엇이 맞는지 + 방식별 한 줄 이유
+# 판정은 choose_strategy와 같은 규칙(새 기준 없음). 단타는 검증 통과 규칙이 없어 '맞음'이 나오지 않는다:
+# VIX < 20 부적합(MR2), VIX ≥ 20 주의 — 사용자 결정으로 MR3에서 가장 나았던 '이격도 ≤ 기준 + 지지 구간' 조합(V5)의 충족 여부만 사실로.
+# ---------------------------------------------------------------------
+STRATEGY_VERIFICATION.update({
+    "short_normal": "검증된 단타 신호 없음(MR2: 신호 즉시 진입 26개 규칙 모두 미통과)",
+    "short_vix": ("변동성 국면(VIX ≥ 20)의 이격도 ≤ 기준 + 지지 구간 조합은 과거 같은 종목 아무 날보다 거래당 +1.44%p(t 1.8)로 "
+                  "가장 나았지만 통과 기준(t ≥ 2) 미달 — 미검증(MR3.md). 지지 구간만으로는 효과 없음"),
+})
+FIT_ICON = {"fit": "✅", "no": "❌", "caution": "⚠️", "unknown": "—"}
+
+
+def strategy_reason_value(fb: Optional[Dict[str, Any]]) -> str:
+    """틀 B 판정을 한 줄로: 단계 + 가격 자격(자기 밴드 위치)."""
+    if not fb or not fb.get("stage"):
+        return "틀 B 판정 없음"
+    price = next((x["text"] for x in fb.get("checks", []) if x.get("key") == "price"), None)
+    if fb["stage"] in ("손절 조건", "매도 조건", "경고", "재평가 보유"):
+        return f"틀 B '{fb['stage']}'({fb.get('action', '')})"
+    return f"틀 B '{fb['stage']}'" + (f"(가격 자격 {price})" if price else "")
+
+
+def strategy_reason_trend(fa: Optional[Dict[str, Any]]) -> str:
+    """틀 A 판정을 한 줄로: 진입 의견이면 근거 차이, 아니면 막은 조건(이미 상승 · 근거 부족 · 50일선)."""
+    if not fa or not fa.get("available"):
+        return "틀 A " + ((fa or {}).get("reason") or "판정 없음")
+    c = PLAYBOOK_CONFIG
+    st_, diff = fa.get("state"), fa.get("diff", 0)
+    if (fa.get("opinion") or {}).get("entry"):
+        return f"틀 A: {st_} 상태에서 상승 전환 의견(근거 차이 {diff:+d})"
+    if st_ == STATE_UP:
+        return "틀 A: 이미 상승 추세라 진입 의견 없음(하락·횡보에서 전환할 때만 냄)"
+    if diff < c["LEAN_DIFF"]:
+        return f"틀 A: {st_} 상태, 전환 근거 차이 {diff:+d}(필요 +{c['LEAN_DIFF']} 이상)"
+    return f"틀 A: {st_} 상태, 근거 차이 {diff:+d}이지만 50일선이 아직 오르지 않음"
+
+
+def _fit_short_line(short: Optional[Dict[str, Any]], fmt) -> Dict[str, Any]:
+    base = {"key": "short", "label": "단타"}
+    s = short or {}
+    if not s.get("available"):
+        return {**base, "status": "unknown", "verdict": "판정 불가", "reason": s.get("reason") or "가격 자료 부족"}
+    if s.get("vix") is None:
+        return {**base, "status": "unknown", "verdict": "판정 불가", "reason": "VIX 자료 없음"}
+    vtxt = f"VIX {s['vix']:.1f}" + (f" · {s['vix_date']} 종가" if s.get("vix_date") else "")
+    vmin = f"{s.get('vix_min', 20):.0f}"
+    if not s.get("regime"):
+        return {**base, "status": "no", "verdict": "부적합", "reason": f"평상시({vtxt}, 기준 {vmin} 미만) · {STRATEGY_VERIFICATION['short_normal']}"}
+    if s.get("base") is None:
+        disp = "이격도 기준 계산 불가(확정 스윙 저점 부족)"
+    elif s.get("disp_ok"):
+        disp = f"이격도 {s['disp']:.1f} ≤ 기준 {s['base']:.1f}"
+    else:
+        disp = f"이격도 {s['disp']:.1f} > 기준 {s['base']:.1f}"
+    zone = (f"지지 구간 {fmt(s['zl'])}~{fmt(s['zu'])} " + ("지킴" if s.get("zone_ok") else "밖")) if s.get("zu") is not None else "아래 지지 구간 없음"
+    if s.get("v5"):
+        plan = f" · 하려면 손절 {fmt(s['stop'])} · 25일선 {fmt(s['ma25'])} 회복 시 매도 · 최대 10거래일 · 소액"
+        return {**base, "status": "caution", "verdict": "주의 · 조합 충족(미검증)", "reason": f"변동성 국면({vtxt}, 기준 {vmin} 이상) · {disp} · {zone}{plan}"}
+    return {**base, "status": "caution", "verdict": "주의 · 조합 미충족", "reason": f"변동성 국면({vtxt}, 기준 {vmin} 이상) · {disp} · {zone} · 조합 미충족"}
+
+
+def strategy_fit(choice: Dict[str, Any], short: Optional[Dict[str, Any]] = None, value_reason: Optional[str] = None,
+                 trend_reason: Optional[str] = None, fmt=None) -> Dict[str, Any]:
+    """choose_strategy 결과 + 단타 상태 → 결론 한 줄, 방식별 한 줄(✅·❌·⚠️·—), 맞는 방식이 없을 때 가장 가까운 방식과 남은 조건.
+    가장 가까운 방식 = 충족 조건이 더 많은 쪽(같으면 가치 > 추세), 하나도 충족하지 않으면 없음."""
+    fmt = fmt or (lambda v: f"{float(v):,.2f}")
+    reasons = {"value": value_reason, "trend": trend_reason}
+    rank_word = {"value": "가치 순위", "trend": "추세 순위"}
+    lines = []
+    for cd in choice["cards"]:
+        rk = next((x for x in cd["conditions"] if "순위" in x["label"]), None)
+        rank_txt = f"{rank_word[cd['key']]} {rk['text']}" if rk else ""
+        frame_ok = all(x["ok"] is True for x in cd["conditions"] if x is not rk)
+        if cd["met"]:
+            status, verdict, parts = "fit", "맞음", [reasons[cd["key"]], rank_txt]
+        else:
+            status = "unknown" if all(x["ok"] is None for x in cd["conditions"]) else "no"
+            verdict = "판정 불가" if status == "unknown" else "안 맞음"
+            parts = ([] if frame_ok else [reasons[cd["key"]]]) + ([] if (rk and rk["ok"] is True) else [rank_txt])
+        lines.append({"key": cd["key"], "label": cd["label"], "status": status, "verdict": verdict,
+                      "reason": " · ".join(p for p in parts if p)})
+    lines.append(_fit_short_line(short, fmt))
+    labels = {cd["key"]: cd["label"] for cd in choice["cards"]}
+    chosen, block = choice.get("chosen"), choice.get("block")
+    if chosen is None:
+        headline, tone = "지금은 맞는 방식 없음 — 대기", "wait"
+    elif block and block.get("kind") == "survival":
+        headline, tone = f"{labels[chosen]} 조건은 맞지만 재무 생존성 하드 킬 — 신규 진입 없음", "block"
+    elif block:
+        headline, tone = f"지금 맞는 방식: {labels[chosen]} (의견만 — 국면 진입 크기 0)", "block"
+    else:
+        extra = [labels[k] for k in choice.get("met", []) if k != chosen]
+        headline, tone = f"지금 이 종목에 맞는 방식: {labels[chosen]}" + (f" · {', '.join(extra)}도 충족" if extra else ""), "go"
+    closest = None
+    if chosen is None:
+        cand = [(sum(x["ok"] is True for x in cd["conditions"]), -i, cd) for i, cd in enumerate(choice["cards"])]
+        n_ok, _, cd = max(cand, key=lambda z: (z[0], z[1]))
+        if n_ok > 0:
+            closest = {"key": cd["key"], "label": cd["label"], "met_n": n_ok, "total": len(cd["conditions"]),
+                       "missing": [f"{x['label']}(지금 {x['text']})" for x in cd["conditions"] if x["ok"] is not True]}
+    ver = (f"가치·추세 미검증(앞으로의 기록으로 채점 중) · 단타 검증 미통과 — 미리 정한 규칙으로 본 지금 상태일 뿐 수익을 예측하지 않음")
+    return {"headline": headline, "tone": tone, "lines": lines, "closest": closest, "verification": ver,
+            "short_note": STRATEGY_VERIFICATION["short_vix"] if (short or {}).get("regime") else STRATEGY_VERIFICATION["short_normal"]}
