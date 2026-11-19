@@ -31,6 +31,9 @@
     .venv\\Scripts\\python run_backtest.py --mr2   H-MR2 단기 신호 찾기(26개 규칙, +5%/−5%/3일, 기존 종목 2001~2019 → 후보만 2020~ 검증) — MR2_PREREG.md
     .venv\\Scripts\\python run_backtest.py --mr2-final   H-MR2 최종(검증 통과 규칙만, 새 151종목). 처음엔 받기 + 한국 종목 이름 출력,
                                                      이름을 확인한 뒤 --mr2-final --names-ok
+    .venv\\Scripts\\python run_backtest.py --mr3   H-MR3 변동성 국면(VIX ≥ 20) 이격도·지지 반등 찾기 → 후보만 미국 1990~2000 + 2020~ 검증 — MR3_PREREG.md
+                                                     (VIX는 처음 한 번 받음, 1990년대 미국 자료는 후보가 있을 때만 받음 10분 안팎)
+    .venv\\Scripts\\python run_backtest.py --mr3-final   H-MR3 최종(검증 통과 규칙만, 새 151종목) — 확인 뒤 --mr3-final --names-ok
 
 결과 (data/backtest/):
     REPORT.md          사람이 읽는 보고서 (커밋해 두면 다른 AI도 결과를 읽을 수 있음)
@@ -48,6 +51,7 @@
     EXPLORE_<이름>.md  가설 탐색 결과(증거 아님) + EXPLORE_LOG.md(볼 때마다 한 줄)
     MR1.md · mr1.json  H-MR1 단기 반등 단타 탐색(사전 등록 MR1_PREREG.md)
     MR2.md · mr2.json  H-MR2 단기 신호 찾기·검증(사전 등록 MR2_PREREG.md), 최종은 MR2_FINAL.md · mr2_final.json
+    MR3.md · mr3.json  H-MR3 변동성 국면 이격도·지지 반등(사전 등록 MR3_PREREG.md), 최종은 MR3_FINAL.md · mr3_final.json
     LECTURE_L1~L5.md  강의 조건 시험(사전 등록 LECTURE_PREREG.md) + lecture_l*.json, 캐시 lecture_cache/
     summary.json       숫자 요약 + 주간 누적 수익 곡선 (이후 화면 표시용)
     *.csv              날짜별 게이트·누적 수익·거래 목록 (용량이 커서 .gitignore로 커밋 제외)
@@ -727,6 +731,154 @@ def run_mr2_final_only(engine, args, t0):
     print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'MR2_FINAL.md')}")
 
 
+def _mr3_vix(engine):
+    """VIX 종가(1990~). lecture_cache/prices/^VIX.csv에 저장, 7일보다 오래됐으면 다시 받는다."""
+    mc = engine.MR3_CONFIG
+    sym = mc["VIX_SYMBOL"]
+    cdir = engine.lec_cache_path("prices")
+    got = engine.load_price_cache([sym], cache_dir=cdir)
+    fresh = sym in got and len(got[sym]) and pd.Timestamp(got[sym].index.max()) >= pd.Timestamp(datetime.now()) - pd.Timedelta(days=7)
+    if not fresh:
+        print(f"   VIX 받기 ({mc['VIX_START']}~)", flush=True)
+        dl, _ = download([sym], mc["VIX_START"])
+        if sym in dl:
+            engine.save_price_cache(dl, cache_dir=cdir)
+            got = dl
+    if sym not in got:
+        return None
+    sr = pd.to_numeric(got[sym]["Close"], errors="coerce").dropna()
+    idx = pd.DatetimeIndex(sr.index)
+    sr.index = idx.tz_localize(None) if idx.tz is not None else idx
+    print(f"   VIX: {sr.index[0].date()} ~ {sr.index[-1].date()} ({len(sr):,}일)")
+    return sr
+
+
+def _mr3_old_loader(engine):
+    """1990년대 검증 재료(미국 종목, 1989~2001-06). 찾기 후보가 있을 때만 run_mr3이 부른다. lecture_cache/prices_1989/에 저장."""
+    def load():
+        mc = engine.MR3_CONFIG
+        cdir = engine.lec_cache_path("prices_1989")
+        uni = [s for s in engine.EXPLORE_CONFIG["UNIVERSE"] if engine.lec_market_of(s) == "US"]
+        pm = engine.load_price_cache(uni, cache_dir=cdir)
+        need = [s for s in uni if s not in pm]
+        if need:
+            print(f"   1990년대 자료 받기: 미국 {len(need)}개 ({mc['OLD_DATA_START']}~{mc['OLD_DATA_END']}, 저장 {cdir}) — 10분 안팎", flush=True)
+            got, failed = download(need, mc["OLD_DATA_START"])
+            end = pd.Timestamp(mc["OLD_DATA_END"])
+            cut = {}
+            for k, v in got.items():
+                ix = pd.DatetimeIndex(v.index)
+                ix = ix.tz_localize(None) if ix.tz is not None else ix
+                if (ix <= end).any():
+                    cut[k] = v[ix <= end]
+            got = cut
+            engine.save_price_cache(got, cache_dir=cdir)
+            pm.update(got)
+            if failed:
+                print(f"   받지 못함: {len(failed)}개")
+        prep, dropped = engine.mr3_prepare_old(pm)
+        print(f"   1990년대 재료: 미국 {len(prep)}개 (1990~2000 자료가 없거나 짧은 {len(dropped)}개 제외)", flush=True)
+        return prep
+    return load
+
+
+def run_mr3_only(engine, args, t0):
+    """H-MR3: 545종목 2001~2019 변동성 국면 찾기 → 후보만 미국 1990~2000 + 2020~ 검증. 강의 시험 자료 + VIX."""
+    mc = engine.MR3_CONFIG
+    print(f"[1/3] 재료 준비 (설정 {mc['VERSION']}, 사전 등록 {mc['REGISTERED']})", flush=True)
+    vix = _mr3_vix(engine)
+    if vix is None or not len(vix):
+        print("   VIX를 받지 못했습니다. 잠시 뒤 다시 실행해 주세요.")
+        return
+    got = _lecture_load(engine, need_rs=False)
+    if got is None:
+        return
+    prep, _ = got
+    last = {}
+
+    def prog(stage, i, n):
+        if i * 10 // n != last.get(stage):
+            last[stage] = i * 10 // n
+            print(f"   {stage} {i}/{n}", flush=True)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    print(f"[2/3] 규칙 {len(engine.MR3_RULES)}개 찾기 + 섞기 {mc['RC_REPS']}회 (종목 {len(prep)}개)", flush=True)
+    res = engine.run_mr3(prep, vix, old_loader=_mr3_old_loader(engine), progress=prog)
+    print(f"[3/3] 저장 ({res.get('verify_status')})", flush=True)
+    rep = engine.render_mr3_report(res, generated_at=now)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(os.path.join(OUT_DIR, "MR3.md"), "w", encoding="utf-8") as f:
+        f.write(rep)
+    with open(os.path.join(OUT_DIR, "mr3.json"), "w", encoding="utf-8") as f:
+        json.dump({"generated_at": now, **res}, f, ensure_ascii=False, indent=1, default=str)
+    engine.lec_append_lines(engine.mr3_log_lines(res, now), OUT_DIR)
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'MR3.md')}")
+
+
+def run_mr3_final_only(engine, args, t0):
+    """H-MR3 최종: mr3.json의 검증 통과 규칙만, 새 151종목에서 한 번. 검증 통과가 없으면 새 종목을 받지도 열지도 않는다."""
+    mc, lc = engine.MR3_CONFIG, engine.LECTURE_CONFIG
+    jp = os.path.join(OUT_DIR, "mr3.json")
+    if not os.path.exists(jp):
+        print("먼저 찾기·검증을 실행해 주세요: python run_backtest.py --mr3")
+        return
+    with open(jp, encoding="utf-8") as f:
+        prev = json.load(f)
+    if prev.get("config_version") != mc["VERSION"]:
+        print(f"mr3.json 설정({prev.get('config_version')})이 지금 설정({mc['VERSION']})과 다릅니다. --mr3를 다시 실행해 주세요.")
+        return
+    rules = [r for r in prev.get("verified", []) if r in engine.MR3_RULES]
+    if not rules:
+        print("검증을 통과한 규칙이 없어 최종 단계를 열지 않습니다(새 151종목은 다음 질문을 위해 아껴 둡니다).")
+        return
+    vix = _mr3_vix(engine)
+    if vix is None:
+        print("   VIX를 받지 못했습니다.")
+        return
+    cdir = engine.lec_cache_path("final_prices")
+    uni = list(lc["FINAL_UNIVERSE"])
+    pm = engine.load_price_cache(uni, cache_dir=cdir)
+    need = [s for s in uni if s not in pm]
+    if need:
+        print(f"[받기] 새 종목 {len(need)}개 (저장 위치 {cdir})", flush=True)
+        got, failed = download(need, lc["DATA_START"])
+        engine.save_price_cache(got, cache_dir=cdir)
+        pm.update(got)
+        if failed:
+            print(f"   받지 못함(빼고 채우지 않음): {', '.join(failed)}")
+    if not args.names_ok:
+        import yfinance as yf
+        print("\n한국 종목 이름 확인 — 코드가 생각한 회사인지 확인한 뒤 --mr3-final --names-ok 로 다시 실행해 주세요:")
+        for s in [x for x in uni if engine.lec_market_of(x) == "KR"]:
+            try:
+                inf = yf.Ticker(s).info or {}
+                nm = inf.get("longName") or inf.get("shortName") or "(이름 못 받음)"
+            except Exception:
+                nm = "(이름 못 받음)"
+            print(f"   {s}  {nm}  {'(가격 없음)' if s not in pm else ''}")
+        return
+    print(f"[1/2] 재료 준비 (설정 {mc['VERSION']}) · 규칙: {', '.join(rules)}", flush=True)
+    prep, dropped = engine.mr2_prepare_plain(pm)
+    dropped += [s for s in uni if s not in pm]
+    last = {}
+
+    def prog(stage, i, n):
+        if i * 10 // n != last.get(stage):
+            last[stage] = i * 10 // n
+            print(f"   {stage} {i}/{n}", flush=True)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    print(f"[2/2] 최종 (종목 {len(prep)}개)", flush=True)
+    res = engine.run_mr3_final(prep, vix, rules, progress=prog)
+    rep = engine.render_mr3_final_report(res, sorted(set(dropped)), generated_at=now)
+    with open(os.path.join(OUT_DIR, "MR3_FINAL.md"), "w", encoding="utf-8") as f:
+        f.write(rep)
+    with open(os.path.join(OUT_DIR, "mr3_final.json"), "w", encoding="utf-8") as f:
+        json.dump({"generated_at": now, "dropped": sorted(set(dropped)), **res}, f, ensure_ascii=False, indent=1, default=str)
+    engine.lec_append_lines(engine.mr3_final_log_lines(res, now), OUT_DIR)
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'MR3_FINAL.md')}")
+
+
 def download_splits(symbols):
     """야후 액면분할 기록 (틀 B: 분할 전 보고서의 EPS를 지금 주식 단위로 맞추는 데 씀)."""
     import yfinance as yf
@@ -887,7 +1039,9 @@ def main():
     ap.add_argument("--etf-ok", action="store_true", help="--lecture L1·L2: 한국 섹터 ETF 이름을 확인했음")
     ap.add_argument("--mr2", action="store_true", help="H-MR2 단기 신호 찾기(26개 규칙, 기존 종목 2001~2019 → 후보만 2020~ 검증)")
     ap.add_argument("--mr2-final", action="store_true", help="H-MR2 최종(검증 통과 규칙만, 새 151종목)")
-    ap.add_argument("--names-ok", action="store_true", help="--mr2-final: 한국 종목 이름을 확인했음")
+    ap.add_argument("--names-ok", action="store_true", help="--mr2-final·--mr3-final: 한국 종목 이름을 확인했음")
+    ap.add_argument("--mr3", action="store_true", help="H-MR3 변동성 국면(VIX ≥ 20) 이격도·지지 반등 찾기 → 후보만 검증")
+    ap.add_argument("--mr3-final", action="store_true", help="H-MR3 최종(검증 통과 규칙만, 새 151종목)")
     args = ap.parse_args()
     t0 = time.time()
     if args.variants:
@@ -937,6 +1091,12 @@ def main():
         return
     if args.mr2_final:
         run_mr2_final_only(engine, args, t0)
+        return
+    if args.mr3:
+        run_mr3_only(engine, args, t0)
+        return
+    if args.mr3_final:
+        run_mr3_final_only(engine, args, t0)
         return
 
     print(f"[1/4] 지수 데이터 받기 (시작 {args.start})", flush=True)
