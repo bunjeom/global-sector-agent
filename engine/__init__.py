@@ -41,6 +41,7 @@
     lecture_levels     강의 조건 시험 2단계 — L4 매도·약화(20일 낙폭)·L5 레벨(가짜 선 비교) (run_backtest.py --lecture L4 / L5)
     mr_backtest        H-MR1 기술적 단기 반등 단타(평균 회귀) 시험 — 규칙 A·B·C (run_backtest.py --mr1)
     tr_backtest        H-TR 추세 투자 흐름 검증 — 시장·RS·120일선 → 돌파 확정/SR Flip → 실적 쇼크·손절폭 → 박스 목표·추세선·붕괴 청산 (run_backtest.py --tr-count / --tr / --tr-final)
+    cs_backtest        H-CS1 횡단면 모멘텀 — ① Ken French 대형주 모멘텀 − 시장, ② 새 151종목 상위 20% − 같은 비중 (run_backtest.py --cs-count / --cs)
     journal            매매 기록(내 실제 매매) — PC에만 저장(data/journal/, git 제외), 비용 포함 손익·지수 대비·방식별 채점·손절 준수·해외주식 세금 추정
 
 테스트에서 `engine.이름 = 가짜함수`로 바꿔 끼우면, 그 이름을 쓰는 모든 하위 모듈에도
@@ -60,13 +61,13 @@ from . import common, technical_signals, backtest, technical, earnings, macro, f
 from . import synthesis, home, gate, rrg, radar, rule_backtest, t_backtest, snapshot, sec_facts, frame_backtest, playbook, ledger, peers
 from . import strategy, short_backtest, level_backtest, reclaim_backtest, explore, touch_explore, momentum_explore, peer_eval
 from . import lecture_signals, lecture_backtest, lecture_events, lecture_family, lecture_levels, mr_backtest, mr2_backtest, mr3_backtest
-from . import tr_backtest, journal
+from . import tr_backtest, cs_backtest, journal
 
 _SUBMODULES = (common, technical_signals, backtest, technical, earnings, macro, fundamental,
                synthesis, home, gate, rrg, radar, rule_backtest, t_backtest, snapshot, sec_facts, frame_backtest, playbook, ledger, peers,
                strategy, short_backtest, level_backtest, reclaim_backtest, explore, touch_explore, momentum_explore, peer_eval,
                lecture_signals, lecture_backtest, lecture_events, lecture_family, lecture_levels, mr_backtest, mr2_backtest, mr3_backtest,
-               tr_backtest, journal)
+               tr_backtest, cs_backtest, journal)
 _SUBMODULE_NAMES = {m.__name__.rsplit(".", 1)[1] for m in _SUBMODULES}
 
 # 하위 모듈의 모든 이름(밑줄로 시작하는 내부 함수 포함)을 engine.이름으로 내보낸다.

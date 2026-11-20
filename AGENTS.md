@@ -67,13 +67,14 @@
 | `mr2_backtest.py` | H-MR2 단기 신호 찾기(신호 즉시 진입 · +5%/−5%/3거래일): `MR2_CONFIG`·`MR2_SIGNALS`·`MR2_RULES`(26개), 청산 `mr2_bracket_all`·`mr2_after`, 신호 `mr2_signal_arrays`·`mr2_support_zone`, 종목 하나 `mr2_ticker`, 단계 `mr2_stage`, 통계·판정 `mr2_stats`·`mr2_judge_explore`·`mr2_judge_simple`, 통과선 `mr2_reality`, `run_mr2`·`run_mr2_final`, 보고서 (run_backtest.py --mr2 / --mr2-final) |
 | `mr3_backtest.py` | H-MR3 변동성 국면(VIX ≥ 20) 이격도·지지 반등: `MR3_CONFIG`·`MR3_RULES`(V1~V5), VIX 날짜 맞춤 `mr3_vix_prev`(앞선 미국 거래일), 청산 `mr3_exit`(2 ATR 손절·25일선 회복·10일), 종목 하나 `mr3_ticker`, 단계 `mr3_stage`(보유 기간 맞춘 비교 기준), `mr3_stats`·`mr3_year_checks`·`mr3_mde`, 판정 `mr3_judge_explore`·`mr3_judge_verify`·`mr3_judge_final`, 통과선 `mr3_reality`, 시점 효과 `mr3_timing`, 1990년대 재료 `mr3_prepare_old`, `run_mr3`·`run_mr3_final`, 보고서 (run_backtest.py --mr3 / --mr3-final), 딥다이브 단타 표시 `mr3_short_status`(마지막 봉의 V5 조건) |
 | `tr_backtest.py` | H-TR 추세 투자 흐름(TR_CONFIG·TR_RULES A/B, 사전 등록 TR_PREREG.md): 박스·물량 소화 `tr_box`, 실적 쇼크 `tr_earn_status`, 종목 하나 신호 표 `tr_context`(수익 안 봄), 깔때기 `tr_funnel`, 청산 `tr_exit`, 보유 기간 맞춘 기준 `tr_base`, 거래 `tr_simulate`, 통계·판정 `tr_stats`·`tr_judge_explore`·`tr_judge_verify`·`tr_judge_final`, 실행 전 `run_tr_count`(T1 결정 `tr_absorb_decision`·최소 차이 `tr_noise`), `run_tr`·`run_tr_final`, 보고서 (run_backtest.py --tr-count / --tr / --tr-final) |
+| `cs_backtest.py` | H-CS1 횡단면 모멘텀(CS_CONFIG, 사전 등록 CS1_PREREG.md): French 자료 `cs_zip_text`·`cs_parse_french`·`cs_french_frame`, ① `run_cs_part1`·`cs_judge_part1`, 종목 달마다 `cs_stock_months`, 포트폴리오·회전율 `cs_portfolio`·`cs_combined`, ② `run_cs_part2`·`cs_judge_part2`, 통계 `cs_stats`(Newey-West 시차 3)·`cs_mde`, 실행 전 `run_cs_count`(`cs_seen_estimates`·`cs_part1_noise`·`cs_eligible_counts`), `run_cs`, 보고서 (run_backtest.py --cs-count / --cs) |
 | `journal.py` | 매매 기록(JOURNAL_CONFIG·JOURNAL_TRADE_COLUMNS·JOURNAL_SELL_COLUMNS, 채점 규칙 data/backtest/JOURNAL_PREREG.md): 저장 `journal_storage_mode`(PC = local, 인터넷 서버 /mount/src = view)·`journal_load`·`journal_save`, 입력 `journal_add_trade`·`journal_add_sell`·`journal_update_trade`·`journal_delete`·`journal_import`, 그날 판정 `journal_verdict_snapshot`, 결과 `journal_results`(비용 포함·지수 대비·손절 `journal_stop_status`), 채점 `journal_judge`·`journal_style_summary`·`journal_verdict_compare`, 세금 `journal_tax_overseas`·`journal_settle_date`·`journal_kr_sell_tax_rate` |
 | `frame_backtest.py` | 매매 틀 검증. 틀 A(FRAME_A_CONFIG·FRAME_A_CRITERIA): 개별 종목, 보유 기간 맞춘 무작위와 비교. 틀 B(FRAME_B_CONFIG·FRAME_B_CRITERIA): 미국 개별 종목, SEC EPS로 만든 자기 PER 밴드, 같은 날 다른 종목 평균과 비교. 둘 다 월 묶음 표준오차 |
 
 ### 패키지 규칙
 - 새 함수는 기능이 맞는 모듈에 넣는다. `engine.py` 파일을 다시 만들지 않는다(폴더 `engine/`이 우선 로드되어 새 파일은 무시됨).
 - 다른 모듈 이름을 쓰면 파일 위쪽에 `from .모듈 import 이름`을 추가한다. 의존 방향은 아래 순서의 **앞쪽 모듈만** 가져다 쓴다(거꾸로 가져오면 순환 import 오류): common → technical_signals → backtest → technical → earnings → macro → fundamental → synthesis → home → gate → rrg → radar → rule_backtest → t_backtest → snapshot → sec_facts → frame_backtest → playbook → ledger.
-- 강의 시험 모듈은 맨 뒤다: `lecture_signals` → `lecture_backtest` → `lecture_events` → `lecture_family` → `lecture_levels` → `mr_backtest` → `mr2_backtest` → `mr3_backtest` → `tr_backtest` → `journal`(앞의 모든 모듈을 가져다 쓸 수 있고, 다른 모듈은 이 열을 가져오지 않는다). 새 이름은 `lec_`·`LEC_`(H-MR은 `mr_`·`mr2_`·`mr3_`, H-TR은 `tr_`·`TR_`·`_tr_`, 매매 기록은 `journal_`·`JOURNAL_`·`_jr_`)로 시작한다(같은 이름 충돌 방지 — 밑줄로 시작하는 내부 이름도 모든 모듈에서 하나여야 함).
+- 강의 시험 모듈은 맨 뒤다: `lecture_signals` → `lecture_backtest` → `lecture_events` → `lecture_family` → `lecture_levels` → `mr_backtest` → `mr2_backtest` → `mr3_backtest` → `tr_backtest` → `cs_backtest` → `journal`(앞의 모든 모듈을 가져다 쓸 수 있고, 다른 모듈은 이 열을 가져오지 않는다). 새 이름은 `lec_`·`LEC_`(H-MR은 `mr_`·`mr2_`·`mr3_`, H-TR은 `tr_`·`TR_`·`_tr_`, H-CS1은 `cs_`·`CS_`·`_cs_`, 매매 기록은 `journal_`·`JOURNAL_`·`_jr_`)로 시작한다(같은 이름 충돌 방지 — 밑줄로 시작하는 내부 이름도 모든 모듈에서 하나여야 함).
 - 바깥(app.py·페이지·테스트)은 `engine.이름`으로만 쓴다. 새 이름도 `engine/__init__.py`가 자동으로 내보낸다(따로 등록할 필요 없음).
 - 테스트에서 `engine.이름 = 가짜함수`로 바꿔 끼우면 그 이름을 쓰는 모든 모듈에 같이 적용되고, `importlib.reload(engine)`은 모든 모듈을 처음부터 다시 읽는다(한 파일이던 시절과 같은 동작, `engine/__init__.py`의 _EngineModule).
 - 같은 이름을 두 모듈에서 따로 정의하면 import 시 오류로 멈춘다(단일 출처 보호).
@@ -395,6 +396,14 @@ MR2 뒤 사용자 제안: '상시 단타'는 버리고, 단기 반전 수익이 
 - **개정 tr-2(같은 날, 건수만 본 뒤 · 수익 계산 전 · 사용자 결정)**: 탐색 최소 거래 300 → 200(A·B 같게), 해별 방향 점검은 거래 30건 이상인 해가 3개 이상일 때만(적으면 '적용 불가' 표시, 해 빼기 점검은 그대로). 판정 규칙 수는 그대로 2개. 근거와 대가는 TR_PREREG.md 9장.
 - **결과(2026-11-20, TR.md · e8c7cad): 탐색 후보 없음 — 확인(2014~)·최종(새 151종목)은 열지 않았다.** A 돌파 확정 680건(313종목, 104개월): 비용 뒤 거래당 +0.73% vs 같은 종목 같은 보유 무작위 +0.87% → 차이 −0.14%p(t −0.4, 표준오차 0.34%p — 95% 범위 약 −0.8~+0.5%p, 사후 최소 차이 1.0%p로 결과 전 추정보다 검정력이 높았음: 평균 보유 17일). 승률 64%(목표 65% +4.4% · 무효 32% −6.5%)지만 같은 날수만 들고 있어도 그만큼 벌었다. 해별 4/10, 2003년 빼면 −0.57%p. 셋업만 대비 −0.08%p(돌파 신호가 보태는 것 없음). B SR Flip 258건: −0.64%p(t −1.7, 무효 60%). 단계 빼기·🟢만·이평 쌍바닥·물량 소화·청산 단순형 모두 0 근처이거나 음수. 참고: 1% 위험 수량 연 합계 +7.5%(겹침·복리 무시) vs 같은 종목 기간 내내 보유 연 +12.1%(현재 상장 종목이라 생존 편향 있음 — 판정 비교는 같은 종목이라 영향 없음).
 
+### H-CS1 횡단면 모멘텀 — '언제 살까' 대신 '무엇을 살까' (2026-11-20 사전 등록 — 결과 보기 전 고정)
+사용자 가설: 시계열 진입(H-TR·T-A·L2) 전멸·0.30% 비용 장벽·틀 A 현금 체류 손실 → 매달 말 12-1개월 모멘텀 상위 그룹을 100% 보유하고 월 1회 교체, 비교는 같은 종목 같은 비중. **전체 정의는 `data/backtest/CS1_PREREG.md`, 숫자는 `engine/cs_backtest.py` `CS_CONFIG`.** 사용자 결정: C1~C5 Claude 추천대로(자료 ①+② 둘 다).
+- 결과 전 사실: 545종목 탐색(EXPLORE_mom12, 2001~2026)에서 상위 20% − 전체 같은 비중 +0.30%p/월(t 1.9)이었지만 그 칸은 결과를 본 뒤의 참고 칸이라 545종목은 확인 자료로 쓰지 않는다(실행 전 회전율·흔들림 추정에만).
+- ① Ken French(상장폐지 포함 CRSP): 미국 Big·HiPRIOR(시가총액 가중, NYSE 상위 30%) − 시장(Mkt−RF + RF) − 545종목 미국 상위 20% 회전율 × 0.30%. 통과 = 1927~ 전체 t ≥ 2 그리고 2000~ > 0. 참고: 기간별, 대형 전체 대비(기업 수 × 평균 크기 가중), 선진국(미국 제외).
+- ② 새 151종목(FINAL_UNIVERSE, 2001~): 달 끝 12-1개월(252→21거래일) 시장 안 순위 상위 20% 같은 비중 − 대상 전체 같은 비중, 달 끝 다음 날 시가 → 다음 달 끝 다음 날 시가, 실제 회전율(흘러간 비중 대비 한쪽) × 0.30%를 두 쪽 모두에서 뺌. 통과 = t ≥ 2 · 앞뒤 절반 > 0 · 미국·한국 반대 아님. 참고: 상위 10%, 변동성 대비, 지수 대비, 세금 예시(1억 원, 매년 실현 가정).
+- H-CS1 통과 = ①·② 모두. t는 Newey-West(시차 3). 판정 규칙은 ①·② 각각 하나(섞기 통과선 안 씀). 구현에서 정한 것: 첫 달 회전율 0(둘 다 처음 삼), 시장이 한 달 빠졌다 돌아오면 회전율 1, 가격은 배당 미포함(두 쪽 같음).
+- 실행: `run_backtest.py --cs-count`(French zip을 lecture_cache/french/에 받기 — 실패하면 브라우저로 같은 이름 zip을 그 폴더에, 새 151종목 받기, 회전율·최소 차이·대상 수·한국 이름 → CS_COUNT.md, 수익 평균 안 봄) → 사용자 확인 → `--cs --names-ok`(CS.md·cs.json·EXPLORE_LOG). 테스트 tests/test_cs.py.
+
 ### 다음 작업 순서
 1. ~~틀 v2 정의~~ (2026-11-14, 위 표): 결과를 보고 숫자를 맞추지 않고, v1 검증에서 드러난 원인에 맞춰 정의와 역할을 바꿨다.
 2. ~~틀 판정 모듈~~ 완료(2026-11-14, engine/playbook.py): 종목 하나에 대해 틀 A v2(추세 상태·근거 저울 항목별 근거·전환 가능성·의견 단계·청산 조건)와 틀 B v2(적용 범위·진입 조건·경고·손절·매도)를 판정하고, 각 항목의 검증 상태를 함께 돌려준다. 가짜 데이터 테스트 포함.
@@ -424,6 +433,7 @@ MR2 뒤 사용자 제안: '상시 단타'는 버리고, 단기 반전 수익이 
 - 틀 B v1(FRAME_B.md, 2026-11-14): **미통과(우위 미확인).** SEC 공시일 기준 EPS는 야후 값과 거의 같게 읽힘(AAPL 8.98 vs 9.02 등). HOLDOUT(새 미국 종목 63개, 147건) 로그 순수익률 +14.2% vs 같은 날 다른 종목 +12.7%(차이 +1.6%p, z +1.1), 개발 묶음은 −3.4%p(z −1.7). 이익 조건의 기여 없음('싼 다른 종목' 대비 −0.4%p). 청산의 약 70%가 이익 감소 손절이고 그 거래들이 다른 종목보다 뒤짐(−2~−7%p), 배수 주도 고평가 매도는 +4~+10%p. 거래가 147건뿐이라 연 2~3% 크기의 우위는 잡아낼 수 없는 표본이다 — '우위 없음'이 아니라 '확인 안 됨'. 같은 미국 자료로 규칙을 바꿔 다시 시험하지 않는다.
 - 강의 조건 시험(LECTURE_PREREG.md): 2026-11-18 사전 등록. 1단계 L1·L3 미통과(LECTURE_L1.md·LECTURE_L3.md). L1~L5 모두 미통과(LECTURE_L1~L5.md). H-MR1 단기 반등 단타 탐색 후보 없음(MR1.md). H-MR2 단기 신호 찾기 미통과(찾기 후보 3개 → 검증 t < 2, MR2.md). H-MR3 변동성 국면 이격도·지지 반등 찾기 후보 없음(MR3.md — 이격도는 +1.5%p 안팎이지만 t 1.8~1.9, 지지 구간은 효과 없음).
 - H-TR 추세 투자 흐름(TR.md, 2026-11-20): **미통과** — 탐색 후보 없음. A 돌파 확정 −0.14%p(t −0.4, 680건), B SR Flip −0.64%p(t −1.7, 258건). 강의 흐름 전체(시장·RS·120일선·돌파 확정·실적 쇼크·박스 목표·추세선·붕괴)를 이어 붙여도 같은 종목을 같은 날수만큼 들고 있는 것보다 낫지 않았다.
+- H-CS1 횡단면 모멘텀(CS1_PREREG.md, 2026-11-20 사전 등록): 실행 전 — `--cs-count`로 회전율·최소 차이부터.
 - 매매 기록(JOURNAL_PREREG.md, 2026-11-20~): 방식별 끝난 거래 30건부터 지수 대비로 채점.
 - 틀 A v2·틀 B v2: 미검증(추정치 기록은 2026-11-14부터 쌓는 중). 실적·거시 트랙과 한국 틀 B도 미검증. 화면·문구에서 검증된 것처럼 표현하지 않는다.
 

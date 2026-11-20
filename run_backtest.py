@@ -36,6 +36,8 @@
     .venv\\Scripts\\python run_backtest.py --mr3-final   H-MR3 최종(검증 통과 규칙만, 새 151종목) — 확인 뒤 --mr3-final --names-ok
     .venv\\Scripts\\python run_backtest.py --tr-count --etf-ok   H-TR 추세 투자 흐름 — 실행 전 건수·깔때기·가려낼 수 있는 최소 차이(수익은 안 봄) — TR_PREREG.md
     .venv\\Scripts\\python run_backtest.py --tr --etf-ok   H-TR 탐색(545종목 2001~2013) → 후보만 2014~ 확인 (10분 안팎)
+    .venv\\Scripts\\python run_backtest.py --cs-count   H-CS1 횡단면 모멘텀 — 실행 전: Ken French 자료·새 151종목 받기, 회전율·최소 차이(수익 평균 안 봄), 한국 종목 이름 — CS1_PREREG.md
+    .venv\\Scripts\\python run_backtest.py --cs --names-ok   H-CS1 결과: ① 미국 대형주 모멘텀 − 시장(1927~) ② 새 151종목 상위 20% − 같은 비중(2001~)
     .venv\\Scripts\\python run_backtest.py --tr-final   H-TR 최종(확인 통과 규칙만, 새 151종목 — 섹터·실적일 받기 포함) — 확인 뒤 --tr-final --names-ok
 
 결과 (data/backtest/):
@@ -56,6 +58,7 @@
     MR2.md · mr2.json  H-MR2 단기 신호 찾기·검증(사전 등록 MR2_PREREG.md), 최종은 MR2_FINAL.md · mr2_final.json
     MR3.md · mr3.json  H-MR3 변동성 국면 이격도·지지 반등(사전 등록 MR3_PREREG.md), 최종은 MR3_FINAL.md · mr3_final.json
     TR_COUNT.md · TR.md · tr.json  H-TR 추세 투자 흐름(사전 등록 TR_PREREG.md), 최종은 TR_FINAL.md · tr_final.json
+    CS_COUNT.md · CS.md · cs.json  H-CS1 횡단면 모멘텀(사전 등록 CS1_PREREG.md), French 원자료는 lecture_cache/french/
     LECTURE_L1~L5.md  강의 조건 시험(사전 등록 LECTURE_PREREG.md) + lecture_l*.json, 캐시 lecture_cache/
     summary.json       숫자 요약 + 주간 누적 수익 곡선 (이후 화면 표시용)
     *.csv              날짜별 게이트·누적 수익·거래 목록 (용량이 커서 .gitignore로 커밋 제외)
@@ -1059,6 +1062,116 @@ def run_tr_final_only(engine, args, t0):
     print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'TR_FINAL.md')}")
 
 
+def _cs_french(engine, need_dev=True):
+    """Ken French 자료(zip)를 lecture_cache/french/에 받는다. 이미 있으면 그대로 쓴다(받은 날은 french_date.txt).
+    못 받으면 안내: 브라우저로 같은 이름의 zip을 받아 그 폴더에 넣으면 된다."""
+    import urllib.request
+    cf = engine.CS_CONFIG
+    d = engine.lec_cache_path("french")
+    os.makedirs(d, exist_ok=True)
+    out, missing = {}, []
+    keys = ["us_mom", "us_ff"] + (["dx_mom", "dx_ff"] if need_dev else [])
+    for k in keys:
+        fn = cf["FRENCH_FILES"][k]
+        p = os.path.join(d, fn)
+        if not os.path.exists(p):
+            try:
+                req = urllib.request.Request(cf["FRENCH_BASE"] + fn, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    raw = r.read()
+                with open(p, "wb") as f:
+                    f.write(raw)
+                with open(os.path.join(d, "french_date.txt"), "w", encoding="utf-8") as f:
+                    f.write(datetime.now().strftime("%Y-%m-%d"))
+                print(f"   받음: {fn}", flush=True)
+            except Exception as e:
+                print(f"   못 받음: {fn} ({type(e).__name__})")
+                missing.append(fn)
+                continue
+        with open(p, "rb") as f:
+            out[k] = engine.cs_zip_text(f.read())
+    if missing:
+        print(f"   → 브라우저로 {cf['FRENCH_BASE']}<파일 이름> 을 받아 {d} 폴더에 넣은 뒤 다시 실행해 주세요: {', '.join(missing)}")
+    dp = os.path.join(d, "french_date.txt")
+    date = open(dp, encoding="utf-8").read().strip() if os.path.exists(dp) else None
+    return out, date
+
+
+def _cs_final_prices(engine):
+    lc = engine.LECTURE_CONFIG
+    cdir = engine.lec_cache_path("final_prices")
+    uni = list(lc["FINAL_UNIVERSE"])
+    pm = engine.load_price_cache(uni, cache_dir=cdir)
+    need = [s for s in uni if s not in pm]
+    if need:
+        print(f"   새 151종목 받기 {len(need)}개 (저장 {cdir})", flush=True)
+        got, failed = download(need, lc["DATA_START"])
+        engine.save_price_cache(got, cache_dir=cdir)
+        pm.update(got)
+        if failed:
+            print(f"   받지 못함(빼고 채우지 않음): {', '.join(failed)}")
+    return pm
+
+
+def run_cs_count_only(engine, args, t0):
+    """H-CS1 실행 전: French 자료·새 151종목 받기, 545종목으로 회전율·최소 차이, French는 흔들림만, 한국 이름. 수익 평균은 계산하지 않는다."""
+    import yfinance as yf
+    cf, lc = engine.CS_CONFIG, engine.LECTURE_CONFIG
+    print(f"[1/3] Ken French 자료 (설정 {cf['VERSION']}, 사전 등록 {cf['REGISTERED']})", flush=True)
+    fr, fdate = _cs_french(engine)
+    print("[2/3] 새 151종목 가격 · 545종목(이미 쓴 자료) 가격", flush=True)
+    new = _cs_final_prices(engine)
+    seen = engine.load_price_cache(list(engine.EXPLORE_CONFIG["UNIVERSE"]))
+    print(f"   새 {len(new)}개 · 이미 쓴 {len(seen)}개", flush=True)
+    print("[3/3] 회전율·최소 차이·대상 종목 수·한국 이름", flush=True)
+    res = engine.run_cs_count(seen, new, fr.get("us_mom"), fr.get("us_ff"))
+    names = {}
+    for s_ in [x for x in lc["FINAL_UNIVERSE"] if engine.lec_market_of(x) == "KR"]:
+        try:
+            inf = yf.Ticker(s_).info or {}
+            names[s_] = (inf.get("longName") or inf.get("shortName") or "(이름 못 받음)") + ("" if s_ in new else "  (가격 없음)")
+        except Exception:
+            names[s_] = "(이름 못 받음)"
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    rep = engine.render_cs_count_report(res, names, generated_at=now)
+    if fdate:
+        rep = rep.replace("## 비용에 쓸 회전율", f"- Ken French 자료 받은 날: {fdate}\n\n## 비용에 쓸 회전율", 1)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(os.path.join(OUT_DIR, "CS_COUNT.md"), "w", encoding="utf-8") as f:
+        f.write(rep)
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'CS_COUNT.md')}")
+
+
+def run_cs_only(engine, args, t0):
+    """H-CS1 결과: ① 외부 자료 ② 새 151종목. 한국 이름을 확인한 뒤(--names-ok)에만."""
+    cf = engine.CS_CONFIG
+    if not args.names_ok:
+        print("먼저 python run_backtest.py --cs-count 로 숫자와 한국 종목 이름을 확인한 뒤 --cs --names-ok 로 실행해 주세요.")
+        return
+    print(f"[1/3] 자료 (설정 {cf['VERSION']})", flush=True)
+    fr, fdate = _cs_french(engine)
+    if "us_mom" not in fr or "us_ff" not in fr:
+        print("   미국 French 자료가 없어 멈춥니다(위 안내대로 받아 주세요).")
+        return
+    new = _cs_final_prices(engine)
+    seen = engine.load_price_cache(list(engine.EXPLORE_CONFIG["UNIVERSE"]))
+    bench = engine.load_price_cache(["^GSPC", "^KS11"], cache_dir=engine.lec_cache_path("prices"))
+    print("[2/3] 비용에 쓸 회전율(545종목) → ① · ②", flush=True)
+    to_us = engine.cs_seen_estimates(seen)["turnover"]["US"] or 0.0
+    res = engine.run_cs(new, bench, to_us, fr["us_mom"], fr["us_ff"], fr.get("dx_mom"), fr.get("dx_ff"), french_date=fdate)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    print(f"[3/3] 저장 ({res['verdict']})", flush=True)
+    rep = engine.render_cs_report(res, generated_at=now)
+    with open(os.path.join(OUT_DIR, "CS.md"), "w", encoding="utf-8") as f:
+        f.write(rep)
+    with open(os.path.join(OUT_DIR, "cs.json"), "w", encoding="utf-8") as f:
+        json.dump({"generated_at": now, **res}, f, ensure_ascii=False, indent=1, default=str)
+    engine.lec_append_lines(engine.cs_log_lines(res, now), OUT_DIR)
+    print("\n" + rep)
+    print(f"끝 ({time.time() - t0:.0f}초). 보고서: {os.path.join(OUT_DIR, 'CS.md')}")
+
+
 def download_splits(symbols):
     """야후 액면분할 기록 (틀 B: 분할 전 보고서의 EPS를 지금 주식 단위로 맞추는 데 씀)."""
     import yfinance as yf
@@ -1219,12 +1332,14 @@ def main():
     ap.add_argument("--etf-ok", action="store_true", help="--lecture L1·L2, --tr-count·--tr: 한국 섹터 ETF 이름을 확인했음")
     ap.add_argument("--mr2", action="store_true", help="H-MR2 단기 신호 찾기(26개 규칙, 기존 종목 2001~2019 → 후보만 2020~ 검증)")
     ap.add_argument("--mr2-final", action="store_true", help="H-MR2 최종(검증 통과 규칙만, 새 151종목)")
-    ap.add_argument("--names-ok", action="store_true", help="--mr2-final·--mr3-final·--tr-final: 한국 종목 이름을 확인했음")
+    ap.add_argument("--names-ok", action="store_true", help="--mr2-final·--mr3-final·--tr-final·--cs: 한국 종목 이름을 확인했음")
     ap.add_argument("--mr3", action="store_true", help="H-MR3 변동성 국면(VIX ≥ 20) 이격도·지지 반등 찾기 → 후보만 검증")
     ap.add_argument("--mr3-final", action="store_true", help="H-MR3 최종(검증 통과 규칙만, 새 151종목)")
     ap.add_argument("--tr-count", action="store_true", help="H-TR 추세 투자 흐름: 실행 전 건수·깔때기·가려낼 수 있는 최소 차이(수익 안 봄)")
     ap.add_argument("--tr", action="store_true", help="H-TR 추세 투자 흐름: 545종목 2001~2013 탐색 → 후보만 2014~ 확인")
     ap.add_argument("--tr-final", action="store_true", help="H-TR 최종(확인 통과 규칙만, 새 151종목)")
+    ap.add_argument("--cs-count", action="store_true", help="H-CS1 횡단면 모멘텀: 실행 전(자료 받기·회전율·최소 차이·한국 이름, 수익 평균 안 봄)")
+    ap.add_argument("--cs", action="store_true", help="H-CS1 횡단면 모멘텀 결과(--names-ok 필요)")
     args = ap.parse_args()
     t0 = time.time()
     if args.variants:
@@ -1289,6 +1404,12 @@ def main():
         return
     if args.tr_final:
         run_tr_final_only(engine, args, t0)
+        return
+    if args.cs_count:
+        run_cs_count_only(engine, args, t0)
+        return
+    if args.cs:
+        run_cs_only(engine, args, t0)
         return
 
     print(f"[1/4] 지수 데이터 받기 (시작 {args.start})", flush=True)
