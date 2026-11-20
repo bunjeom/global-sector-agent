@@ -19,8 +19,9 @@ from .lecture_levels import lec_collapse, lec_upline
 from .lecture_signals import lec_rs_daily, lec_state
 
 TR_CONFIG: Dict[str, Any] = {
-    "VERSION": "tr-1",
+    "VERSION": "tr-2",
     "REGISTERED": "2026-11-20",
+    "AMENDED": "2026-11-20",       # tr-2: 실행 전 건수만 본 뒤(수익 계산 전) 사용자 결정 — 최소 거래 300 → 200, 해별 방향은 30건 이상인 해 3개 이상일 때만
     "EXPLORE_START": "2001-01-01", "EXPLORE_END": "2013-12-31",   # 탐색: 545종목, 이 기간 뒤 가격은 보지 않음
     "VERIFY_START": "2014-01-01",                                  # 확인: 같은 종목 2014~자료 끝 (탐색 후보만)
     "FINAL_START": "2001-01-01",                                   # 최종: 새 151종목 2001~자료 끝 (확인 통과만)
@@ -37,8 +38,9 @@ TR_CONFIG: Dict[str, Any] = {
     "COST": 0.003,
     # --- 판정 ---
     "BASELINE_SAMPLES": 20,
-    "MIN_TRADES": 300, "MIN_TICKERS": 50, "MIN_MARKET": 30,
+    "MIN_TRADES": 200, "MIN_TICKERS": 50, "MIN_MARKET": 30,      # tr-2: 300 → 200 (B 신호 259건)
     "EXPLORE_Z": 2.0, "YEAR_DROP_Z": 2.0, "YEAR_MIN_TRADES": 30, "YEAR_AGREE": 2.0 / 3.0,
+    "YEAR_MIN_YEARS": 3,           # tr-2: 거래 30건 이상인 해가 3개 미만이면 해별 방향 점검은 '적용 불가'(해 빼기 점검은 그대로)
     "VERIFY_Z": 2.0, "VERIFY_MIN_TRADES": 100,
     "FINAL_Z": 3.0, "FINAL_MIN_TRADES": 100,
     "POWER_Z": 0.84,
@@ -429,9 +431,12 @@ def tr_judge_explore(s: Dict[str, Any]) -> Dict[str, Any]:
     y = s["years"]
     if y["drop_diff"] is None or y["drop_diff"] <= 0 or y["drop_t"] is None or y["drop_t"] < cf["YEAR_DROP_Z"]:
         rs.append(f"기여가 가장 큰 해({y['drop_year']})를 빼면 기준 미달" if y["drop_year"] is not None else "해 빼기 점검 불가(거래 부족)")
-    if y["years_share"] is None or y["years_share"] < cf["YEAR_AGREE"]:
+    notes = []
+    if y["years_n"] < cf["YEAR_MIN_YEARS"]:
+        notes.append(f"해별 방향 점검 적용 불가(거래 {cf['YEAR_MIN_TRADES']}건 이상인 해 {y['years_n']}개 < {cf['YEAR_MIN_YEARS']}, tr-2)")
+    elif y["years_share"] is None or y["years_share"] < cf["YEAR_AGREE"]:
         rs.append(f"해별 방향 일치 {y['years_ok']}/{y['years_n']} < 3분의 2")
-    return {"candidate": not rs, "reasons": rs}
+    return {"candidate": not rs, "reasons": rs, "notes": notes}
 
 
 def tr_judge_verify(s: Dict[str, Any]) -> Dict[str, Any]:
@@ -663,7 +668,8 @@ def render_tr_report(r: Dict[str, Any], generated_at: Optional[str] = None) -> s
              f"- 생성: {generated_at or '-'} · 설정 {r['config_version']} · 종목 {r['n_tickers']}개 · 정의 data/backtest/TR_PREREG.md",
              f"- 흐름: ① 시장 🟢·🟡 → ② RS 주도 → ③ 120일선 상승 → ④ 진입(A 돌파 확정 / B SR Flip) → ⑤ 물량 소화({'넣음' if r['use_absorb'] else '참고'}) "
              "→ ⑥ 실적 쇼크 제외 → ⑦ 손절폭 ≤ 12% → ⑧ 박스 1대1 목표 · 추세선 장대음봉 이탈 절반 · 붕괴·무효 전부 · 최대 250거래일. 비용 0.30%.",
-             "- 판정 비교: 같은 종목 무작위 날 20곳에서 같은 날 간격·비율로 판 순수익(보유 기간 맞춤). t = 월 묶음.", "",
+             "- 판정 비교: 같은 종목 무작위 날 20곳에서 같은 날 간격·비율로 판 순수익(보유 기간 맞춤). t = 월 묶음.",
+             f"- 개정 tr-2(실행 전 건수만 본 뒤, 수익 계산 전 사용자 결정): 탐색 최소 거래 300 → {cf['MIN_TRADES']}, 해별 방향 점검은 거래 {cf['YEAR_MIN_TRADES']}건 이상인 해가 {cf['YEAR_MIN_YEARS']}개 이상일 때만.", "",
              f"## 판정: {head}", ""]
     lines += ["| 규칙 | 거래 · 종목 | 거래당 순수익 | 무작위(같은 보유) | 차이 | t | 가려낼 수 있는 최소 차이 | 판정 |", "|---|---|---|---|---|---|---|---|"]
     for rule in TR_RULES:
@@ -678,6 +684,8 @@ def render_tr_report(r: Dict[str, Any], generated_at: Optional[str] = None) -> s
         lines += [f"### {TR_LABELS[rule]} (탐색 {cf['EXPLORE_START'][:4]}~{cf['EXPLORE_END'][:4]})", ""]
         if e["judge"]["reasons"]:
             lines.append("- 후보 아닌 이유: " + " · ".join(e["judge"]["reasons"]))
+        if e["judge"].get("notes"):
+            lines.append("- 참고: " + " · ".join(e["judge"]["notes"]))
         if not s["n"]:
             lines += ["- 거래 없음", ""]
             continue

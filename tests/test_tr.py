@@ -213,7 +213,12 @@ print("8. 판정 기준")
 ok = {"n": 400, "n_tickers": 60, "net": 0.01, "diff": 0.02, "t": 2.5, "by_market": {"US": {"n": 300, "diff": 0.02, "t": 2}, "KR": {"n": 100, "diff": 0.01, "t": 1}},
       "years": {"drop_year": 2008, "drop_diff": 0.015, "drop_t": 2.1, "years_ok": 8, "years_n": 10, "years_share": 0.8}}
 check("8-1 모두 맞으면 후보", engine.tr_judge_explore(ok)["candidate"])
-for nm, patch, word in [("거래 수", {"n": 299}, "거래"), ("순수익", {"net": -0.001}, "순수익"), ("t", {"t": 1.99}, "t <"),
+check("8-최소 거래 200(tr-2)", engine.tr_judge_explore({**ok, "n": 200})["candidate"] and not engine.tr_judge_explore({**ok, "n": 199})["candidate"])
+j2 = engine.tr_judge_explore({**ok, "years": {**ok["years"], "years_ok": 0, "years_n": 2, "years_share": 0.0}})
+check("8-30건 이상인 해가 3개 미만이면 해별 방향은 적용 불가(탈락 아님, 표시)", j2["candidate"] and any("적용 불가" in x for x in j2["notes"]))
+j3 = engine.tr_judge_explore({**ok, "years": {**ok["years"], "years_ok": 1, "years_n": 3, "years_share": 1 / 3}})
+check("8-3개 이상이면 그대로 적용", not j3["candidate"] and any("해별" in x for x in j3["reasons"]))
+for nm, patch, word in [("거래 수", {"n": 199}, "거래"), ("순수익", {"net": -0.001}, "순수익"), ("t", {"t": 1.99}, "t <"),
                         ("시장 방향", {"by_market": {"US": {"n": 300, "diff": 0.02, "t": 2}, "KR": {"n": 40, "diff": -0.01, "t": -1}}}, "방향"),
                         ("해 빼기", {"years": {**ok["years"], "drop_t": 1.5}}, "해"), ("해별 방향", {"years": {**ok["years"], "years_share": 0.6}}, "해별")]:
     j = engine.tr_judge_explore({**ok, **patch})
