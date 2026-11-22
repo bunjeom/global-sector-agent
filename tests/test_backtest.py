@@ -183,18 +183,30 @@ def main():
 
     chk("9 보고서에 원인 분해·비용 민감도 표", "### 무엇 때문에 그 단계였나" in rep and "### 비용 민감도" in rep)
 
-    # 10) 원인 분해: 손으로 만든 G3 4일
-    #   1일: 레짐만 3 · 2일: 거시만 3(VIX 2) · 3일: VIX·거시 3 · 4일: 지표는 2인데 완화 대기로 G3 유지
+    # 10) 원인 분해(게이트 v1.2: 레짐·VIX): 손으로 만든 G3 4일
+    #   1일: 레짐만 3 · 2일: VIX만 3 · 3일: 레짐·VIX 3 · 4일: 지표는 2인데 완화 대기로 G3 유지
     da = pd.bdate_range("2024-01-01", periods=4)
     ga = pd.DataFrame({"level": [3, 3, 3, 3], "raw_level": [3, 3, 3, 2],
-                       "comp_regime": [3, 1, 0, 2], "comp_vix": [1, 2, 3, 1], "comp_macro": [1, 3, 3, 1],
-                       "reg_qqq": ["⚫", "🟡", "🟢", "🔴"], "reg_spy": ["🟡", "🟡", "🟢", "🔴"]}, index=da)
+                       "comp_regime": [3, 1, 3, 2], "comp_vix": [1, 3, 3, 1],
+                       "reg_qqq": ["⚫", "🟡", "⚫", "🔴"], "reg_spy": ["🟡", "🟡", "⚫", "🔴"]}, index=da)
     at10 = engine.gate_component_attribution(ga)["G3"]
-    chk("10 만든 요소 비중: 레짐 25% · VIX 25% · 거시 50%", at10["binding"] == {"regime": 25.0, "vix": 25.0, "macro": 50.0})
-    chk("10 하나 때문: 레짐만 25% · VIX만 0% · 거시만 25%", at10["only"] == {"regime": 25.0, "vix": 0.0, "macro": 25.0})
+    chk("10 만든 요소 비중: 레짐 50% · VIX 50% (거시 국면 없음)", at10["binding"] == {"regime": 50.0, "vix": 50.0})
+    chk("10 하나 때문: 레짐만 25% · VIX만 25%", at10["only"] == {"regime": 25.0, "vix": 25.0})
     chk("10 완화 대기 25%", at10["held_by_hysteresis"] == 25.0)
     rc = engine.gate_component_attribution(ga)["regime_crisis"]
-    chk("10 레짐 위기 1일 중 QQQ만 위기 100%", rc["n_days"] == 1 and rc["qqq_only_pct"] == 100.0)
+    chk("10 레짐 위기 2일 중 QQQ만 위기 50%", rc["n_days"] == 2 and rc["qqq_only_pct"] == 50.0)
+
+    # 10b) 게이트 v1.2 회귀: 거시 국면 요소가 없어 VIX를 두 번 세지 않고, 한국 게이트가 나스닥에 묶이지 않는다
+    hdr_us = {"qqq_regime": {"icon": "🟡", "label": "횡보"}, "spy_regime": {"icon": "🟡", "label": "횡보"},
+              "kospi_regime": {"icon": "🟢", "label": "상승"},
+              "vix_state": {"value": 22.0, "percentile_1y": 82, "as_of": "2026-11-20"}}
+    g_us = engine.evaluate_market_gate("US", us_data=engine.build_gate_inputs_from_header(hdr_us, "US"), kr_data={})
+    chk("10b VIX 22·백분위 82·나스닥 🟡 → G2(예전 G3 아님), 결정 요인에 거시 국면 없음",
+        g_us["raw_level"] == 2 and "거시" not in str(g_us.get("binding_component")) and "거시 국면" not in g_us["components"] and len(g_us["components"]) == 2)
+    hdr_kr = dict(hdr_us, qqq_regime={"icon": "🔴", "label": "하락"}, vix_state={"value": 16.0, "percentile_1y": 40, "as_of": "2026-11-20"})
+    g_kr = engine.evaluate_market_gate("KR", us_data={}, kr_data=engine.build_gate_inputs_from_header(hdr_kr, "KR"))
+    chk("10b KOSPI 🟢·VIX 16이면 나스닥 🔴이어도 한국 G0", g_kr["raw_level"] == 0)
+    chk("10b 헤더에 거시 국면 문구 없음", "macro_narrative" not in engine.build_regime_vix_header(None, None, None, None))
 
     # 11) 비용 인수: 기본값 = 지금과 같음, 비용 0이면 기대값이 커짐
     prim = engine.compute_base_primitives(stock)

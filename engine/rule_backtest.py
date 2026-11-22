@@ -77,7 +77,7 @@ def _bt_window(df_x: Optional[pd.DataFrame], t: pd.Timestamp, strict: bool = Fal
 
 
 def gate_inputs_on(price_map: Dict[str, pd.DataFrame], market: str, t: Any) -> Dict[str, Any]:
-    """날짜 t의 게이트 입력(레짐·VIX·거시 국면). 앱과 같은 함수를 그날 이전 데이터로 호출한다.
+    """날짜 t의 게이트 입력(레짐·VIX). 앱과 같은 함수를 그날 이전 데이터로 호출한다.
     한국: 한국 장 마감(15:30) 때 미국 당일 장은 아직 열리지 않았으므로 미국 데이터(QQQ·VIX)는 t 전날까지만 쓴다."""
     m = str(market).upper()
     t = pd.Timestamp(t)
@@ -153,11 +153,11 @@ def compute_gate_series(price_map: Dict[str, pd.DataFrame], market: str, start: 
     for r in rows:
         inp = r["inputs"]
         g = evaluate_market_gate(m, us_data=inp, kr_data=inp, history_state=state)
-        comps = gate_components(inp.get("regime"), inp.get("vix_percentile"), inp.get("vix_value"), inp.get("macro_phase"))
+        comps = gate_components(inp.get("regime"), inp.get("vix_percentile"), inp.get("vix_value"))
         out.append({
             "date": r["date"], "regime": inp.get("regime"), "vix_value": inp.get("vix_value"),
             "vix_percentile": inp.get("vix_percentile"), "macro_phase": inp.get("macro_phase"),
-            "comp_regime": comps["regime"], "comp_vix": comps["vix"], "comp_macro": comps["macro"],
+            "comp_regime": comps.get("regime"), "comp_vix": comps.get("vix"), "comp_macro": comps.get("macro"),
             "raw_level": g["raw_level"], "level": g["level"], "cooling_counter": g["cooling_counter"],
             "reg_qqq": r["icons"]["QQQ"], "reg_spy": r["icons"]["SPY"], "reg_kospi": r["icons"]["KOSPI"],
         })
@@ -288,7 +288,8 @@ def gate_exposure_backtest(gate_df: pd.DataFrame, price: pd.Series, exposure_map
     }
 
 
-GATE_COMPONENTS = ("regime", "vix", "macro")
+# 원인 분해에 쓰는 게이트 요소 = 앱 게이트와 같음(v1.2: 레짐·VIX). comp_macro 열은 v1.1 비교용으로 비어 있다.
+GATE_COMPONENTS = tuple(GATE_CONFIG["COMPONENTS"])
 
 
 def gate_component_attribution(gate_df: pd.DataFrame) -> Dict[str, Any]:
@@ -443,6 +444,8 @@ def summarize_setup_trades_by_gate(trades: pd.DataFrame, size_map: Optional[Dict
 # 앞 기간(SPLIT_DATE 전)으로만 고르고, 뒤 기간으로 확인한다. 통과하지 못하면 현재 규칙을 유지한다.
 # ---------------------------------------------------------------------
 GATE_VARIANTS: Dict[str, str] = {
+    # 후보 A·B·C와 '현재'의 설명은 2026-11-13 비교 당시(게이트 v1.1, 거시 국면 포함) 정의다. v1.2에서는 comp_macro가 비어 있어
+    # '현재' = 레짐·VIX 중 가장 나쁜 값으로 계산된다(VARIANTS.md 기록은 v1.1 결과).
     "현재": "지수 < 200일 지수이동평균이면 즉시 위기(G3). 최종 = 레짐·VIX·거시 국면 중 가장 나쁜 값",
     "A 200일선 이탈 = G2": "레짐 위기(지수 < EMA200)는 G2로 낮춤. G3는 VIX(90%ile·35 이상)나 거시 국면(VIX 80%ile 이상)에서만",
     "B 추세 붕괴 + 공포 동시 = G3": "모든 요소의 단독 상한을 G2로 두고, 레짐 위기와 공포(VIX 75%ile·25 이상 또는 거시 국면 침체)가 같은 날 겹칠 때만 G3",
@@ -488,7 +491,7 @@ def gate_variant_raw(gate_df: pd.DataFrame, variant: str, extra: Optional[Dict[s
     구성 요소가 모두 없으면 2 (calculate_single_gate의 방어 폴백과 같음). 후보 C는 extra["vola_pctl"](KOSPI 변동성 백분위)이 필요."""
     r = gate_df["comp_regime"].astype(float)
     v = gate_df["comp_vix"].astype(float)
-    mc = gate_df["comp_macro"].astype(float)
+    mc = gate_df["comp_macro"].astype(float) if "comp_macro" in gate_df else pd.Series(np.nan, index=gate_df.index)
     if variant == "현재":
         raw = pd.concat([r, v, mc], axis=1).max(axis=1)
     elif variant.startswith("A"):
@@ -969,27 +972,29 @@ def _r_cell(s: Dict[str, Any], min_n: int = 5) -> str:
     return f"{s['expectancy_r']:+.2f}R{se} · 승률 {s['win_rate']:.0f}% · n={n}"
 
 
-COMPONENT_LABELS = {"regime": "지수 레짐", "vix": "VIX", "macro": "거시 국면(VIX·레짐으로 만든 값)"}
+COMPONENT_LABELS = {"regime": "지수 레짐", "vix": "VIX", "macro": "거시 국면(v1.1, VIX·레짐으로 만든 값)"}
 
 
 def _render_attribution(att: Dict[str, Any]) -> List[str]:
     """단계별 원인 분해 표."""
     if not att:
         return []
+    cs = list(GATE_COMPONENTS)
     L = ["", "### 무엇 때문에 그 단계였나",
-         "| 단계 | 일수 | 지수 레짐 | VIX | 거시 국면 | 레짐만 | VIX만 | 거시 국면만 | 완화 대기 |",
-         "|---|---|---|---|---|---|---|---|---|"]
+         "| 단계 | 일수 | " + " | ".join(COMPONENT_LABELS[c] for c in cs) + " | "
+         + " | ".join(COMPONENT_LABELS[c] + "만" for c in cs) + " | 완화 대기 |",
+         "|---|---|" + "---|" * (2 * len(cs)) + "---|"]
     for k in ("G1", "G2", "G3"):
         a = att.get(k, {})
         if not a.get("n_days"):
             continue
         b, o = a["binding"], a["only"]
-        L.append(f"| {k} | {a['n_days']:,} ({a['share_of_time']:.0f}%) | {b['regime']:.0f}% | {b['vix']:.0f}% | {b['macro']:.0f}% | "
-                 f"{o['regime']:.0f}% | {o['vix']:.0f}% | {o['macro']:.0f}% | {a['held_by_hysteresis']:.0f}% |")
-    L.append("- 앞 세 칸은 그 단계를 만든 요소의 비중(동시에 여럿일 수 있어 합이 100%를 넘음), '~만'은 그 요소 하나 때문이었던 날, "
+        L.append(f"| {k} | {a['n_days']:,} ({a['share_of_time']:.0f}%) | " + " | ".join(f"{b[c]:.0f}%" for c in cs) + " | "
+                 + " | ".join(f"{o[c]:.0f}%" for c in cs) + f" | {a['held_by_hysteresis']:.0f}% |")
+    L.append("- 앞 칸들은 그 단계를 만든 요소의 비중(동시에 여럿일 수 있어 합이 100%를 넘음), '~만'은 그 요소 하나 때문이었던 날, "
              "'완화 대기'는 지표는 이미 내려왔지만 2일 확인 때문에 단계가 유지된 날입니다.")
     g3 = att.get("G3", {})
-    if g3.get("n_days"):
+    if g3.get("n_days") and "macro" in cs:
         L.append(f"- G3 중 거시 국면만 G3였던 날 {g3['only']['macro']:.0f}%: 거시 국면은 VIX 1년 백분위 80% 이상이면 '침체'(G3)가 되므로, "
                  f"VIX 자체 기준(90%ile·35)에는 못 미친 날이 여기에 들어갑니다.")
     rc = att.get("regime_crisis")
@@ -1152,7 +1157,7 @@ def render_backtest_report(summary: Dict[str, Any]) -> str:
           "- 이후 기간이 서로 겹쳐 날짜 수만큼 독립 표본이 있는 게 아닙니다. 표준오차는 '일수 ÷ 기간'을 독립 표본 수로 본 대략치이고, 구간 수가 적은 단계(특히 G3)는 몇 번의 위기에 결과가 좌우됩니다.",
           "- '대표 종목'은 지금 시점의 강자라 과거에 미리 알 수 없었던 선택입니다(사후 선택·생존 편향). ETF 결과를 더 신뢰하세요.",
           "- T 셋업 검증은 레이더 카드의 과거 검증과 같은 단순화 규칙(ST-1 이격도 반전·ST-2 돌파)이며, 실제 셋업 스캐너의 모든 조건을 재현하지는 않습니다. 목표가는 장중 고가, 손절은 종가 기준이라 결과가 약간 낙관적일 수 있습니다.",
-          "- 게이트의 '거시 국면'은 정의상 VIX·지수 레짐으로 만든 값입니다(FRED 거시 지표 아님). 실적·가치·거시 트랙은 과거 시점의 컨센서스·재무 데이터가 없어 이 검증에 포함하지 않았습니다.",
+          "- 게이트는 v1.2(2026-11-22)부터 지수 레짐·VIX 두 요소입니다(v1.1의 '거시 국면'은 VIX·레짐으로 만든 값이라 뺐음). 실적·가치·거시 트랙은 과거 시점의 컨센서스·재무 데이터가 없어 이 검증에 포함하지 않았습니다.",
           "- 야후 데이터 오류·누락이 있을 수 있습니다. 한국은 KOSPI 지수(배당 미포함), 미국은 SPY 배당 포함 가격으로 쟀습니다.",
           ""]
     return "\n".join(L)

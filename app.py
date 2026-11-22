@@ -231,7 +231,6 @@ st.markdown(f"""
     <span style="margin-left:auto;font-size:0.78rem;color:#64748b;">기준일 {mkt_as_of} · 출처 yfinance</span>
   </div>
   <div style="font-size:0.9rem;color:#111;">
-    <b>거시 국면:</b> {m_hdr["macro_narrative"]} &nbsp;|&nbsp;
     <b>시장 폭:</b> <span title="{breadth_tip}" style="border-bottom:1px dotted #94a3b8;cursor:help;">
     S&amp;P 500 {mb.get('rsp_spy_label', '데이터 없음')} · 나스닥/소형주 {mb.get('iwm_qqq_label', '데이터 없음')}</span>
   </div>
@@ -597,10 +596,10 @@ with g_kr:
 with st.expander("지수 추세(레짐)란?", expanded=False):
     st.markdown(
         "레짐은 '지수가 지금 어떤 추세 상태인가'를 4단계로 나눈 것입니다. 미국 게이트는 나스닥(QQQ)·S&P 500(SPY) 중 더 나쁜 쪽, "
-        "한국 게이트는 KOSPI를 봅니다. 하루만 넘었다고 바로 바뀌지 않도록, 나빠질 때는 2거래일·좋아질 때는 3거래일 연속 확인합니다"
+        "한국 게이트는 KOSPI를 봅니다(변동성은 한국 변동성 지수(VKOSPI)를 아직 연결하지 않아 미국 VIX를 대용으로 씀). 하루만 넘었다고 바로 바뀌지 않도록, 나빠질 때는 2거래일·좋아질 때는 3거래일 연속 확인합니다"
         "(200일선 아래로 내려가는 '위기'는 바로 적용).\n\n"
         + "\n".join(f"- **{k}**: {v}" for k, v in REGIME_PLAIN.items())
-        + "\n\n게이트는 이 지수 추세·변동성(VIX)·거시 국면 중 가장 나쁜 것을 따릅니다. 과거 검증에서 게이트는 이후 변동성·낙폭은 구분했지만 "
+        + "\n\n게이트는 이 지수 추세와 변동성(VIX) 중 더 나쁜 것을 따릅니다(2026-11-22부터 — 예전 '거시 국면' 칸은 실제 거시 자료가 아니라 VIX·나스닥으로 만든 문장이라 뺐습니다). 과거 검증에서 게이트는 이후 변동성·낙폭은 구분했지만 "
         "이후 수익률은 구분하지 못했습니다 — 수익 예측이 아니라 위험 크기 조절용입니다."
     )
 st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)

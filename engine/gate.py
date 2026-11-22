@@ -1,4 +1,8 @@
-"""국면 게이트(Market Gate) v1.1: GATE_CONFIG, 히스테리시스, 바스켓 배지 동기화.
+"""국면 게이트(Market Gate) v1.2: GATE_CONFIG, 히스테리시스, 바스켓 배지 동기화.
+
+v1.2(2026-11-22, 사용자 결정): '거시 국면' 요소를 뺐다. 그 값은 실제 거시 자료가 아니라 나스닥 레짐과 VIX 백분위로 만든
+문장이어서 VIX를 두 번 세고(백분위 80 이상이면 G3 — 화면의 VIX G3 기준 90·35보다 먼저), 한국 게이트를 나스닥에 묶었다.
+최종 게이트 = 지수 레짐·VIX 중 가장 나쁜 값.
 
 engine.py를 기능별로 나눈 모듈. 바깥에서는 `import engine` 후 `engine.이름`으로 쓴다(engine/__init__.py).
 """
@@ -24,6 +28,7 @@ GATE_CONFIG = {
         "STRONG_BULL": 0, "BULL": 0, "NEUTRAL": 1, "SIDEWAYS": 1,
         "CORRECTION": 2, "BEAR": 2, "DEEP_BEAR": 3, "PANIC": 3
     },
+    # MACRO_MAP: v1.1까지 쓰던 거시 국면 요소의 단계표. v1.2부터 게이트 요소가 아니며, 지난 후보 C(rule_backtest) 재현에만 남긴다.
     "MACRO_MAP": {
         "EXPANSION": 0, "GOLDILOCKS": 0, "SLOWDOWN": 1, "INFLATION_PRESSURE": 1,
         "STAGFLATION": 2, "TIGHTENING": 2, "RECESSION": 3, "CREDIT_CRUNCH": 3
@@ -36,12 +41,10 @@ GATE_CONFIG = {
 # 헤더(실제 데이터) → 게이트 입력 변환표 (2026-11-08 추가)
 GATE_CONFIG["REGIME_ICON_MAP"] = {"🟢": "BULL", "🟡": "SIDEWAYS", "🔴": "BEAR", "⚫": "DEEP_BEAR"}
 GATE_CONFIG["REGIME_ICON_RANK"] = {"🟢": 0, "🟡": 1, "🔴": 2, "⚫": 3}
-GATE_CONFIG["MACRO_NARRATIVE_MAP"] = [
-    ("침체", "CREDIT_CRUNCH"),
-    ("골디락스", "GOLDILOCKS"),
-    ("금리 민감", "SLOWDOWN"),
-]
-GATE_CONFIG["COMPONENT_NAMES"] = {"regime": "지수 레짐", "vix": "변동성(VIX)", "macro": "거시 국면"}
+GATE_CONFIG["VERSION"] = "1.2"
+# 게이트를 만드는 요소(v1.2). 'macro'(거시 국면)는 v1.1까지만 썼다.
+GATE_CONFIG["COMPONENTS"] = ("regime", "vix")
+GATE_CONFIG["COMPONENT_NAMES"] = {"regime": "지수 레짐", "vix": "변동성(VIX)"}
 GATE_CONFIG["ACTION_SUMMARY"] = {
     0: "신호대로 실행",
     1: "신규 진입은 절반 크기로",
@@ -53,9 +56,10 @@ GATE_CONFIG["ACTION_SUMMARY"] = {
 GATE_CONFIG["HISTORY_LOOKBACK_DAYS"] = 10
 
 
-def gate_components(regime_str, vix_percentile, vix_val, macro_phase) -> dict:
-    """구성 요소별 게이트 단계(0~3). 데이터가 없는 요소는 None."""
-    comps = {"regime": None, "vix": None, "macro": None}
+def gate_components(regime_str, vix_percentile, vix_val, macro_phase=None) -> dict:
+    """구성 요소별 게이트 단계(0~3). 데이터가 없는 요소는 None. 요소는 GATE_CONFIG["COMPONENTS"]만(v1.2: 레짐·VIX).
+    macro_phase는 예전 호출과 맞추려고 받기만 하고, 'macro'가 COMPONENTS에 없으면 쓰지 않는다."""
+    comps = {k: None for k in GATE_CONFIG["COMPONENTS"]}
     if regime_str is not None:
         comps["regime"] = GATE_CONFIG["REGIME_MAP"].get(str(regime_str).upper(), 2)
     if vix_percentile is not None and vix_val is not None:
@@ -68,12 +72,12 @@ def gate_components(regime_str, vix_percentile, vix_val, macro_phase) -> dict:
             comps["vix"] = 1
         else:
             comps["vix"] = 0
-    if macro_phase is not None:
+    if "macro" in comps and macro_phase is not None:
         comps["macro"] = GATE_CONFIG["MACRO_MAP"].get(str(macro_phase).upper(), 2)
     return comps
 
 
-def calculate_single_gate(regime_str, vix_percentile, vix_val, macro_phase) -> tuple[int, bool]:
+def calculate_single_gate(regime_str, vix_percentile, vix_val, macro_phase=None) -> tuple[int, bool]:
     """
     최종 게이트 = 데이터가 있는 구성 요소 중 가장 방어적인 값(max).
     일부 요소가 없어도 남은 요소로 판정한다(예전처럼 G2로 고정하지 않음).
@@ -89,19 +93,17 @@ def calculate_single_gate(regime_str, vix_percentile, vix_val, macro_phase) -> t
 def build_gate_inputs_from_header(macro_header: dict, market: str) -> dict:
     """
     홈 헤더(실제 yfinance 데이터)에서 게이트 입력을 만든다. 하드코딩 값 사용 금지.
-    - US: QQQ·SPY 레짐 중 더 나쁜 쪽 + VIX + 거시 국면
-    - KR: KOSPI 레짐 + VIX(글로벌 변동성 대용, VKOSPI 미연결) + 거시 국면
+    - US: QQQ·SPY 레짐 중 더 나쁜 쪽 + VIX
+    - KR: KOSPI 레짐 + VIX(미국 변동성 대용, VKOSPI 미연결) — v1.2부터 나스닥 영향 없음
     """
     if not macro_header:
         return {}
     m = str(market).upper()
     vx = macro_header.get("vix_state", {}) or {}
-    narrative = str(macro_header.get("macro_narrative", "") or "")
-    phase = next((p for k, p in GATE_CONFIG["MACRO_NARRATIVE_MAP"] if k in narrative), None)
     rank = GATE_CONFIG["REGIME_ICON_RANK"]
     if m == "KR":
         regs = [("KOSPI", macro_header.get("kospi_regime", {}) or {})]
-        src = "yfinance (^KS11 레짐 · ^VIX 글로벌 변동성 대용)"
+        src = "yfinance (^KS11 레짐 · ^VIX 미국 변동성 대용)"
     else:
         regs = [("나스닥", macro_header.get("qqq_regime", {}) or {}),
                 ("S&P 500", macro_header.get("spy_regime", {}) or {})]
@@ -117,8 +119,6 @@ def build_gate_inputs_from_header(macro_header: dict, market: str) -> dict:
         "regime_label": f"{worst[0]} {worst[1].get('label', '')}" if worst else "데이터 없음",
         "vix_percentile": vx.get("percentile_1y") if vx.get("value") is not None else None,
         "vix_value": vx.get("value"),
-        "macro_phase": phase,
-        "macro_label": narrative or "데이터 없음",
         "as_of": max(as_of_vals) if as_of_vals else None,
         "source": src,
     }
@@ -371,7 +371,7 @@ def sync_radar_basket_badges(radar_signals: dict, basket_grades: dict) -> dict:
 
 
 def market_gate_from_prices(price_map: dict, market: str) -> dict:
-    """홈과 같은 계산(지수 레짐·VIX·거시 문구 → 게이트, 최근 거래일 히스테리시스 포함)을 가격 묶음 하나로 한다.
+    """홈과 같은 계산(지수 레짐·VIX → 게이트, 최근 거래일 히스테리시스 포함)을 가격 묶음 하나로 한다.
     price_map = {"QQQ", "SPY", "^KS11", "^VIX": 일봉}. 딥다이브 전략 선택(engine/strategy.py choose_strategy)용.
     기준 지수(미국 SPY·QQQ, 한국 KOSPI)가 없으면 방어 폴백(G2, '데이터 없음')."""
     em = price_map or {}

@@ -742,7 +742,8 @@ def run_consistency_checks(dashboard_data: Dict[str, Any]) -> List[Dict[str, str
 
 def build_regime_vix_header(qqq_df, spy_df, ks11_df, vix_df) -> Dict[str, Any]:
     """
-    지수 레짐(QQQ·SPY·KOSPI) + VIX + 거시 국면 문구 계산 — 국면 게이트 입력의 단일 출처.
+    지수 레짐(QQQ·SPY·KOSPI) + VIX 계산 — 국면 게이트 입력의 단일 출처.
+    (게이트 v1.2부터 '거시 국면' 문구는 만들지 않는다 — 실제 거시 자료 없이 레짐·VIX로 만든 문장이었음)
     홈 헤더(run_home_dashboard_engine)와 게이트 과거 재계산(build_gate_history_state)이 함께 쓴다.
     """
     def _as_of(df_x):
@@ -757,19 +758,11 @@ def build_regime_vix_header(qqq_df, spy_df, ks11_df, vix_df) -> Dict[str, Any]:
     vix_pctl = int(round(spy_reg.get("vix_pctl", 50.0), 0))
     vix_label = spy_reg.get("s_vix", " 데이터 없음") if vix_val is not None else "데이터 없음"
 
-    if qqq_reg["s_reg"] in ["🟢", "🟡"] and (vix_val is not None and vix_pctl < 65):
-        macro_narrative = "골디락스·연착륙 (실질금리 안정 · 신용 스프레드 축소)"
-    elif vix_val is not None and vix_pctl >= 80:
-        macro_narrative = "침체·신용 경색 경계 (변동성 80%ile 이상 급등)"
-    else:
-        macro_narrative = "금리 민감 · 실적 차별화 국면"
-
     return {
         "qqq_regime": {"icon": qqq_reg["s_reg"], "label": qqq_reg["s_reg_label"], "as_of": _as_of(qqq_df), "source": "yfinance (QQQ)"},
         "spy_regime": {"icon": spy_reg["s_reg"], "label": spy_reg["s_reg_label"], "as_of": _as_of(spy_df), "source": "yfinance (SPY)"},
         "kospi_regime": {"icon": kospi_reg["s_reg"], "label": kospi_reg["s_reg_label"], "as_of": _as_of(ks11_df), "source": "yfinance (^KS11)"},
         "vix_state": {"value": round(vix_val, 1) if vix_val is not None else None, "percentile_1y": vix_pctl, "label": vix_label, "as_of": _as_of(vix_df), "source": "yfinance (^VIX)"},
-        "macro_narrative": macro_narrative,
     }
 
 
@@ -821,7 +814,7 @@ def run_home_dashboard_engine(
     # -----------------------------------------------------------------
     # 1. 상단 글로벌 매크로 중력 & 시장 폭(Breadth) 헤더 연산 (B 항목 반영)
     # -----------------------------------------------------------------
-    # 지수 레짐·VIX·거시 국면은 build_regime_vix_header 한 곳에서만 계산 (게이트 과거 재계산과 공유)
+    # 지수 레짐·VIX는 build_regime_vix_header 한 곳에서만 계산 (게이트 과거 재계산과 공유)
     regime_vix_hdr = build_regime_vix_header(qqq_df, spy_df, ks11_df, vix_df)
 
     def _calc_20d_ret_pct(df_x: Optional[pd.DataFrame]) -> Optional[float]:
