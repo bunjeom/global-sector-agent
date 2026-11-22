@@ -428,7 +428,8 @@ def compute_asset_return_and_flow_ssot(
         c_s = pd.to_numeric(df_a["Close"], errors="coerce").dropna()
         if len(c_s) >= 21:
             r4 = round(float(c_s.iloc[-1] / c_s.iloc[-21] - 1.0), 4)
-            r13 = round(float(c_s.iloc[-1] / c_s.iloc[-min(len(c_s), 61)] - 1.0), 4)
+            # 13주 = 65거래일(2026-11-23 수정: 예전엔 60거래일 ≈ 12주였음). 자료가 65거래일보다 짧으면 표시하지 않는다.
+            r13 = round(float(c_s.iloc[-1] / c_s.iloc[-66] - 1.0), 4) if len(c_s) >= 66 else None
             as_of_date = str(c_s.index[-1])[:10]
             source_str = f"yfinance ({ticker})"
             is_sample = False
