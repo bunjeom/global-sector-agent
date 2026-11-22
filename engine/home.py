@@ -81,8 +81,8 @@ SAMPLE_DATA: Dict[str, Any] = {
     ],
     "micro_smart_signals": {
         "stealth_accumulation": [
-            {"ticker": "PANW", "name": "팔로알토 네트웍스", "detail": "최근 10일 내 RVOL≥2.0 기관 매집 양봉 2회 · 20일선 이격 +3.2%", "as_of": None, "published": None, "source": "SAMPLE_DATA", "kind": "price", "is_sample": True},
-            {"ticker": "CRWD", "name": "크라우드스트라이크", "detail": "최근 10일 내 RVOL≥2.0 기관 매집 양봉 3회 · 돌파 상단 수축", "as_of": None, "published": None, "source": "SAMPLE_DATA", "kind": "price", "is_sample": True},
+            {"ticker": "PANW", "name": "팔로알토 네트웍스", "detail": "최근 10일 내 RVOL≥2.0 거래량 양봉 2회 · 20일선 이격 +3.2%", "as_of": None, "published": None, "source": "SAMPLE_DATA", "kind": "price", "is_sample": True},
+            {"ticker": "CRWD", "name": "크라우드스트라이크", "detail": "최근 10일 내 RVOL≥2.0 거래량 양봉 3회 · 돌파 상단 수축", "as_of": None, "published": None, "source": "SAMPLE_DATA", "kind": "price", "is_sample": True},
             {"ticker": "267260.KS", "name": "HD현대일렉트릭", "detail": "조정 구간 거래량 마름(RVOL 0.6) 후 기관 대량 양봉 출현", "as_of": None, "published": None, "source": "SAMPLE_DATA", "kind": "price", "is_sample": True},
         ],
         "insider_buying": [
@@ -170,12 +170,13 @@ NARRATIVE_BASKETS_SPEC: List[Dict[str, Any]] = [
 
 
 # =====================================================================
-# [복구] 20일 CMF 및 상승/하락 거래대금 비율 계산
+# [복구] 20일 CMF 및 양봉/음봉 거래대금 비율 계산
 # (__pycache__/engine.cpython-314.pyc 에 남아 있던 원본 바이트코드를 해독해 복원)
 # =====================================================================
 def _compute_cmf20_and_ud_ratio(df):
     """
-    2-2. 20일 차이킨 자금흐름(CMF_20) 및 상승일/하락일 거래대금 비율(UD_Ratio_20) 계산:
+    2-2. 20일 차이킨 자금흐름(CMF_20) 및 양봉일/음봉일(종가 ≥ 시가 / 종가 < 시가) 거래대금 비율(UD_Ratio_20) 계산:
+    (CMF는 종가가 그날 고가·저가 범위 어디서 끝났는지 × 거래량 — 누가 샀는지(기관 등)는 알 수 없다)
     - MFM_t = ((C_t - L_t) - (H_t - C_t)) / (H_t - L_t)
     - CMF_20 = sum(MFM * Vol, 20) / sum(Vol, 20)
     """

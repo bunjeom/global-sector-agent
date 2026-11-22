@@ -296,7 +296,7 @@ def determine_basket_grade(quadrant: str, revision_positive: bool, flow_positive
         if revision_positive and flow_positive:
             return "실물 확인 주도"
         elif revision_positive or flow_positive:
-            return "주도 (수급·실적 부분확인)"
+            return "주도 (마감 강도·실적 중 하나만 확인)"
         return "과열 / 다이버전스 경계"
     if quadrant == "개선":
         if revision_positive or flow_positive:
@@ -723,7 +723,7 @@ def build_real_rrg_bundle(etf_data_map: dict, narrative_baskets: list = None, wr
     """
     app.py가 yfinance로 내려받은 실제 종가로 rrg_coordinates / evaluate_basket_grades를 돌린다.
     - 실적 리비전이 예시 데이터(SAMPLE)이거나 없으면 '실적 데이터 없음'으로 표시하고 등급 판정에 쓰지 않는다.
-    - 수급은 실제 CMF(20) > 0 여부를 쓴다.
+    - flow_positive는 실제 CMF(20) > 0 여부다(종가 위치 × 거래량 — 누가 샀는지는 모름, 화면에는 '마감 강함'으로 쓴다).
     """
     spec_map = {s["ticker"]: s for s in NARRATIVE_BASKETS_SPEC}
     spy_df = (etf_data_map or {}).get("SPY")
@@ -772,7 +772,7 @@ def build_real_rrg_bundle(etf_data_map: dict, narrative_baskets: list = None, wr
             continue
         q = b["quadrant"]
         if q in ("주도", "개선", "약화", "소외"):
-            flow_txt = "수급 확인" if meta[tk]["flow_positive"] else "수급 약함"
+            flow_txt = "마감 강함" if meta[tk]["flow_positive"] else "마감 약함"
             b["grade"] = f"{q} ({flow_txt} · 실적 데이터 없음)"
 
     return {

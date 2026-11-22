@@ -268,7 +268,7 @@ with t_col_title:
 def grade_for(quad: str, m: dict) -> str:
     """토글(주봉·RSP)로 바뀐 사분면에 대해 같은 규칙으로 등급 문구를 만든다"""
     if quad in ("주도", "개선", "약화", "소외") and not m.get("revision_known", False):
-        return f"{quad} ({'수급 확인' if m.get('flow_positive') else '수급 약함'} · 실적 데이터 없음)"
+        return f"{quad} ({'마감 강함' if m.get('flow_positive') else '마감 약함'} · 실적 데이터 없음)"
     return engine.determine_basket_grade(quad, m.get("revision_positive", False), m.get("flow_positive", False))
 
 
@@ -506,7 +506,7 @@ with col_sm1:
 
 with col_sm2:
     us_in_li = "".join(
-        f'<li><b>{u["ticker"]} ({u["name"]})</b> CMF(20) <b>{u["cmf_20"]:+.2f}</b> · 상승/하락 거래대금 <b>{u["ud_vol_ratio"]:.2f}배</b> '
+        f'<li><b>{u["ticker"]} ({u["name"]})</b> 마감 강도 <b>{u["cmf_20"]:+.2f}</b> · 오른 날 거래대금 <b>{u["ud_vol_ratio"]:.2f}배</b> '
         f'<span style="font-size:0.76rem;color:#64748b;">({u["source"]} · 기준일: {u["as_of"] or "데이터 없음"})</span></li>'
         for u in s_mon["us_sector_inflow_top4"]
     )
@@ -518,8 +518,12 @@ with col_sm2:
     st.markdown(f"""
     <div class="term-card" style="height:100%;">
       <div style="font-weight:700;margin-bottom:8px;">섹터 수급</div>
-      <div style="font-size:0.82rem;font-weight:700;color:#475569;margin-bottom:4px;">미국 · 기관 매집(CMF 20일) 상위</div>
-      <ul class="term-list" style="margin-bottom:8px;">{us_in_li}</ul>
+      <div style="font-size:0.82rem;font-weight:700;color:#475569;margin-bottom:4px;">미국 · 마감 강도 상위 (CMF 20일)</div>
+      <ul class="term-list" style="margin-bottom:4px;">{us_in_li}</ul>
+      <div style="font-size:0.74rem;color:#64748b;margin-bottom:8px;line-height:1.5;">
+        <b>마감 강도</b>(−1~+1): 최근 20일, 거래가 많던 날 종가가 고가 쪽에서 끝났으면 +, 저가 쪽이면 −. +일수록 장 막판까지 사려는 힘이 강했다는 뜻입니다.<br>
+        <b>오른 날 거래대금</b>: 오른 날(종가 ≥ 시가)에 오간 돈이 내린 날의 몇 배인지. 1보다 크면 오를 때 거래가 더 활발했습니다.<br>
+        둘 다 누가 샀는지는 알 수 없고, 앞으로의 수익을 맞힌다고 검증되지 않은 참고 지표입니다.</div>
       <div style="font-size:0.82rem;font-weight:700;color:#475569;margin-bottom:4px;">한국 · 외국인·기관 20일 순매수 상위</div>
       <ul class="term-list">{kr_in_li}</ul>{hidden_note(kr_hidden)}
     </div>
@@ -527,7 +531,7 @@ with col_sm2:
 
 with col_sm3:
     ms = s_mon["micro_smart_signals"]
-    groups = [("매집봉", ms.get("stealth_accumulation", [])), ("내부자", ms.get("insider_buying", [])),
+    groups = [("거래량 양봉", ms.get("stealth_accumulation", [])), ("내부자", ms.get("insider_buying", [])),
               ("13F", ms.get("hedge_fund_13f_consensus", []))]
     sig_li, sig_hidden = "", 0
     for tag, recs in groups:
