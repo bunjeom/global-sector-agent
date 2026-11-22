@@ -1,13 +1,13 @@
 {
   "version": "2.0 (Top-Down Causal & Time-Aligned Architecture)",
-  "generated_at": "2026-11-21 12:53:07",
+  "generated_at": "2026-11-22 11:57:30",
   "time_horizon": {
     "anchor_date_t0": "2026-11-20",
     "lookback_short_20d": "2026-10-23 ~ 2026-11-20 (20영업일, 단기 모멘텀·수급 관측)",
     "lookback_mid_60d": "2026-08-24 ~ 2026-11-20 (60영업일, 중기 추세 관측)",
     "lookback_flow": "최근 5영업일 평균 거래대금 vs 직전 20영업일 평균 거래대금",
     "lookback_fundamental": "최근 확정 연간/분기자료 (TTM ROE, PBR, 부채비율)",
-    "target_holding_period": "향후 20영업일 (1개월 스윙/포지션, 차기 리밸런싱 예정일: 2026-12-19)"
+    "target_holding_period": "향후 20영업일 (1개월 스윙/포지션, 차기 리밸런싱 예정일: 2026-12-20)"
   },
   "macro_regime": {
     "regime_name": "고금리·강달러 경계 국면 (Selective Barbell Regime)",
@@ -302,8 +302,8 @@
       "strategy_type": "모멘텀 추종 (Trend-Following)",
       "exit_rule": "목표 +15% / 손절 -7% (또는 20영업일 도래)",
       "loop_info": "20일 탐색(Loop 1)",
-      "catalyst": "[모멘텀 추종] 20일 수익률(-0.33%)·ROE(32.4%) 우위 및 '\"불닭이 진짜 황금알 낳는 닭이었네\"…삼양식품 '잭...' 촉매 결합",
-      "quote": "\"불닭이 진짜 황금알 낳는 닭이었네\"…삼양식품 '잭팟' - 한국경제",
+      "catalyst": "[모멘텀 추종] 20일 수익률(-0.33%)·ROE(32.4%) 우위 및 '\"불닭 넘어 건강식까지\"…삼양식품, 실적보다 연구개...' 촉매 결합",
+      "quote": "\"불닭 넘어 건강식까지\"…삼양식품, 실적보다 연구개발 더 늘렸다 - 뉴스1",
       "qa_pass": true
     },
     {
@@ -559,7 +559,7 @@
       "exit_rule": "목표 +12% / 손절 -5% (또는 PBR 리레이팅 달성)",
       "loop_info": "20일 탐색(Loop 1)",
       "catalyst": "[가치 평균회귀] 단기 조정(-1.7%)에도 ROE(22.0%)·PBR(6.8배) 저평가 매력 보유",
-      "quote": "Vertex Pharmaceuticals (VRTX) Could Be 11% Undervalued On Late Stage Pipeline Focus - Yahoo Finance",
+      "quote": "Vertex Pharmaceuticals (VRTX) Misses Q3 Earnings Estimates - Yahoo Finance",
       "qa_pass": true
     },
     {
@@ -607,10 +607,10 @@
         "TSM"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.0434,
-      "rev_90d": 0.1502,
+      "rev_90d": 0.14866,
       "reason": null
     },
     "IGV": {
@@ -624,10 +624,10 @@
         "PANW"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": -0.00039,
-      "rev_90d": -0.01155,
+      "rev_90d": -0.01157,
       "reason": null
     },
     "GRID": {
@@ -641,7 +641,7 @@
         "VST"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.01209,
       "rev_90d": 0.02862,
@@ -658,9 +658,9 @@
         "RTX"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
-      "rev_30d": 0.01062,
+      "rev_30d": 0.00457,
       "rev_90d": 0.01859,
       "reason": null
     },
@@ -674,10 +674,10 @@
         "VRTX"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
-      "rev_30d": 0.02352,
-      "rev_90d": 0.02798,
+      "rev_30d": 0.02214,
+      "rev_90d": 0.0279,
       "reason": null
     },
     "XLK": {
@@ -689,7 +689,7 @@
         "NVDA"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.02096,
       "rev_90d": 0.02662,
@@ -704,9 +704,9 @@
         "NFLX"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
-      "rev_30d": -0.01109,
+      "rev_30d": -0.00368,
       "rev_90d": -0.00139,
       "reason": null
     },
@@ -720,10 +720,10 @@
         "V"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
-      "rev_30d": 0.00565,
-      "rev_90d": 0.0187,
+      "rev_30d": 0.00582,
+      "rev_90d": 0.01888,
       "reason": null
     },
     "XLV": {
@@ -736,7 +736,7 @@
         "UNH"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.00467,
       "rev_90d": 0.02117,
@@ -751,7 +751,7 @@
         "TSLA"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": -0.01695,
       "rev_90d": -0.01998,
@@ -766,7 +766,7 @@
         "UNP"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.00642,
       "rev_90d": -0.00321,
@@ -781,7 +781,7 @@
         "XOM"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.06654,
       "rev_90d": 0.17434,
@@ -796,7 +796,7 @@
         "SO"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 9e-05,
       "rev_90d": -0.00074,
@@ -811,7 +811,7 @@
         "SHW"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": -0.02433,
       "rev_90d": 0.00119,
@@ -826,7 +826,7 @@
         "WMT"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.00258,
       "rev_90d": 0.00392,
@@ -841,7 +841,7 @@
         "PLD"
       ],
       "period": "+1y",
-      "as_of": "2026-11-20",
+      "as_of": "2026-11-21",
       "source": "yfinance eps_trend (애널리스트 컨센서스)",
       "rev_30d": 0.08075,
       "rev_90d": 0.05878,
